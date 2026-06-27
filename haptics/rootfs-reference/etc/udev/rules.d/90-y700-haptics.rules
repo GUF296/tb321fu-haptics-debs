@@ -1,0 +1,4 @@
+# Lenovo Y700 AW86937 haptics expose the standard Linux input force-feedback API.
+# Keep stable names for applications and grant the active local session access.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="aw86937-haptics-left", GROUP="input", MODE="0660", TAG+="uaccess", SYMLINK+="input/y700-haptics-left"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="aw86937-haptics-right", GROUP="input", MODE="0660", TAG+="uaccess", SYMLINK+="input/y700-haptics-right"

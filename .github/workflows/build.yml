@@ -1,0 +1,71 @@
+name: Build TB321FU Haptics Debs
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to create/upload. Empty disables release upload.
+        required: false
+        default: tb321fu-haptics-debs-20260627.1
+        type: string
+      haptics_deb_version:
+        description: Debian package version
+        required: true
+        default: 20260627.1
+        type: string
+      kernel_build_archive:
+        description: Kernel build SDK archive URL
+        required: true
+        default: https://github.com/GUF296/tb321fu-haptics-debs/releases/download/kernel-sdk-7.1.1-g5df8e852ea72/tb321fu-kernel-build-sdk-7.1.1-g5df8e852ea72.tar.gz
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y             ca-certificates git curl tar xz-utils zstd unzip rsync             make gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu kmod dpkg-dev
+
+      - name: Build haptics deb
+        run: |
+          set -euo pipefail
+          env             OUTPUT_DIR=out/tb321fu-haptics-debs             ARCH=arm64             HAPTICS_DEB_VERSION='${{ inputs.haptics_deb_version }}'             HAPTICS_STRIP=1             KERNEL_BUILD_ARCHIVE='${{ inputs.kernel_build_archive }}'             bash scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tb321fu-haptics-debs-${{ inputs.haptics_deb_version }}-arm64
+          path: out/tb321fu-haptics-debs/*
+
+      - name: Upload release assets
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          notes=out/tb321fu-haptics-debs/RELEASE-NOTES.md
+          {
+            echo '# TB321FU Haptics Debs'
+            echo
+            echo "- Package version: ${{ inputs.haptics_deb_version }}"
+            echo "- Kernel source: GUF296/linux tb321fu-v7.1.1-y700-daily-20260623"
+            echo "- Kernel SDK: ${{ inputs.kernel_build_archive }}"
+            echo "- Commit: $GITHUB_SHA"
+            echo "- Workflow run: $GITHUB_RUN_ID"
+          } > "$notes"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$notes"
+          else
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$notes"
+          fi
+          gh release upload "$RELEASE_TAG"             out/tb321fu-haptics-debs/tb321fu-haptics-debs_${{ inputs.haptics_deb_version }}_arm64.tar.gz             out/tb321fu-haptics-debs/SHA256SUMS-archive.txt             --clobber

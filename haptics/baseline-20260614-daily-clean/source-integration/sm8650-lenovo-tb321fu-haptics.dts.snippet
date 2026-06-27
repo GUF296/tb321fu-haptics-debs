@@ -1,0 +1,15 @@
+&i2c7 {
+	status = "okay";
+	qcom,clk-freq-out = <1000000>;
+	clock-frequency = <1000000>;
+
+	haptics-right@5a {
+		compatible = "awinic,haptic_hv_r";
+		reg = <0x5a>;
+	};
+
+	haptics-left@5b {
+		compatible = "awinic,haptic_hv_l";
+		reg = <0x5b>;
+	};
+};

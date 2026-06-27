@@ -1,0 +1,7 @@
+19870de97babde92dc75f81e470a7a2407057b6a27fb459adb539e8bd45b4377  /mnt/c/Users/Administrator/Desktop/dump/y700-artifacts-20260503/work/vibration-bringup-20260613/ab026-daily-haptics-clean-20260614/aw86937-y700.ko
+e7b8998c2863649411c767d055a5e13e00cbbe061d3044d779370a5133403485  /mnt/c/Users/Administrator/Desktop/dump/y700-artifacts-20260503/work/vibration-bringup-20260613/ab026-daily-haptics-clean-20260614/aw86937-y700.c
+1a13976f339e9eed3ec76c4fbbcc868f7838079a9bd6630da2f6cdc971ba95b2  /mnt/c/Users/Administrator/Desktop/dump/y700-artifacts-20260503/work/vibration-bringup-20260613/ab026-daily-haptics-clean-20260614/Makefile
+1f095a06d4b75f013afd3ab2ea88dcd8b1c67e4de3a473526ff19faeb16794b0  /mnt/c/Users/Administrator/Desktop/dump/y700-artifacts-20260503/work/vibration-bringup-20260613/ab026-daily-haptics-clean-20260614/build_ab008_firmware_ram_module.sh
+104b7a8ce11e5a47fc71c8ce486dbb204922b84ca1cfad703915d9239f9d730f  /mnt/c/Users/Administrator/Desktop/dump/y700-artifacts-20260503/work/vibration-bringup-20260613/ab026-daily-haptics-clean-20260614/y700-aw86937-bind
+64e86edba26029de2954e6ea23315b44ad6d5f53c1782be7eeef5d58f97d6ff1  /mnt/c/Users/Administrator/Desktop/dump/y700-artifacts-20260503/work/vibration-bringup-20260613/ab026-daily-haptics-clean-20260614/haptic_ram.bin
+f21ac0d23d53ea5e7557df1c106e406286b605f8b522ba9ca1887cd374b3f999  /mnt/c/Users/Administrator/Desktop/dump/y700-artifacts-20260503/work/vibration-bringup-20260613/ab026-daily-haptics-clean-20260614/haptic_click.bin

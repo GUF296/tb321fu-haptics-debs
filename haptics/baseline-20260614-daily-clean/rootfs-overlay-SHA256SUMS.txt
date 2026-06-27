@@ -1,0 +1,10 @@
+22af41fb74ba8553916d5ea23ad42f004c449712649fcb940aa81e6e197d0a42  rootfs-overlay.tar.gz
+19870de97babde92dc75f81e470a7a2407057b6a27fb459adb539e8bd45b4377  rootfs-overlay/usr/lib/modules/7.1.0-rc1-g66edb901bf87-dirty/extra/aw86937-y700.ko
+64e86edba26029de2954e6ea23315b44ad6d5f53c1782be7eeef5d58f97d6ff1  rootfs-overlay/usr/lib/firmware/haptic_ram.bin
+f21ac0d23d53ea5e7557df1c106e406286b605f8b522ba9ca1887cd374b3f999  rootfs-overlay/usr/lib/firmware/haptic_click.bin
+14deaffb71559388bdaf105f3938c1674efd42fdcd794cb413a6c34cce5cd7a8  rootfs-overlay/usr/local/bin/y700-haptic-test
+e8c7cf756b0818ae0b9c94da48e018d29fccc47d8620b9502db36a702432e819  rootfs-overlay/usr/local/bin/y700-haptic-gui
+8e1396ae8b6bfbdf8a80498d2ee65024e141b49e5b86ed529aee31383d03592b  rootfs-overlay/usr/local/share/applications/y700-haptic-test.desktop
+104b7a8ce11e5a47fc71c8ce486dbb204922b84ca1cfad703915d9239f9d730f  rootfs-overlay/usr/local/sbin/y700-aw86937-bind
+6fa76cfa5882f4c1d473aa143ca733385ac70803ba5fae64032059b49127a747  rootfs-overlay/etc/udev/rules.d/90-y700-haptics.rules
+efd87b1748ede4b576ffb1721342fdb66a886332d8c84973d6117265f2a58301  rootfs-overlay/etc/systemd/system/y700-aw86937-haptics.service

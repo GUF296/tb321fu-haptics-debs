@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Y700 Haptic Test
+Comment=Y700 haptic test panel
+Exec=/usr/local/bin/y700-haptic-gui
+Icon=input-gaming
+Terminal=false
+Categories=Utility;Settings;

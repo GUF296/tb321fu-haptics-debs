@@ -1,0 +1,96 @@
+#!/bin/sh
+set -eu
+
+krel=$(uname -r)
+module_path="/lib/modules/$krel/extra/aw86937-y700.ko"
+
+find_haptic_adapter()
+{
+	for dev in /sys/bus/i2c/devices/i2c-*; do
+		[ -e "$dev/name" ] || continue
+		real=$(readlink -f "$dev" || true)
+		case "$real" in
+			*a9c000.i2c*) basename "$dev" | sed 's/^i2c-//'; return 0 ;;
+		esac
+	done
+	return 1
+}
+
+load_driver()
+{
+	if lsmod | awk '{print $1}' | grep -qx aw86937_y700; then
+		return 0
+	fi
+	if modprobe aw86937_y700 2>/dev/null; then
+		return 0
+	fi
+	insmod "$module_path"
+}
+
+adapter=""
+for _ in $(seq 1 80); do
+	adapter=$(find_haptic_adapter 2>/dev/null || true)
+	[ -n "$adapter" ] && break
+	sleep 0.25
+done
+
+if [ -z "$adapter" ]; then
+	echo "a9c000.i2c adapter not found" >&2
+	exit 1
+fi
+
+load_driver
+
+is_known_haptic_name()
+{
+	case "$1" in
+		aw86937_y700|aw86937|haptic_hv|haptic_hv_r|haptic_hv_l|y700-aw86937)
+			return 0
+			;;
+	esac
+	return 1
+}
+
+bind_existing_client()
+{
+	dev="$1"
+	name="$2"
+	busdev=$(basename "$dev")
+
+	if ! is_known_haptic_name "$name"; then
+		echo "$dev already exists as $name" >&2
+		exit 1
+	fi
+
+	if [ -e "$dev/driver" ]; then
+		driver=$(basename "$(readlink -f "$dev/driver")")
+		if [ "$driver" = "aw86937-y700" ]; then
+			return 0
+		fi
+		echo "$dev is already bound to unexpected driver $driver" >&2
+		exit 1
+	fi
+
+	printf '%s\n' "$busdev" > /sys/bus/i2c/drivers/aw86937-y700/bind 2>/dev/null || true
+
+	for _ in $(seq 1 20); do
+		if [ -e "$dev/driver" ] && [ "$(basename "$(readlink -f "$dev/driver")")" = "aw86937-y700" ]; then
+			return 0
+		fi
+		sleep 0.1
+	done
+
+	echo "$dev did not bind to aw86937-y700" >&2
+	exit 1
+}
+
+for spec in "0x5a:right" "0x5b:left"; do
+	addr=${spec%%:*}
+	dev="/sys/bus/i2c/devices/${adapter}-00${addr#0x}"
+	if [ -e "$dev/name" ]; then
+		name=$(cat "$dev/name")
+		bind_existing_client "$dev" "$name"
+		continue
+	fi
+	printf 'aw86937_y700 %s\n' "$addr" > "/sys/bus/i2c/devices/i2c-$adapter/new_device"
+done
