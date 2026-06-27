@@ -6,12 +6,12 @@ on:
       release_tag:
         description: Release tag to create/upload. Empty disables release upload.
         required: false
-        default: tb321fu-haptics-debs-20260627.1
+        default: tb321fu-haptics-debs-20260627.2
         type: string
       haptics_deb_version:
         description: Debian package version
         required: true
-        default: 20260627.1
+        default: 20260627.2
         type: string
       kernel_build_archive:
         description: Kernel build SDK archive URL
