@@ -156,6 +156,23 @@ prepare_inputs() {
   ci_log "kernel release: $kernel_release"
 }
 
+prepare_kernel_host_tools() {
+  # Kernel build output archives can contain host tools from the machine that
+  # prepared the SDK. Rebuild them on the current runner before external module
+  # compilation so the SDK works on both x86_64 and arm64 hosts.
+  rm -f \
+    "$kernel_build_root/scripts/basic/fixdep" \
+    "$kernel_build_root/scripts/mod/modpost"
+  make -C "$kernel_source_root" \
+    O="$kernel_build_root" \
+    ARCH=arm64 \
+    CROSS_COMPILE=aarch64-linux-gnu- \
+    scripts_basic scripts/mod/
+
+  [ -x "$kernel_build_root/scripts/basic/fixdep" ] || ci_die "missing rebuilt kernel host tool: scripts/basic/fixdep"
+  [ -x "$kernel_build_root/scripts/mod/modpost" ] || ci_die "missing rebuilt kernel host tool: scripts/mod/modpost"
+}
+
 patch_source_for_standard_module_name() {
   local src=$1
 
@@ -468,6 +485,7 @@ EOF_MAKE
 }
 
 prepare_inputs
+prepare_kernel_host_tools
 build_haptics_package
 
 ci_log "writing haptics package checksums"
