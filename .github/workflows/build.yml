@@ -33,12 +33,20 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y             ca-certificates git curl tar xz-utils zstd unzip rsync             make gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu kmod dpkg-dev
+          sudo apt-get install -y \
+            ca-certificates git curl tar xz-utils zstd unzip rsync \
+            make gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu kmod dpkg-dev
 
       - name: Build haptics deb
         run: |
           set -euo pipefail
-          env             OUTPUT_DIR=out/tb321fu-haptics-debs             ARCH=arm64             HAPTICS_DEB_VERSION='${{ inputs.haptics_deb_version }}'             HAPTICS_STRIP=1             KERNEL_BUILD_ARCHIVE='${{ inputs.kernel_build_archive }}'             bash scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh
+          env \
+            OUTPUT_DIR=out/tb321fu-haptics-debs \
+            ARCH=arm64 \
+            HAPTICS_DEB_VERSION='${{ inputs.haptics_deb_version }}' \
+            HAPTICS_STRIP=1 \
+            KERNEL_BUILD_ARCHIVE='${{ inputs.kernel_build_archive }}' \
+            bash scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -58,7 +66,7 @@ jobs:
             echo '# TB321FU Haptics Debs'
             echo
             echo "- Package version: ${{ inputs.haptics_deb_version }}"
-            echo "- Kernel source: GUF296/linux tb321fu-v7.1.1-y700-daily-20260623"
+            echo "- Kernel source: GUF296/linux TB321FU-7.1.1"
             echo "- Kernel SDK: ${{ inputs.kernel_build_archive }}"
             echo "- Commit: $GITHUB_SHA"
             echo "- Workflow run: $GITHUB_RUN_ID"
@@ -68,4 +76,7 @@ jobs:
           else
             gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$notes"
           fi
-          gh release upload "$RELEASE_TAG"             out/tb321fu-haptics-debs/tb321fu-haptics-debs_${{ inputs.haptics_deb_version }}_arm64.tar.gz             out/tb321fu-haptics-debs/SHA256SUMS-archive.txt             --clobber
+          gh release upload "$RELEASE_TAG" \
+            out/tb321fu-haptics-debs/tb321fu-haptics-debs_${{ inputs.haptics_deb_version }}_arm64.tar.gz \
+            out/tb321fu-haptics-debs/SHA256SUMS-archive.txt \
+            --clobber

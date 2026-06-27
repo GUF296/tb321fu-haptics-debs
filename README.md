@@ -9,7 +9,7 @@ Output:
 
 The workflow builds an external module for kernel 7.1.1-g5df8e852ea72 from:
 
-- Kernel source: https://github.com/GUF296/linux/tree/tb321fu-v7.1.1-y700-daily-20260623
+- Kernel source: https://github.com/GUF296/linux/tree/TB321FU-7.1.1
 - Kernel build SDK: https://github.com/GUF296/tb321fu-haptics-debs/releases/download/kernel-sdk-7.1.1-g5df8e852ea72/tb321fu-kernel-build-sdk-7.1.1-g5df8e852ea72.tar.gz
 
 The package provides `tb321fu-haptics.service`, `/usr/libexec/tb321fu-haptics/bind-aw86937`, firmware, udev feedbackd integration, and `/dev/input/tb321fu-haptics-left/right` symlinks.

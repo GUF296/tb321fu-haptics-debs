@@ -10,7 +10,7 @@ ARCH=${ARCH:-arm64}
 HAPTICS_DEB_VERSION=${HAPTICS_DEB_VERSION:-20260627.1}
 HAPTICS_STRIP=${HAPTICS_STRIP:-1}
 KERNEL_SOURCE_REPO=${KERNEL_SOURCE_REPO:-https://github.com/GUF296/linux.git}
-KERNEL_SOURCE_REF=${KERNEL_SOURCE_REF:-tb321fu-v7.1.1-y700-daily-20260623}
+KERNEL_SOURCE_REF=${KERNEL_SOURCE_REF:-TB321FU-7.1.1}
 KERNEL_BUILD_ARCHIVE=${KERNEL_BUILD_ARCHIVE:-https://github.com/GUF296/tb321fu-haptics-debs/releases/download/kernel-sdk-7.1.1-g5df8e852ea72/tb321fu-kernel-build-sdk-7.1.1-g5df8e852ea72.tar.gz}
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/tb321fu-haptics-kernel.XXXXXX")
