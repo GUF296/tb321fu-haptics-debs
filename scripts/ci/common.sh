@@ -28,47 +28,60 @@ ci_abs_path() {
   esac
 }
 
+ci_verify_download() {
+  local file=$1
+  local expected=$2
+  local actual
+
+  [[ $expected =~ ^[A-Fa-f0-9]{64}$ ]] || ci_die "invalid SHA-256 verifier for $file"
+  actual=$(sha256sum "$file" | awk '{print $1}')
+  [ "$actual" = "${expected,,}" ] ||
+    ci_die "SHA-256 mismatch for $file: expected ${expected,,}, got $actual"
+}
+
 ci_download() {
   local src=$1
   local dst=$2
+  local verifier=${3:-}
+  local tmp="${dst}.part.$$"
+
+  rm -f -- "$tmp"
   case "$src" in
-    http://*|https://*)
+    https://*)
+      [ -n "$verifier" ] || ci_die "remote download requires an explicit SHA-256: $src"
       ci_require_cmd curl
-      curl -fL --retry 3 --retry-delay 2 -o "$dst" "$src"
+      if ! curl --proto '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 -o "$tmp" "$src"; then
+        rm -f -- "$tmp"
+        ci_die "download failed: $src"
+      fi
+      ;;
+    http://*)
+      ci_die "refusing insecure HTTP download: $src"
       ;;
     '')
       ci_die "empty download source for $dst"
       ;;
     *)
-      cp -a "$src" "$dst"
+      [ -f "$src" ] || ci_die "local download source is not a regular file: $src"
+      cp -- "$src" "$tmp"
       ;;
   esac
+  if [ -n "$verifier" ]; then
+    if ! (ci_verify_download "$tmp" "$verifier"); then
+      rm -f -- "$tmp"
+      ci_die "download verification failed: $src"
+    fi
+  fi
+  mv -f -- "$tmp" "$dst"
 }
 
 ci_extract_archive() {
   local archive=$1
   local dest=$2
-  mkdir -p "$dest"
+  local helper
 
-  case "$archive" in
-    *.tar.gz|*.tgz) tar -C "$dest" -xzf "$archive"; return ;;
-    *.tar.xz) tar -C "$dest" -xJf "$archive"; return ;;
-    *.tar.zst) tar -C "$dest" --zstd -xf "$archive"; return ;;
-    *.tar) tar -C "$dest" -xf "$archive"; return ;;
-    *.zip) ci_require_cmd unzip; unzip -q "$archive" -d "$dest"; return ;;
-    *.7z|*.7z.001) ci_require_cmd 7z; 7z x "$archive" -o"$dest" >/dev/null; return ;;
-  esac
-
-  # Download URLs often land in extensionless temp files; detect by content.
-  if tar -tf "$archive" >/dev/null 2>&1; then
-    tar -C "$dest" -xf "$archive"
-    return
-  fi
-
-  if command -v 7z >/dev/null 2>&1 && 7z l "$archive" >/dev/null 2>&1; then
-    7z x "$archive" -o"$dest" >/dev/null
-    return
-  fi
-
-  ci_die "unsupported archive format: $archive"
+  helper=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/safe-extract-archive.py
+  ci_require_cmd python3
+  [ -f "$archive" ] || ci_die "archive not found: $archive"
+  python3 "$helper" "$archive" "$dest" || ci_die "safe archive extraction failed: $archive"
 }

@@ -15,11 +15,20 @@ Environment inputs:
   ARCH                       default: arm64
   HAPTICS_DEB_VERSION        default: 20260627.1
   HAPTICS_SOURCE_ARCHIVE     source freeze archive containing haptics/daily-current
+  HAPTICS_SOURCE_ARCHIVE_SHA256
   HAPTICS_SOURCE_DIR         source freeze directory containing haptics/daily-current
   KERNEL_SOURCE_ARCHIVE      kernel source archive
+  KERNEL_SOURCE_ARCHIVE_SHA256
   KERNEL_SOURCE_DIR          kernel source directory
   KERNEL_BUILD_ARCHIVE       kernel build output archive containing generated headers
+  KERNEL_BUILD_ARCHIVE_SHA256
   KERNEL_BUILD_DIR           kernel build output directory
+  KERNEL_GIT_DIR             optional external Git object database
+  KERNEL_BUNDLE_METADATA     optional KERNEL-BUNDLE.tsv path or HTTPS URL
+  KERNEL_BUNDLE_METADATA_SHA256
+  EXPECTED_KERNEL_SOURCE_COMMIT
+                              optional exact 40-hex source identity
+  SOURCE_DATE_EPOCH          reproducible build timestamp
   HAPTICS_STRIP              strip binaries/modules after build, default: 0
 USAGE
 }
@@ -30,25 +39,45 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
 fi
 
 ci_require_cmd make
+ci_require_cmd python3
 ci_require_cmd rsync
 ci_require_cmd dpkg-deb
 ci_require_cmd sha256sum
 ci_require_cmd aarch64-linux-gnu-gcc
 ci_require_cmd aarch64-linux-gnu-strip
 ci_require_cmd modinfo
+ci_require_cmd dpkg
 
 OUTPUT_DIR=${OUTPUT_DIR:-out/tb321fu-haptics-debs}
 ARCH=${ARCH:-arm64}
 HAPTICS_DEB_VERSION=${HAPTICS_DEB_VERSION:-20260627.1}
 HAPTICS_SOURCE_ARCHIVE=${HAPTICS_SOURCE_ARCHIVE:-}
+HAPTICS_SOURCE_ARCHIVE_SHA256=${HAPTICS_SOURCE_ARCHIVE_SHA256:-}
 HAPTICS_SOURCE_DIR=${HAPTICS_SOURCE_DIR:-}
 KERNEL_SOURCE_ARCHIVE=${KERNEL_SOURCE_ARCHIVE:-}
+KERNEL_SOURCE_ARCHIVE_SHA256=${KERNEL_SOURCE_ARCHIVE_SHA256:-}
 KERNEL_SOURCE_DIR=${KERNEL_SOURCE_DIR:-}
 KERNEL_BUILD_ARCHIVE=${KERNEL_BUILD_ARCHIVE:-}
+KERNEL_BUILD_ARCHIVE_SHA256=${KERNEL_BUILD_ARCHIVE_SHA256:-}
 KERNEL_BUILD_DIR=${KERNEL_BUILD_DIR:-}
+KERNEL_GIT_DIR=${KERNEL_GIT_DIR:-}
+KERNEL_BUNDLE_METADATA=${KERNEL_BUNDLE_METADATA:-}
+KERNEL_BUNDLE_METADATA_SHA256=${KERNEL_BUNDLE_METADATA_SHA256:-}
+EXPECTED_KERNEL_SOURCE_COMMIT=${EXPECTED_KERNEL_SOURCE_COMMIT:-}
 HAPTICS_STRIP=${HAPTICS_STRIP:-0}
+SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
+kernel_bundle_id=unbound
+kernel_bundle_config_sha256=unbound
 
 [ "$ARCH" = arm64 ] || ci_die "unsupported ARCH=$ARCH; only arm64 is supported"
+[[ $HAPTICS_DEB_VERSION =~ ^[0-9][0-9A-Za-z.+~_-]{0,63}$ ]] || ci_die "unsafe HAPTICS_DEB_VERSION"
+dpkg --validate-version "$HAPTICS_DEB_VERSION" >/dev/null || ci_die "invalid HAPTICS_DEB_VERSION"
+[[ $SOURCE_DATE_EPOCH =~ ^[0-9]{1,10}$ ]] || ci_die "invalid SOURCE_DATE_EPOCH"
+if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
+  [[ $EXPECTED_KERNEL_SOURCE_COMMIT =~ ^[0-9a-f]{40}$ ]] || ci_die "invalid EXPECTED_KERNEL_SOURCE_COMMIT"
+  ci_require_cmd git
+fi
+export SOURCE_DATE_EPOCH
 
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR=$(ci_abs_path "$OUTPUT_DIR")
@@ -113,6 +142,36 @@ find_kernel_build_root() {
   printf '%s\n' "$found"
 }
 
+load_kernel_bundle_metadata() {
+  local metadata="$work_dir/KERNEL-BUNDLE.tsv"
+  local canonical="$work_dir/KERNEL-BUNDLE.canonical.tsv"
+  local -a lines verify_args
+
+  [ -n "$KERNEL_BUNDLE_METADATA" ] || return 0
+  ci_download "$KERNEL_BUNDLE_METADATA" "$metadata" "$KERNEL_BUNDLE_METADATA_SHA256"
+  verify_args=("$metadata" --emit-tsv)
+  if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
+    verify_args+=(--expect "kernel-source-commit=$EXPECTED_KERNEL_SOURCE_COMMIT")
+  fi
+  python3 "$SCRIPT_DIR/verify-kernel-bundle.py" "${verify_args[@]}" > "$canonical" ||
+    ci_die "invalid KERNEL-BUNDLE.tsv"
+
+  mapfile -t lines < "$canonical"
+  kernel_bundle_commit=${lines[1]#*$'\t'}
+  kernel_bundle_release=${lines[2]#*$'\t'}
+  kernel_bundle_config_sha256=${lines[3]#*$'\t'}
+  kernel_bundle_epoch=${lines[4]#*$'\t'}
+  kernel_bundle_id=${lines[9]#*$'\t'}
+
+  if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
+    : # The shared verifier enforced the exact expected commit.
+  else
+    EXPECTED_KERNEL_SOURCE_COMMIT=$kernel_bundle_commit
+  fi
+  SOURCE_DATE_EPOCH=$kernel_bundle_epoch
+  export SOURCE_DATE_EPOCH
+}
+
 prepare_inputs() {
   local archive extract
 
@@ -122,7 +181,7 @@ prepare_inputs() {
     [ -n "$HAPTICS_SOURCE_ARCHIVE" ] || ci_die "set HAPTICS_SOURCE_ARCHIVE or HAPTICS_SOURCE_DIR"
     archive="$work_dir/haptics-source.archive"
     extract="$work_dir/haptics-source"
-    ci_download "$HAPTICS_SOURCE_ARCHIVE" "$archive"
+    ci_download "$HAPTICS_SOURCE_ARCHIVE" "$archive" "$HAPTICS_SOURCE_ARCHIVE_SHA256"
     ci_extract_archive "$archive" "$extract"
     haptics_root=$(find_haptics_source_root "$extract") || ci_die "HAPTICS_SOURCE_ARCHIVE does not contain haptics source freeze"
   fi
@@ -133,7 +192,7 @@ prepare_inputs() {
     [ -n "$KERNEL_SOURCE_ARCHIVE" ] || ci_die "set KERNEL_SOURCE_ARCHIVE or KERNEL_SOURCE_DIR"
     archive="$work_dir/kernel-source.archive"
     extract="$work_dir/kernel-source"
-    ci_download "$KERNEL_SOURCE_ARCHIVE" "$archive"
+    ci_download "$KERNEL_SOURCE_ARCHIVE" "$archive" "$KERNEL_SOURCE_ARCHIVE_SHA256"
     ci_extract_archive "$archive" "$extract"
     kernel_source_root=$(find_kernel_source_root "$extract") || ci_die "KERNEL_SOURCE_ARCHIVE does not contain kernel source"
   fi
@@ -144,16 +203,51 @@ prepare_inputs() {
     [ -n "$KERNEL_BUILD_ARCHIVE" ] || ci_die "set KERNEL_BUILD_ARCHIVE or KERNEL_BUILD_DIR"
     archive="$work_dir/kernel-build.archive"
     extract="$work_dir/kernel-build"
-    ci_download "$KERNEL_BUILD_ARCHIVE" "$archive"
+    ci_download "$KERNEL_BUILD_ARCHIVE" "$archive" "$KERNEL_BUILD_ARCHIVE_SHA256"
     ci_extract_archive "$archive" "$extract"
     kernel_build_root=$(find_kernel_build_root "$extract") || ci_die "KERNEL_BUILD_ARCHIVE does not contain kernel build output"
   fi
 
+  load_kernel_bundle_metadata
   kernel_release=$(cat "$kernel_build_root/include/config/kernel.release")
+  if [ "$kernel_bundle_id" != unbound ]; then
+    [ "$kernel_release" = "$kernel_bundle_release" ] || ci_die "kernel release differs from KERNEL-BUNDLE.tsv"
+    [ "$(sha256sum "$kernel_build_root/.config" | awk '{print $1}')" = "$kernel_bundle_config_sha256" ] ||
+      ci_die "kernel build config differs from KERNEL-BUNDLE.tsv"
+  fi
+  if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
+    local -a source_git
+    if [ -n "$KERNEL_GIT_DIR" ]; then
+      [ -d "$KERNEL_GIT_DIR/objects" ] || ci_die "KERNEL_GIT_DIR is not a Git object database"
+      source_git=(git --git-dir="$KERNEL_GIT_DIR" --work-tree="$kernel_source_root")
+    elif [ -d "$kernel_source_root/.git" ]; then
+      source_git=(git -C "$kernel_source_root")
+    else
+      ci_die "kernel source lacks Git metadata for commit verification"
+    fi
+    actual_kernel_commit=$("${source_git[@]}" rev-parse HEAD)
+    [ "$actual_kernel_commit" = "$EXPECTED_KERNEL_SOURCE_COMMIT" ] ||
+      ci_die "kernel source commit mismatch: expected $EXPECTED_KERNEL_SOURCE_COMMIT, got $actual_kernel_commit"
+    [ -z "$("${source_git[@]}" status --porcelain --untracked-files=all)" ] ||
+      ci_die "kernel source must be clean for commit-bound haptics packaging"
+    case "$kernel_release" in
+      *-g"${EXPECTED_KERNEL_SOURCE_COMMIT:0:12}"*) ;;
+      *) ci_die "kernel release does not bind expected source commit: $kernel_release" ;;
+    esac
+  fi
   ci_log "haptics source root: $haptics_root"
   ci_log "kernel source root: $kernel_source_root"
   ci_log "kernel build root: $kernel_build_root"
   ci_log "kernel release: $kernel_release"
+}
+
+kernel_make() {
+  if [ -n "$KERNEL_GIT_DIR" ]; then
+    env GIT_DIR="$KERNEL_GIT_DIR" GIT_WORK_TREE="$kernel_source_root" \
+      make -C "$kernel_source_root" "$@"
+  else
+    make -C "$kernel_source_root" "$@"
+  fi
 }
 
 prepare_kernel_host_tools() {
@@ -163,8 +257,7 @@ prepare_kernel_host_tools() {
   rm -f \
     "$kernel_build_root/scripts/basic/fixdep" \
     "$kernel_build_root/scripts/mod/modpost"
-  make -C "$kernel_source_root" \
-    O="$kernel_build_root" \
+  kernel_make O="$kernel_build_root" \
     ARCH=arm64 \
     CROSS_COMPILE=aarch64-linux-gnu- \
     scripts_basic scripts/mod/
@@ -439,16 +532,28 @@ build_haptics_package() {
   local pkg="$work_dir/pkg/tb321fu-haptics"
   local module="$src/aw86937-haptics.ko"
   local helper_src="$haptics_root/haptics/baseline-20260614-daily-clean/testing-tools/y700-haptic-test.c"
+  local source_sha256 build_source_sha256
 
   ci_log "building aw86937-haptics external module"
   mkdir -p "$src"
   cp -a "$haptics_root/haptics/daily-current/linux/drivers/input/misc/aw86937-y700.c" "$src/aw86937-haptics.c"
+  source_sha256=$(sha256sum "$src/aw86937-haptics.c" | awk '{print $1}')
+  [ "$source_sha256" = 2e0cb7b739496ff6cf4011244ec9c0b2a2367896de65784041018b9d62186e48 ] ||
+    ci_die "AW86937 driver source does not match the canonical corrected source: $source_sha256"
+  grep -q 'wait_event_timeout(haptics->play_wait' "$src/aw86937-haptics.c" ||
+    ci_die "AW86937 driver lacks cancellable playback"
+  grep -q 'pm_sleep_ptr(&aw86937_y700_pm_ops)' "$src/aw86937-haptics.c" ||
+    ci_die "AW86937 driver lacks PM callbacks"
+  if grep -Eq 'msleep\((duration_ms|play_ms)\)' "$src/aw86937-haptics.c"; then
+    ci_die "AW86937 driver contains an uninterruptible effect wait"
+  fi
   patch_source_for_standard_module_name "$src/aw86937-haptics.c"
+  build_source_sha256=$(sha256sum "$src/aw86937-haptics.c" | awk '{print $1}')
   cat > "$src/Makefile" <<'EOF_MAKE'
 obj-m := aw86937-haptics.o
 EOF_MAKE
 
-  make -C "$kernel_source_root" O="$kernel_build_root" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M="$src" modules
+  kernel_make O="$kernel_build_root" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M="$src" modules
   [ -f "$module" ] || ci_die "missing built module: $module"
   modinfo "$module" | tee "$work_dir/aw86937-haptics.modinfo"
   grep -q '^name:[[:space:]]*aw86937_haptics$' "$work_dir/aw86937-haptics.modinfo" || ci_die "unexpected module name"
@@ -483,8 +588,19 @@ EOF_MAKE
   write_maintainer_scripts "$pkg"
 
   find "$pkg" -type d -exec chmod 0755 {} +
+  find "$pkg" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
   deb="$OUTPUT_DIR/tb321fu-haptics_${HAPTICS_DEB_VERSION}_${ARCH}.deb"
   dpkg-deb --build --root-owner-group "$pkg" "$deb" >/dev/null
+  {
+    printf 'aw86937-driver-sha256\t%s\n' "$source_sha256"
+    printf 'aw86937-build-source-sha256\t%s\n' "$build_source_sha256"
+    printf 'kernel-release\t%s\n' "$kernel_release"
+    printf 'kernel-source-commit\t%s\n' "${EXPECTED_KERNEL_SOURCE_COMMIT:-unverified-local-source}"
+    printf 'kernel-config-sha256\t%s\n' "$kernel_bundle_config_sha256"
+    printf 'kernel-bundle-id\t%s\n' "$kernel_bundle_id"
+    printf 'kernel-build-archive-sha256\t%s\n' "${KERNEL_BUILD_ARCHIVE_SHA256:-local-build-directory}"
+    printf 'source-date-epoch\t%s\n' "$SOURCE_DATE_EPOCH"
+  } > "$OUTPUT_DIR/HAPTICS-SOURCE-LOCK.tsv"
   sha256sum "$deb"
 }
 
@@ -493,5 +609,6 @@ prepare_kernel_host_tools
 build_haptics_package
 
 ci_log "writing haptics package checksums"
-(cd "$OUTPUT_DIR" && sha256sum ./*.deb > SHA256SUMS-tb321fu-haptics-debs.txt)
+(cd "$OUTPUT_DIR" && \
+  sha256sum ./*.deb ./HAPTICS-SOURCE-LOCK.tsv > SHA256SUMS-tb321fu-haptics-debs.txt)
 ci_log "haptics package build complete: $OUTPUT_DIR"
