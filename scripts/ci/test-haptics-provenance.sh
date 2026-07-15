@@ -208,6 +208,9 @@ grep -Fq 'verify_kernel_build_state "after host-tool preparation"' \
 grep -Fq 'verify_kernel_build_state "after external module build"' \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
   fail "builder omits post-module kernel build identity verification"
+grep -Fq -- '-fdebug-prefix-map=$src=$module_prefix -ffile-prefix-map=$src=$module_prefix -fmacro-prefix-map=$src=$module_prefix' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+  fail "builder omits stable external-module debug path mapping"
 grep -Fq 'HAPTICS-SOURCE-SNAPSHOT' \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb-from-kernel-sdk.sh" ||
   fail "outer haptics archive omits the source snapshot"

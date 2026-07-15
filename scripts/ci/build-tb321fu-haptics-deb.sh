@@ -671,6 +671,7 @@ build_haptics_package() {
   local src="$work_dir/module-src"
   local pkg="$work_dir/pkg/tb321fu-haptics"
   local module="$src/aw86937-haptics.ko"
+  local module_prefix=/usr/src/tb321fu-haptics
   local helper_src="$haptics_snapshot_helper"
   local driver_src="$haptics_snapshot_driver"
   local ram_firmware="$haptics_snapshot_ram_firmware"
@@ -700,7 +701,9 @@ build_haptics_package() {
 obj-m := aw86937-haptics.o
 EOF_MAKE
 
-  kernel_make O="$kernel_build_root" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M="$src" modules
+  kernel_make O="$kernel_build_root" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+    KCFLAGS="-fdebug-prefix-map=$src=$module_prefix -ffile-prefix-map=$src=$module_prefix -fmacro-prefix-map=$src=$module_prefix" \
+    M="$src" modules
   verify_kernel_build_state "after external module build"
   [ -f "$module" ] || ci_die "missing built module: $module"
   [ "$(sha256sum "$haptics_build_source_path" | awk '{print $1}')" = "$haptics_build_source_sha256" ] ||
