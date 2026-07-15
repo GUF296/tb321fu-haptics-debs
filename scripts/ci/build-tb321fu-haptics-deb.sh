@@ -298,6 +298,22 @@ verify_kernel_source_state() {
   ci_log "kernel source state verified $phase: $actual"
 }
 
+verify_kernel_build_state() {
+  local phase=$1 actual_release actual_config_sha256
+
+  actual_release=$(cat "$kernel_build_root/include/config/kernel.release")
+  [ "$actual_release" = "$kernel_release" ] ||
+    ci_die "kernel build release changed $phase: expected $kernel_release, got $actual_release"
+  if [ "$kernel_bundle_id" != unbound ]; then
+    [ "$actual_release" = "$kernel_bundle_release" ] ||
+      ci_die "kernel build release differs from KERNEL-BUNDLE.tsv $phase"
+    actual_config_sha256=$(sha256sum "$kernel_build_root/.config" | awk '{print $1}')
+    [ "$actual_config_sha256" = "$kernel_bundle_config_sha256" ] ||
+      ci_die "kernel build config differs from KERNEL-BUNDLE.tsv $phase: expected $kernel_bundle_config_sha256, got $actual_config_sha256"
+  fi
+  ci_log "kernel build state verified $phase: $actual_release"
+}
+
 prepare_haptics_source_snapshot() {
   local source_root
 
@@ -387,6 +403,7 @@ prepare_kernel_host_tools() {
 
   [ -x "$kernel_build_root/scripts/basic/fixdep" ] || ci_die "missing rebuilt kernel host tool: scripts/basic/fixdep"
   [ -x "$kernel_build_root/scripts/mod/modpost" ] || ci_die "missing rebuilt kernel host tool: scripts/mod/modpost"
+  verify_kernel_build_state "after host-tool preparation"
 }
 
 patch_source_for_standard_module_name() {
@@ -684,6 +701,7 @@ obj-m := aw86937-haptics.o
 EOF_MAKE
 
   kernel_make O="$kernel_build_root" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M="$src" modules
+  verify_kernel_build_state "after external module build"
   [ -f "$module" ] || ci_die "missing built module: $module"
   [ "$(sha256sum "$haptics_build_source_path" | awk '{print $1}')" = "$haptics_build_source_sha256" ] ||
     ci_die "patched AW86937 build source changed during module compilation"

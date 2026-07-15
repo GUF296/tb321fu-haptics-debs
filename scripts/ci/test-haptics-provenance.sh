@@ -202,6 +202,12 @@ grep -Fq 'verify_kernel_source_state "before package build"' \
 grep -Fq 'verify_kernel_source_state "after package build"' \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
   fail "builder omits strict post-build kernel source verification"
+grep -Fq 'verify_kernel_build_state "after host-tool preparation"' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+  fail "builder omits post-host-tool kernel build identity verification"
+grep -Fq 'verify_kernel_build_state "after external module build"' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+  fail "builder omits post-module kernel build identity verification"
 grep -Fq 'HAPTICS-SOURCE-SNAPSHOT' \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb-from-kernel-sdk.sh" ||
   fail "outer haptics archive omits the source snapshot"
