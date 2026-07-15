@@ -59,6 +59,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Validate workflow and lifecycle boundaries
         run: |
@@ -70,6 +71,8 @@ jobs:
           python3 scripts/ci/test-kernel-bundle-metadata.py
           python3 scripts/ci/test-safe-extract-archive.py
           bash scripts/ci/test-haptics-lifecycle.sh
+          bash scripts/ci/test-haptics-provenance.sh
+          bash scripts/ci/test-haptics-deb-contract.sh
           bash scripts/ci/test-release-publication.sh
 
       - name: Install dependencies
@@ -92,6 +95,7 @@ jobs:
           INPUT_KERNEL_BUNDLE_METADATA_SHA256: ${{ inputs.kernel_bundle_metadata_sha256 }}
         run: |
           set -euo pipefail
+          . scripts/ci/common.sh
           if [ -n "$INPUT_RELEASE_TAG" ] && [ "$INPUT_PRERELEASE" != 1 ]; then
             echo 'Remediation releases must set prerelease=true.' >&2
             exit 1
@@ -133,7 +137,7 @@ jobs:
           printf 'KERNEL_BUILD_ARCHIVE_SHA256=%s\n' "${INPUT_KERNEL_BUILD_ARCHIVE_SHA256,,}" >> "$GITHUB_ENV"
           printf 'KERNEL_BUNDLE_METADATA=%s\n' "$INPUT_KERNEL_BUNDLE_METADATA" >> "$GITHUB_ENV"
           printf 'KERNEL_BUNDLE_METADATA_SHA256=%s\n' "${INPUT_KERNEL_BUNDLE_METADATA_SHA256,,}" >> "$GITHUB_ENV"
-          printf 'SOURCE_DATE_EPOCH=%s\n' "$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+          printf 'SOURCE_DATE_EPOCH=%s\n' "$(ci_git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
 
       - name: Build haptics deb
         run: |
@@ -143,6 +147,7 @@ jobs:
             ARCH=arm64 \
             HAPTICS_DEB_VERSION="$HAPTICS_DEB_VERSION" \
             HAPTICS_STRIP=1 \
+            HAPTICS_PRODUCER_COMMIT="$GITHUB_SHA" \
             KERNEL_SOURCE_COMMIT="$KERNEL_SOURCE_COMMIT" \
             KERNEL_BUILD_ARCHIVE="$KERNEL_BUILD_ARCHIVE" \
             KERNEL_BUILD_ARCHIVE_SHA256="$KERNEL_BUILD_ARCHIVE_SHA256" \
@@ -166,6 +171,13 @@ jobs:
         run: |
           set -euo pipefail
           notes=out/tb321fu-haptics-debs/RELEASE-NOTES.md
+          compiled=out/tb321fu-haptics-debs/HAPTICS-COMPILED-DIGESTS.env
+          module_sha256=$(awk -F= '$1 == "HAPTICS_MODULE_SHA256" { print $2 }' "$compiled")
+          helper_sha256=$(awk -F= '$1 == "HAPTICS_HELPER_BINARY_SHA256" { print $2 }' "$compiled")
+          archive_sha256=$(awk -F= '$1 == "HAPTICS_ARCHIVE_SHA256" { print $2 }' "$compiled")
+          [[ "$module_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$helper_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ ]]
           {
             echo '# TB321FU Haptics Debs'
             echo
@@ -175,8 +187,12 @@ jobs:
             echo "- Kernel SDK SHA-256: $KERNEL_BUILD_ARCHIVE_SHA256"
             echo "- Commit: $GITHUB_SHA"
             echo "- Workflow run: $GITHUB_RUN_ID"
+            echo "- Haptics archive SHA-256: $archive_sha256"
+            echo "- Candidate HAPTICS_MODULE_SHA256: $module_sha256"
+            echo "- Candidate HAPTICS_HELPER_BINARY_SHA256: $helper_sha256"
             echo
             echo 'Static CI verifies package/lifecycle behavior; stop/suspend/resume remains a device gate.'
+            echo 'Compiled digests require a byte-identical second trusted build and independent consumer pinning.'
           } > "$notes"
           release_dir=out/tb321fu-haptics-release/assets
           mkdir -p "$release_dir"

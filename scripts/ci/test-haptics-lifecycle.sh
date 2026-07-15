@@ -6,6 +6,9 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)
 driver="$REPO_ROOT/haptics/daily-current/linux/drivers/input/misc/aw86937-y700.c"
 build_script="$SCRIPT_DIR/build-tb321fu-haptics-deb.sh"
 sdk_script="$SCRIPT_DIR/build-tb321fu-haptics-deb-from-kernel-sdk.sh"
+deb_verifier="$SCRIPT_DIR/verify-haptics-deb.sh"
+provenance_test="$SCRIPT_DIR/test-haptics-provenance.sh"
+deb_contract_test="$SCRIPT_DIR/test-haptics-deb-contract.sh"
 expected_sha=2e0cb7b739496ff6cf4011244ec9c0b2a2367896de65784041018b9d62186e48
 
 fail() {
@@ -13,7 +16,7 @@ fail() {
   exit 1
 }
 
-bash -n "$build_script" "$sdk_script"
+bash -n "$build_script" "$sdk_script" "$deb_verifier" "$provenance_test" "$deb_contract_test"
 [ "$(sha256sum "$driver" | awk '{print $1}')" = "$expected_sha" ] ||
   fail "canonical AW86937 driver source identity changed"
 grep -F "$expected_sha" "$build_script" >/dev/null ||
@@ -22,6 +25,36 @@ grep -F 'HAPTICS-SOURCE-LOCK.tsv' "$build_script" "$sdk_script" >/dev/null ||
   fail "source identity is not retained in the haptics archive"
 grep -F 'aw86937-build-source-sha256' "$build_script" >/dev/null ||
   fail "actual build-source identity is not retained"
+for token in \
+  haptics-producer-commit \
+  haptics-producer-state \
+  haptic-ram-firmware-sha256 \
+  haptic-click-firmware-sha256 \
+  haptic-test-helper-sha256 \
+  aw86937-module-sha256 \
+  haptic-test-helper-binary-sha256 \
+  HAPTICS-SOURCE-SNAPSHOT; do
+  grep -F "$token" "$build_script" >/dev/null ||
+    fail "haptics source lock omits $token"
+done
+for token in \
+  HAPTICS-PRODUCER.bundle \
+  refs/heads/tb321fu-haptics-producer \
+  verify-haptics-deb.sh \
+  ci_sanitized_git_env \
+  GIT_NO_REPLACE_OBJECTS=1 \
+  HAPTICS-COMPILED-DIGESTS.env \
+  HAPTICS_MODULE_SHA256= \
+  HAPTICS_HELPER_BINARY_SHA256= \
+  'refusing stale OUTPUT_DIR' \
+  'mv -T'; do
+  grep -F "$token" "$build_script" "$sdk_script" "$SCRIPT_DIR/common.sh" >/dev/null ||
+    fail "haptics production contract omits $token"
+done
+grep -F 'fetch-depth: 0' "$REPO_ROOT/.github/workflows/build.yml" >/dev/null ||
+  fail "workflow checkout lacks full producer history"
+grep -F 'test-haptics-deb-contract.sh' "$REPO_ROOT/.github/workflows/build.yml" >/dev/null ||
+  fail "workflow omits lightweight final DEB fixtures"
 grep -F 'wait_event_timeout(haptics->play_wait' "$driver" >/dev/null
 grep -F 'wake_up_all(&haptics->play_wait)' "$driver" >/dev/null
 grep -F 'cancel_work_sync(&haptics->play_work)' "$driver" >/dev/null
