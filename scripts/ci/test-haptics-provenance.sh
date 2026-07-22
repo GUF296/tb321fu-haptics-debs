@@ -37,7 +37,11 @@ git -C "$fixture" config user.name 'TB321FU fixture'
 git -C "$fixture" config user.email 'fixture@example.invalid'
 printf '/out/\n' > "$fixture/.gitignore"
 printf 'fixture\n' > "$fixture/source.txt"
-git -C "$fixture" add .gitignore source.txt
+install -d -m 0755 "$fixture/scripts/ci"
+printf '#!/usr/bin/env bash\nhaptics_fixture() { :; }\n' > \
+  "$fixture/scripts/ci/haptics-maintainer-scripts.sh"
+chmod 0644 "$fixture/scripts/ci/haptics-maintainer-scripts.sh"
+git -C "$fixture" add .gitignore source.txt scripts/ci/haptics-maintainer-scripts.sh
 git -C "$fixture" commit -q -m fixture
 commit=$(git -C "$fixture" rev-parse HEAD)
 exported="$tmp/exported/source.txt"
@@ -46,6 +50,12 @@ exported="$tmp/exported/source.txt"
   fail "clean exact producer commit was rejected"
 ci_export_git_file "$fixture" "$commit" source.txt "$exported"
 grep -Fxq fixture "$exported" || fail "Git blob export did not preserve committed bytes"
+contract_export="$tmp/contract-export/scripts/ci/haptics-maintainer-scripts.sh"
+ci_export_git_file "$fixture" "$commit" \
+  scripts/ci/haptics-maintainer-scripts.sh "$contract_export"
+[ -f "$contract_export" ] && [ ! -L "$contract_export" ] ||
+  fail "Git blob export did not create the nested maintainer-helper destination"
+bash -n "$contract_export" || fail "exported maintainer helper has invalid Bash syntax"
 require_failure 'source commit mismatch' \
   ci_verify_clean_git_commit "$fixture" 0000000000000000000000000000000000000000
 
@@ -224,6 +234,34 @@ grep -Fq 'fetch-depth: 0' "$REPO_ROOT/.github/workflows/build.yml" ||
   fail "workflow does not fetch complete producer history for the bundle"
 grep -Fq 'ci_git show -s --format=%ct HEAD' "$REPO_ROOT/.github/workflows/build.yml" ||
   fail "workflow timestamp derivation bypasses sanitized Git"
+
+for relative in \
+  scripts/ci/haptics-maintainer-scripts.sh \
+  scripts/ci/haptics-control-templates/postinst.in \
+  scripts/ci/haptics-control-templates/prerm.in \
+  scripts/ci/haptics-control-templates/postrm.in; do
+  [ -f "$REPO_ROOT/$relative" ] && [ ! -L "$REPO_ROOT/$relative" ] ||
+    fail "producer maintainer-script contract is missing: $relative"
+done
+grep -Fq '. "$SCRIPT_DIR/haptics-maintainer-scripts.sh"' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+  fail "producer builder does not source the maintainer-script helper"
+grep -Fq 'validate_haptics_maintainer_source_contract' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+  fail "producer builder does not validate the frozen maintainer-script contract"
+grep -Fq 'ci_export_git_file "$haptics_root" "$EXPECTED_HAPTICS_PRODUCER_COMMIT"' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+  fail "producer builder does not export the maintainer contract from the verified commit"
+grep -Fq 'local helper="$contract_root/scripts/ci/haptics-maintainer-scripts.sh"' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+  fail "producer builder does not inspect the exported maintainer helper path"
+if grep -Fq 'HAPTICS_MAINTAINER_TEMPLATE_DIR=${' \
+  "$SCRIPT_DIR/haptics-maintainer-scripts.sh"; then
+  fail "producer maintainer helper accepts an inherited template directory"
+fi
+grep -Fq '$(dirname -- "${BASH_SOURCE[0]}")/haptics-control-templates' \
+  "$SCRIPT_DIR/haptics-maintainer-scripts.sh" ||
+  fail "producer maintainer helper does not derive templates from its own committed directory"
 
 sdk_script="$SCRIPT_DIR/build-tb321fu-haptics-deb-from-kernel-sdk.sh"
 if grep -Fq './*.deb' "$sdk_script"; then

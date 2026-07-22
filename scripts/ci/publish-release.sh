@@ -31,13 +31,25 @@ release_kind=prerelease
 }
 [ -d "$release_dir" ] || { printf 'release directory not found: %s\n' "$release_dir" >&2; exit 1; }
 [ -f "$notes_file" ] || { printf 'release notes not found: %s\n' "$notes_file" >&2; exit 1; }
+notes_asset="$release_dir/BUILD-PARAMETERS.md"
 
-for command_name in gh curl sha256sum stat find sort awk grep uniq wc seq sleep; do
+for command_name in gh curl sha256sum stat find sort awk grep uniq wc seq sleep base64 cmp; do
   command -v "$command_name" >/dev/null || {
     printf 'required command not found: %s\n' "$command_name" >&2
     exit 1
   }
 done
+
+[ -f "$notes_asset" ] || {
+  printf 'release asset BUILD-PARAMETERS.md is required\n' >&2
+  exit 1
+}
+cmp -s "$notes_file" "$notes_asset" || {
+  printf 'release notes must match assets/BUILD-PARAMETERS.md exactly\n' >&2
+  exit 1
+}
+release_title=$release_tag
+notes_body_b64=$(base64 -w 0 "$notes_file")
 
 entry_count=$(find "$release_dir" -mindepth 1 -maxdepth 1 -printf . | wc -c)
 regular_count=$(find "$release_dir" -mindepth 1 -maxdepth 1 -type f -printf . | wc -c)
@@ -102,7 +114,7 @@ fetch_release_snapshot() {
   local release_id=$1
 
   gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq \
-    '(["release", (.id | tostring), (.draft | tostring), .tag_name, .target_commitish, (.prerelease | tostring)], (.assets[] | ["asset", .name, (.size | tostring), (.digest // "")])) | @tsv'
+    '(["release", (.id | tostring), (.draft | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets[] | ["asset", .name, (.size | tostring), (.digest // "")])) | @tsv'
 }
 
 verify_release_snapshot() {
@@ -111,20 +123,24 @@ verify_release_snapshot() {
   local expected_draft=$3
   local expected_target=$4
   local expected_prerelease=$5
-  local verify_assets=$6
-  local metadata actual_kind actual_id actual_draft actual_tag actual_target actual_prerelease
+  local expected_title=$6
+  local expected_body_b64=$7
+  local verify_assets=$8
+  local metadata actual_kind actual_id actual_draft actual_tag actual_target actual_prerelease actual_title actual_body_b64
   local remote_assets remote_count expected_count expected_record
   local expected_name expected_size expected_digest remote_record
 
   metadata=$(printf '%s\n' "$snapshot" | awk -F '\t' \
     '$1 == "release" { print; found++ } END { if (found != 1) exit 1 }') || return 1
-  IFS=$'\t' read -r actual_kind actual_id actual_draft actual_tag actual_target actual_prerelease <<< "$metadata"
+  IFS=$'\t' read -r actual_kind actual_id actual_draft actual_tag actual_target actual_prerelease actual_title actual_body_b64 <<< "$metadata"
   [ "$actual_kind" = release ] || return 1
   [ "$actual_id" = "$expected_release_id" ] || return 1
   [ "$actual_draft" = "$expected_draft" ] || return 1
   [ "$actual_tag" = "$release_tag" ] || return 1
   [ "$actual_target" = "$expected_target" ] || return 1
   [ "$actual_prerelease" = "$expected_prerelease" ] || return 1
+  [ "$actual_title" = "$expected_title" ] || return 1
+  [ "$actual_body_b64" = "$expected_body_b64" ] || return 1
   [ "$verify_assets" = 1 ] || return 0
 
   remote_assets=$(printf '%s\n' "$snapshot" | awk -F '\t' \
@@ -208,15 +224,15 @@ verify_tag_target || exit 1
 release_record=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
   -f "tag_name=$release_tag" \
   -f "target_commitish=$GITHUB_SHA" \
-  -f "name=$release_tag" \
+  -f "name=$release_title" \
   -F "body=@$notes_file" \
   -F draft=true -F prerelease=false --jq \
-  '[.id, .tag_name, (.draft | tostring), .target_commitish, (.prerelease | tostring)] | @tsv') || {
+  '[.id, .tag_name, (.draft | tostring), .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv') || {
   printf 'cannot create the draft release\n' >&2
   exit 1
 }
 IFS=$'\t' read -r release_id created_tag created_draft \
-  release_target_commitish created_prerelease <<< "$release_record"
+  release_target_commitish created_prerelease created_title created_body_b64 <<< "$release_record"
 [[ $release_id =~ ^[0-9]+$ ]] || {
   printf 'release API returned an invalid id: %s\n' "$release_id" >&2
   exit 1
@@ -233,6 +249,14 @@ IFS=$'\t' read -r release_id created_tag created_draft \
   printf 'release API created an unexpected prerelease state\n' >&2
   exit 1
 }
+[ "$created_title" = "$release_title" ] || {
+  printf 'release API returned an unexpected title: %s\n' "$created_title" >&2
+  exit 1
+}
+[ "$created_body_b64" = "$notes_body_b64" ] || {
+  printf 'release API returned an unexpected release body\n' >&2
+  exit 1
+}
 [ -n "$release_target_commitish" ] || {
   printf 'release API returned an empty target_commitish\n' >&2
   exit 1
@@ -240,7 +264,7 @@ IFS=$'\t' read -r release_id created_tag created_draft \
 verify_tag_target || exit 1
 initial_snapshot=$(fetch_release_snapshot "$release_id")
 verify_release_snapshot "$initial_snapshot" "$release_id" true \
-  "$release_target_commitish" false 0 || {
+  "$release_target_commitish" false "$release_title" "$notes_body_b64" 0 || {
   printf 'draft release identity/state changed before asset upload\n' >&2
   printf '%s\n' "$initial_snapshot" >&2
   exit 1
@@ -263,7 +287,7 @@ remote_snapshot=
 for attempt in $(seq 1 10); do
   if remote_snapshot=$(fetch_release_snapshot "$release_id") && \
     verify_release_snapshot "$remote_snapshot" "$release_id" true \
-      "$release_target_commitish" false 1; then
+      "$release_target_commitish" false "$release_title" "$notes_body_b64" 1; then
     verified=true
   fi
   $verified && break
@@ -278,7 +302,7 @@ $verified || {
 
 final_snapshot=$(fetch_release_snapshot "$release_id")
 verify_release_snapshot "$final_snapshot" "$release_id" true \
-  "$release_target_commitish" false 1 || {
+  "$release_target_commitish" false "$release_title" "$notes_body_b64" 1 || {
   printf 'release changed concurrently after upload verification; release remains draft\n' >&2
   printf '%s\n' "$final_snapshot" >&2
   exit 1
@@ -291,7 +315,7 @@ gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
   -F draft=false -F prerelease="$publish_prerelease" -F make_latest="$publish_make_latest" >/dev/null
 published_snapshot=$(fetch_release_snapshot "$release_id")
 verify_release_snapshot "$published_snapshot" "$release_id" false \
-  "$release_target_commitish" "$publish_prerelease" 1 || {
+  "$release_target_commitish" "$publish_prerelease" "$release_title" "$notes_body_b64" 1 || {
   printf '%s did not reach the expected immutable public state after final PATCH\n' "$release_kind" >&2
   printf '%s\n' "$published_snapshot" >&2
   exit 1

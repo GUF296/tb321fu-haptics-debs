@@ -1,0 +1,89 @@
+#!/bin/sh
+set -eu
+
+KERNEL_RELEASE=@KERNEL_RELEASE@
+
+die()
+{
+	printf '%s\n' "tb321fu-haptics postrm: $*" >&2
+	exit 1
+}
+
+ROOT=${DPKG_ROOT:-}
+case "$ROOT" in
+	''|/*) ;;
+	*) die 'DPKG_ROOT must be empty or absolute' ;;
+esac
+
+root_path()
+{
+	printf '%s%s\n' "$ROOT" "$1"
+}
+
+require_command()
+{
+	command -v "$1" >/dev/null 2>&1 || die "required command is unavailable: $1"
+}
+
+run_systemctl()
+{
+	if [ -n "$ROOT" ]; then
+		systemctl "--root=$ROOT" "$@"
+	else
+		systemctl "$@"
+	fi
+}
+
+systemd_manager_running()
+{
+	[ -z "$ROOT" ] && [ -d /run/systemd/system ]
+}
+
+remove_managed_want()
+{
+	want=$(root_path "/etc/systemd/system/multi-user.target.wants/$1")
+	if [ -L "$want" ]; then
+		rm -f -- "$want"
+	elif [ -e "$want" ]; then
+		die "refusing to remove non-symlink systemd want: $want"
+	fi
+}
+
+reload_systemd_if_running()
+{
+	if systemd_manager_running; then
+		run_systemctl daemon-reload
+	fi
+}
+
+reload_udev_if_running()
+{
+	if [ -z "$ROOT" ] && [ -S /run/udev/control ]; then
+		require_command udevadm
+		udevadm control --reload-rules
+	fi
+}
+
+depmod_target()
+{
+	if [ -n "$ROOT" ]; then
+		depmod -b "$ROOT" -a "$KERNEL_RELEASE"
+	else
+		depmod -a "$KERNEL_RELEASE"
+	fi
+}
+
+case "${1:-}" in
+	remove|purge) ;;
+	*) exit 0 ;;
+esac
+
+remove_managed_want tb321fu-haptics.service
+reload_systemd_if_running
+reload_udev_if_running
+
+modules_dir=$(root_path "/usr/lib/modules/$KERNEL_RELEASE")
+if [ -d "$modules_dir" ]; then
+	require_command depmod
+	depmod_target
+fi

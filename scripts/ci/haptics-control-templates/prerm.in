@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+KERNEL_RELEASE=@KERNEL_RELEASE@
+
+die()
+{
+	printf '%s\n' "tb321fu-haptics prerm: $*" >&2
+	exit 1
+}
+
+ROOT=${DPKG_ROOT:-}
+case "$ROOT" in
+	''|/*) ;;
+	*) die 'DPKG_ROOT must be empty or absolute' ;;
+esac
+
+run_systemctl()
+{
+	if [ -n "$ROOT" ]; then
+		systemctl "--root=$ROOT" "$@"
+	else
+		systemctl "$@"
+	fi
+}
+
+systemd_manager_running()
+{
+	[ -z "$ROOT" ] && [ -d /run/systemd/system ]
+}
+
+case "${1:-}" in
+	remove|deconfigure) ;;
+	*) exit 0 ;;
+esac
+
+if systemd_manager_running; then
+	command -v systemctl >/dev/null 2>&1 || die 'required command is unavailable: systemctl'
+	run_systemctl stop tb321fu-haptics.service
+fi

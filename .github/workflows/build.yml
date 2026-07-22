@@ -52,7 +52,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04-arm
     permissions:
-      contents: write
+      contents: read
     timeout-minutes: 90
     steps:
       - name: Checkout
@@ -70,6 +70,8 @@ jobs:
           python3 scripts/ci/check-action-pins.py .github/workflows/build.yml
           python3 scripts/ci/test-kernel-bundle-metadata.py
           python3 scripts/ci/test-safe-extract-archive.py
+          python3 scripts/ci/test-haptics-release-job-isolation.py --self-test
+          python3 scripts/ci/test-haptics-release-job-isolation.py .github/workflows/build.yml
           bash scripts/ci/test-haptics-lifecycle.sh
           bash scripts/ci/test-haptics-provenance.sh
           bash scripts/ci/test-haptics-deb-contract.sh
@@ -162,15 +164,13 @@ jobs:
           name: tb321fu-haptics-debs-${{ inputs.haptics_deb_version }}-arm64
           path: out/tb321fu-haptics-debs/*
 
-      - name: Upload release assets
+      - name: Stage release assets
         if: ${{ inputs.release_tag != '' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          PRERELEASE: ${{ inputs.prerelease && '1' || '0' }}
         run: |
           set -euo pipefail
-          notes=out/tb321fu-haptics-debs/RELEASE-NOTES.md
+          release_stage=out/tb321fu-haptics-release/release-staging
+          release_dir="$release_stage/assets"
+          notes="$release_dir/BUILD-PARAMETERS.md"
           compiled=out/tb321fu-haptics-debs/HAPTICS-COMPILED-DIGESTS.env
           module_sha256=$(awk -F= '$1 == "HAPTICS_MODULE_SHA256" { print $2 }' "$compiled")
           helper_sha256=$(awk -F= '$1 == "HAPTICS_HELPER_BINARY_SHA256" { print $2 }' "$compiled")
@@ -178,6 +178,7 @@ jobs:
           [[ "$module_sha256" =~ ^[0-9a-f]{64}$ ]]
           [[ "$helper_sha256" =~ ^[0-9a-f]{64}$ ]]
           [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ ]]
+          mkdir -p "$release_dir"
           {
             echo '# TB321FU Haptics Debs'
             echo
@@ -194,8 +195,6 @@ jobs:
             echo 'Static CI verifies package/lifecycle behavior; stop/suspend/resume remains a device gate.'
             echo 'Compiled digests require a byte-identical second trusted build and independent consumer pinning.'
           } > "$notes"
-          release_dir=out/tb321fu-haptics-release/assets
-          mkdir -p "$release_dir"
           install -m 0644 \
             "out/tb321fu-haptics-debs/tb321fu-haptics-debs_${HAPTICS_DEB_VERSION}_arm64.tar.gz" \
             out/tb321fu-haptics-debs/HAPTICS-SOURCE-LOCK.tsv \
@@ -206,6 +205,52 @@ jobs:
             sha256sum -- \
               "tb321fu-haptics-debs_${HAPTICS_DEB_VERSION}_arm64.tar.gz" \
               HAPTICS-SOURCE-LOCK.tsv \
-              SHA256SUMS-tb321fu-haptics-debs.txt > SHA256SUMS.txt
+              SHA256SUMS-tb321fu-haptics-debs.txt \
+              BUILD-PARAMETERS.md > SHA256SUMS.txt
           )
+
+      - name: Upload staged release payload
+        if: ${{ inputs.release_tag != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-staging-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/tb321fu-haptics-release/release-staging
+          if-no-files-found: error
+
+  publish:
+    if: ${{ inputs.release_tag != '' }}
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download staged release payload
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-staging-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-staging
+
+      - name: Publish immutable prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PRERELEASE: ${{ inputs.prerelease && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || {
+            echo 'checked-out source does not match the workflow commit' >&2
+            exit 1
+          }
+          release_dir=release-staging/assets
+          notes=release-staging/assets/BUILD-PARAMETERS.md
+          [ -d "$release_dir" ]
+          [ -f "$notes" ]
+          find "$release_dir" -maxdepth 1 -type f -print -quit | grep -q .
           bash scripts/ci/publish-release.sh "$RELEASE_TAG" "$release_dir" "$notes"

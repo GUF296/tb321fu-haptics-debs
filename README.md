@@ -53,6 +53,11 @@ commit-bound SDK and bundle. The release tag defaults to empty; when explicitly 
 publication uses a prerelease by default and refuses to modify an existing
 public release.
 
+Each prerelease also includes `BUILD-PARAMETERS.md` as a checksum-covered
+release asset. The publisher uses those exact bytes as the release body and
+verifies the release title and body before upload, before publication, and after
+publication.
+
 The SDK wrapper also emits deterministic `HAPTICS-COMPILED-DIGESTS.env` lines
 for `HAPTICS_PRODUCER_COMMIT`, `HAPTICS_DEB_SHA256`,
 `HAPTICS_ARCHIVE_SHA256`, `HAPTICS_MODULE_SHA256`, and

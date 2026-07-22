@@ -5,6 +5,7 @@ export LC_ALL=C
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 . "$SCRIPT_DIR/common.sh"
+. "$SCRIPT_DIR/haptics-maintainer-scripts.sh"
 
 usage() {
   cat <<USAGE
@@ -53,6 +54,8 @@ ci_require_cmd aarch64-linux-gnu-strip
 ci_require_cmd modinfo
 ci_require_cmd dpkg
 ci_require_cmd cmp
+ci_require_cmd dash
+ci_require_cmd bash
 
 OUTPUT_DIR=${OUTPUT_DIR:-out/tb321fu-haptics-debs}
 ARCH=${ARCH:-arm64}
@@ -257,6 +260,8 @@ prepare_inputs() {
 
   load_kernel_bundle_metadata
   kernel_release=$(cat "$kernel_build_root/include/config/kernel.release")
+  haptics_validate_kernel_release "$kernel_release" ||
+    ci_die "unsafe kernel release from kernel build output: $kernel_release"
   if [ "$kernel_bundle_id" != unbound ]; then
     [ "$kernel_release" = "$kernel_bundle_release" ] || ci_die "kernel release differs from KERNEL-BUNDLE.tsv"
     [ "$(sha256sum "$kernel_build_root/.config" | awk '{print $1}')" = "$kernel_bundle_config_sha256" ] ||
@@ -285,6 +290,55 @@ verify_haptics_producer_state() {
   haptics_producer_commit=$actual
   haptics_producer_state=clean
   ci_log "haptics producer state verified $phase: $actual"
+}
+
+validate_haptics_maintainer_source_contract() {
+  local contract_root="$work_dir/haptics-maintainer-contract"
+  local helper="$contract_root/scripts/ci/haptics-maintainer-scripts.sh"
+  local relative exported local_path token template rendered
+  local -a required=(
+    scripts/ci/haptics-maintainer-scripts.sh
+    scripts/ci/haptics-control-templates/postinst.in
+    scripts/ci/haptics-control-templates/prerm.in
+    scripts/ci/haptics-control-templates/postrm.in
+  )
+
+  [ "$(realpath -e -- "$SCRIPT_DIR")" = \
+    "$(realpath -e -- "$haptics_root/scripts/ci")" ] ||
+    ci_die "haptics maintainer scripts are not from the verified producer root"
+  for relative in "${required[@]}"; do
+    local_path="$haptics_root/$relative"
+    exported="$contract_root/$relative"
+    [ -f "$local_path" ] && [ ! -L "$local_path" ] ||
+      ci_die "missing regular haptics maintainer contract file: $relative"
+    ci_export_git_file "$haptics_root" "$EXPECTED_HAPTICS_PRODUCER_COMMIT" \
+      "$relative" "$exported" "$HAPTICS_GIT_DIR"
+    cmp -s "$local_path" "$exported" ||
+      ci_die "haptics maintainer contract differs from the verified producer commit: $relative"
+  done
+
+  bash -n "$helper" ||
+    ci_die "haptics maintainer helper has invalid Bash syntax"
+  if grep -Fq 'HAPTICS_MAINTAINER_TEMPLATE_DIR=${' "$helper"; then
+    ci_die "haptics maintainer helper must not allow an environment template override"
+  fi
+  grep -Fq '$(dirname -- "${BASH_SOURCE[0]}")/haptics-control-templates' "$helper" ||
+    ci_die "haptics maintainer helper must derive templates from its committed location"
+  for token in \
+    haptics_validate_kernel_release \
+    haptics_render_maintainer_template \
+    haptics_write_maintainer_scripts \
+    HAPTICS_MAINTAINER_TEMPLATE_DIR; do
+    grep -Fq -- "$token" "$helper" ||
+      ci_die "haptics maintainer helper lacks required contract token: $token"
+  done
+  for template in postinst prerm postrm; do
+    rendered="$contract_root/rendered-$template"
+    haptics_render_maintainer_template \
+      "$contract_root/scripts/ci/haptics-control-templates/$template.in" \
+      "$rendered" "$kernel_release" ||
+      ci_die "cannot render verified haptics maintainer template: $template"
+  done
 }
 
 verify_kernel_source_state() {
@@ -425,6 +479,8 @@ patch_source_for_standard_module_name() {
 write_control() {
   local pkgdir=$1
 
+  # Source-built kernel releases do not reliably map to a distro kernel package
+  # version. postinst verifies the module's embedded vermagic instead.
   mkdir -p "$pkgdir/DEBIAN"
   cat > "$pkgdir/DEBIAN/control" <<EOF_CONTROL
 Package: tb321fu-haptics
@@ -440,50 +496,6 @@ Description: AW86937 haptics support for Lenovo Legion Y700 TB321FU
  Source-built AW86937 force-feedback haptics module, firmware, feedbackd udev
  integration and TB321FU boot-time binding glue.
 EOF_CONTROL
-}
-
-write_maintainer_scripts() {
-  local pkgdir=$1
-
-  cat > "$pkgdir/DEBIAN/postinst" <<'EOF_POSTINST'
-#!/bin/sh
-set -e
-
-if command -v depmod >/dev/null 2>&1; then
-  depmod -a || true
-fi
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl stop y700-aw86937-haptics.service >/dev/null 2>&1 || true
-  systemctl disable y700-aw86937-haptics.service >/dev/null 2>&1 || true
-  rm -f /etc/systemd/system/y700-aw86937-haptics.service
-  rm -f /etc/udev/rules.d/90-y700-haptics.rules
-  rm -f /usr/local/sbin/y700-aw86937-bind
-  systemctl daemon-reload || true
-  systemctl enable tb321fu-haptics.service >/dev/null 2>&1 || true
-fi
-if command -v udevadm >/dev/null 2>&1; then
-  udevadm control --reload-rules || true
-fi
-exit 0
-EOF_POSTINST
-
-  cat > "$pkgdir/DEBIAN/postrm" <<'EOF_POSTRM'
-#!/bin/sh
-set -e
-
-if command -v depmod >/dev/null 2>&1; then
-  depmod -a || true
-fi
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl daemon-reload || true
-fi
-if command -v udevadm >/dev/null 2>&1; then
-  udevadm control --reload-rules || true
-fi
-exit 0
-EOF_POSTRM
-
-  chmod 0755 "$pkgdir/DEBIAN/postinst" "$pkgdir/DEBIAN/postrm"
 }
 
 write_bind_script() {
@@ -745,7 +757,7 @@ EOF_MAKE
   haptics_test_helper_binary_sha256=$(sha256sum \
     "$pkg/usr/bin/tb321fu-haptic-test" | awk '{print $1}')
   write_control "$pkg"
-  write_maintainer_scripts "$pkg"
+  haptics_write_maintainer_scripts "$pkg" "$kernel_release"
 
   find "$pkg" -type d -exec chmod 0755 {} +
   find "$pkg" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
@@ -889,6 +901,7 @@ finalize_haptics_output() {
 
 prepare_inputs
 verify_haptics_producer_state "before package build"
+validate_haptics_maintainer_source_contract
 prepare_haptics_source_snapshot
 create_haptics_producer_bundle
 prepare_kernel_host_tools

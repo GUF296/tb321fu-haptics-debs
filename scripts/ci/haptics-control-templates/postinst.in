@@ -1,0 +1,145 @@
+#!/bin/sh
+set -eu
+
+KERNEL_RELEASE=@KERNEL_RELEASE@
+
+die()
+{
+	printf '%s\n' "tb321fu-haptics postinst: $*" >&2
+	exit 1
+}
+
+ROOT=${DPKG_ROOT:-}
+case "$ROOT" in
+	''|/*) ;;
+	*) die 'DPKG_ROOT must be empty or absolute' ;;
+esac
+
+root_path()
+{
+	printf '%s%s\n' "$ROOT" "$1"
+}
+
+require_command()
+{
+	command -v "$1" >/dev/null 2>&1 || die "required command is unavailable: $1"
+}
+
+run_systemctl()
+{
+	if [ -n "$ROOT" ]; then
+		systemctl "--root=$ROOT" "$@"
+	else
+		systemctl "$@"
+	fi
+}
+
+systemd_manager_running()
+{
+	[ -z "$ROOT" ] && [ -d /run/systemd/system ]
+}
+
+reload_systemd_if_running()
+{
+	if systemd_manager_running; then
+		run_systemctl daemon-reload
+	fi
+}
+
+reload_udev_if_running()
+{
+	if [ -z "$ROOT" ] && [ -S /run/udev/control ]; then
+		require_command udevadm
+		udevadm control --reload-rules
+	fi
+}
+
+depmod_target()
+{
+	if [ -n "$ROOT" ]; then
+		depmod -b "$ROOT" -a "$KERNEL_RELEASE"
+	else
+		depmod -a "$KERNEL_RELEASE"
+	fi
+}
+
+verify_target_module()
+{
+	module_path=$(root_path "/usr/lib/modules/$KERNEL_RELEASE/extra/aw86937-haptics.ko")
+	[ -f "$module_path" ] && [ ! -L "$module_path" ] ||
+		die "missing regular module for verified kernel release: $module_path"
+	vermagic=$(modinfo -F vermagic "$module_path") ||
+		die "cannot read module vermagic: $module_path"
+	case "$vermagic" in
+		"$KERNEL_RELEASE"|"$KERNEL_RELEASE "*) ;;
+		*) die "module vermagic does not match verified kernel release: $vermagic" ;;
+	esac
+}
+
+legacy_payload_present()
+{
+	for legacy_path in \
+		/etc/systemd/system/y700-aw86937-haptics.service \
+		/etc/systemd/system/multi-user.target.wants/y700-aw86937-haptics.service \
+		/usr/lib/systemd/system/y700-aw86937-haptics.service \
+		/lib/systemd/system/y700-aw86937-haptics.service \
+		/etc/udev/rules.d/90-y700-haptics.rules \
+		/usr/lib/udev/rules.d/90-y700-haptics.rules \
+		/usr/local/bin/y700-aw86937-bind \
+		/usr/local/sbin/y700-aw86937-bind; do
+		if [ -e "$(root_path "$legacy_path")" ] || [ -L "$(root_path "$legacy_path")" ]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+record_managed_want_state()
+{
+	managed_want=$1
+	if [ -L "$managed_want" ]; then
+		managed_want_preexisting=1
+	elif [ -e "$managed_want" ]; then
+		die "refusing to replace non-symlink systemd want: $managed_want"
+	else
+		managed_want_preexisting=0
+	fi
+}
+
+rollback_new_managed_want()
+{
+	[ "$managed_want_preexisting" = 0 ] || return 0
+	if [ -L "$managed_want" ]; then
+		rm -f -- "$managed_want" ||
+			die "cannot remove newly created systemd want: $managed_want"
+	elif [ -e "$managed_want" ]; then
+		die "refusing to remove non-symlink systemd want: $managed_want"
+	fi
+}
+
+case "${1:-}" in
+	configure) ;;
+	*) exit 0 ;;
+esac
+
+require_command depmod
+require_command modinfo
+require_command systemctl
+verify_target_module
+if legacy_payload_present; then
+	die 'legacy Y700 haptics payload remains; install the matching migrated daily package before tb321fu-haptics'
+fi
+
+depmod_target
+reload_systemd_if_running
+reload_udev_if_running
+record_managed_want_state \
+	"$(root_path /etc/systemd/system/multi-user.target.wants/tb321fu-haptics.service)"
+if ! run_systemctl enable tb321fu-haptics.service; then
+	rollback_new_managed_want
+	die 'cannot enable tb321fu-haptics.service'
+fi
+if ! run_systemctl is-enabled --quiet tb321fu-haptics.service; then
+	rollback_new_managed_want
+	die 'tb321fu-haptics.service is not enabled after enablement'
+fi

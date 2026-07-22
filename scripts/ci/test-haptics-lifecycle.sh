@@ -9,6 +9,9 @@ sdk_script="$SCRIPT_DIR/build-tb321fu-haptics-deb-from-kernel-sdk.sh"
 deb_verifier="$SCRIPT_DIR/verify-haptics-deb.sh"
 provenance_test="$SCRIPT_DIR/test-haptics-provenance.sh"
 deb_contract_test="$SCRIPT_DIR/test-haptics-deb-contract.sh"
+package_lifecycle_test="$SCRIPT_DIR/test-haptics-package-lifecycle.sh"
+systemd_unit_test="$SCRIPT_DIR/test-haptics-systemd-unit.sh"
+dpkg_lifecycle_test="$SCRIPT_DIR/test-haptics-dpkg-lifecycle.sh"
 expected_sha=2e0cb7b739496ff6cf4011244ec9c0b2a2367896de65784041018b9d62186e48
 
 fail() {
@@ -16,7 +19,9 @@ fail() {
   exit 1
 }
 
-bash -n "$build_script" "$sdk_script" "$deb_verifier" "$provenance_test" "$deb_contract_test"
+bash -n "$build_script" "$sdk_script" "$deb_verifier" "$provenance_test" "$deb_contract_test" \
+  "$package_lifecycle_test" "$systemd_unit_test" "$dpkg_lifecycle_test" \
+  "$SCRIPT_DIR/haptics-maintainer-scripts.sh"
 [ "$(sha256sum "$driver" | awk '{print $1}')" = "$expected_sha" ] ||
   fail "canonical AW86937 driver source identity changed"
 grep -F "$expected_sha" "$build_script" >/dev/null ||
@@ -65,6 +70,9 @@ grep -F '.shutdown = aw86937_y700_shutdown' "$driver" >/dev/null
 if grep -Eq 'msleep\((duration_ms|play_ms)\)' "$driver"; then
   fail "AW86937 driver contains an uninterruptible effect-duration wait"
 fi
+bash "$package_lifecycle_test"
+bash "$systemd_unit_test"
+bash "$dpkg_lifecycle_test"
 
 python3 - "$driver" <<'PY'
 from __future__ import annotations

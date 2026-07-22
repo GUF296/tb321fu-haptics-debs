@@ -5,6 +5,7 @@ export LC_ALL=C
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 verifier="$SCRIPT_DIR/verify-haptics-deb.sh"
+. "$SCRIPT_DIR/haptics-maintainer-scripts.sh"
 kernel_release=test-kernel
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/tb321fu-haptics-deb-contract.XXXXXX")
@@ -47,10 +48,10 @@ create_package_tree() {
     'Version: 1' \
     'Architecture: arm64' \
     'Maintainer: fixture <fixture@example.invalid>' \
+    'Depends: kmod, systemd, udev' \
     'Description: fixture' \
     > "$root/DEBIAN/control"
-  printf '#!/bin/sh\nexit 0\n' > "$root/DEBIAN/postinst"
-  printf '#!/bin/sh\nexit 0\n' > "$root/DEBIAN/postrm"
+  haptics_write_maintainer_scripts "$root" "$kernel_release"
   printf 'keyboard\n' > "$root/etc/skel/.config/plasmakeyboardrc"
   printf '#!/bin/sh\nexit 0\n' > "$root/usr/bin/tb321fu-haptic-test"
   printf 'click firmware\n' > "$root/usr/lib/firmware/haptic_click.bin"
@@ -60,9 +61,9 @@ create_package_tree() {
   printf 'rules\n' > "$root/usr/lib/udev/rules.d/90-tb321fu-haptics.rules"
   printf '#!/bin/sh\nexit 0\n' > "$root/usr/libexec/tb321fu-haptics/bind-aw86937"
   chmod 0644 "$root/DEBIAN/control"
-  chmod 0755 "$root/DEBIAN/postinst" "$root/DEBIAN/postrm"
+  chmod 0755 "$root/DEBIAN/postinst" "$root/DEBIAN/prerm" "$root/DEBIAN/postrm"
   find "$root" -type d -exec chmod 0755 {} +
-  find "$root" -type f ! -path '*/DEBIAN/postinst' ! -path '*/DEBIAN/postrm' \
+  find "$root" -type f ! -path '*/DEBIAN/postinst' ! -path '*/DEBIAN/prerm' ! -path '*/DEBIAN/postrm' \
     ! -path '*/usr/bin/tb321fu-haptic-test' \
     ! -path '*/usr/libexec/tb321fu-haptics/bind-aw86937' -exec chmod 0644 {} +
   chmod 0755 \
@@ -127,6 +128,23 @@ printf 'mutated ram firmware\n' > "$wrong_bytes/usr/lib/firmware/haptic_ram.bin"
 build_deb "$wrong_bytes" "$tmp/wrong-bytes.deb"
 require_failure 'changed payload bytes' \
   bash "$verifier" "$pkg" "$tmp/wrong-bytes.deb" "$kernel_release" \
+  "$ram_sha" "$click_sha" "$module_sha" "$helper_sha"
+
+missing_runtime_dep="$tmp/missing-runtime-dep"
+cp -a "$pkg" "$missing_runtime_dep"
+sed -i 's/^Depends: .*/Depends: kmod, udev/' "$missing_runtime_dep/DEBIAN/control"
+build_deb "$missing_runtime_dep" "$tmp/missing-runtime-dep.deb"
+require_failure 'lacks required runtime dependency: systemd' \
+  bash "$verifier" "$missing_runtime_dep" "$tmp/missing-runtime-dep.deb" "$kernel_release" \
+  "$ram_sha" "$click_sha" "$module_sha" "$helper_sha"
+
+guessed_kernel_dep="$tmp/guessed-kernel-dep"
+cp -a "$pkg" "$guessed_kernel_dep"
+sed -i 's/^Depends: .*/Depends: kmod, systemd, udev, linux-image-test-kernel/' \
+  "$guessed_kernel_dep/DEBIAN/control"
+build_deb "$guessed_kernel_dep" "$tmp/guessed-kernel-dep.deb"
+require_failure 'must not guess a distro kernel package ABI dependency' \
+  bash "$verifier" "$guessed_kernel_dep" "$tmp/guessed-kernel-dep.deb" "$kernel_release" \
   "$ram_sha" "$click_sha" "$module_sha" "$helper_sha"
 
 printf 'HAPTICS_DEB_FIXTURES=PASS\n'
