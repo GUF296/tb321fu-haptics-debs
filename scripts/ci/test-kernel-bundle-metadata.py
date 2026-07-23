@@ -15,10 +15,21 @@ SCRIPT = pathlib.Path(__file__).with_name("verify-kernel-bundle.py")
 
 def make_bundle(**overrides: str) -> bytes:
     fields = [
-        ("schema", "tb321fu.kernel-bundle/v1"),
+        ("schema", "tb321fu.kernel-bundle/v2"),
         ("kernel-source-commit", "1" * 40),
         ("kernel-release", "7.1.1-g111111111111"),
         ("kernel-config-sha256", "2" * 64),
+        ("kernel-image-sha256", "3" * 64),
+        ("kernel-dtb-name", "sm8650-lenovo-tb321fu.dtb"),
+        ("kernel-dtb-sha256", "4" * 64),
+        ("kernel-modules-deb-sha256", "5" * 64),
+        ("kernel-modules-manifest-sha256", "6" * 64),
+        ("kernel-sdk-archive-sha256", "7" * 64),
+        ("kernel-sdk-manifest-sha256", "8" * 64),
+        ("kernel-toolchain-manifest-sha256", "9" * 64),
+        ("kbuild-flags-sha256", "a" * 64),
+        ("rustc-sha256", "b" * 64),
+        ("rustc", "rustc 1.80.1 (3f5fd8dd4 2025-01-01)"),
         ("source-date-epoch", "1784073600"),
         ("kbuild-build-timestamp", "2026-07-15 00:00:00 UTC"),
         ("kbuild-build-user", "tb321fu-ci"),
@@ -67,6 +78,8 @@ def main() -> None:
             str(identical),
             "--expect",
             "kernel-release=7.1.1-g111111111111",
+            "--expect",
+            "kernel-sdk-archive-sha256=" + "7" * 64,
             "--emit-tsv",
         )
         if result.returncode or result.stdout != valid:
@@ -94,6 +107,26 @@ def main() -> None:
         )
         require_failure(
             bundle,
+            make_bundle(**{"kernel-sdk-archive-sha256": "not-a-digest"}),
+            b"invalid kernel-sdk-archive-sha256",
+        )
+        require_failure(
+            bundle,
+            valid.replace(
+                b"schema\ttb321fu.kernel-bundle/v2",
+                b"schema\ttb321fu.kernel-bundle/v1",
+                1,
+            ),
+            b"invalid schema",
+        )
+        require_failure(
+            bundle,
+            valid.replace(b"kernel-sdk-archive-sha256\t", b"", 1),
+            b"field 10 must contain exactly one tab",
+        )
+        require_failure(bundle, valid + b"x" * 8192, b"bundle exceeds")
+        require_failure(
+            bundle,
             make_bundle(**{"kernel-bundle-id": "0" * 64}),
             b"kernel-bundle-id mismatch",
         )
@@ -107,6 +140,9 @@ def main() -> None:
         result = run(bundle, "--expect", "kernel-release=7.1.1-wrong")
         if result.returncode == 0 or b"expectation mismatch" not in result.stderr:
             raise SystemExit("mismatched expectation was accepted")
+        result = run(bundle, "--expect", "kernel-sdk-archive-sha256=" + "0" * 64)
+        if result.returncode == 0 or b"expectation mismatch" not in result.stderr:
+            raise SystemExit("mismatched SDK archive expectation was accepted")
 
     print("KERNEL_BUNDLE_METADATA=PASS")
 

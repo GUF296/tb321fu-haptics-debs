@@ -10,11 +10,25 @@ import re
 import sys
 
 
+MAX_BUNDLE_BYTES = 8192
+
+
 FIELD_VALIDATORS = (
-    ("schema", re.compile(r"tb321fu\.kernel-bundle/v1")),
+    ("schema", re.compile(r"tb321fu\.kernel-bundle/v2")),
     ("kernel-source-commit", re.compile(r"[0-9a-f]{40}")),
     ("kernel-release", re.compile(r"[0-9A-Za-z][0-9A-Za-z._+~-]{0,127}")),
     ("kernel-config-sha256", re.compile(r"[0-9a-f]{64}")),
+    ("kernel-image-sha256", re.compile(r"[0-9a-f]{64}")),
+    ("kernel-dtb-name", re.compile(r"[0-9A-Za-z][0-9A-Za-z._+~-]{0,127}")),
+    ("kernel-dtb-sha256", re.compile(r"[0-9a-f]{64}")),
+    ("kernel-modules-deb-sha256", re.compile(r"[0-9a-f]{64}")),
+    ("kernel-modules-manifest-sha256", re.compile(r"[0-9a-f]{64}")),
+    ("kernel-sdk-archive-sha256", re.compile(r"[0-9a-f]{64}")),
+    ("kernel-sdk-manifest-sha256", re.compile(r"[0-9a-f]{64}")),
+    ("kernel-toolchain-manifest-sha256", re.compile(r"[0-9a-f]{64}")),
+    ("kbuild-flags-sha256", re.compile(r"[0-9a-f]{64}")),
+    ("rustc-sha256", re.compile(r"[0-9a-f]{64}")),
+    ("rustc", re.compile(r"[ -~]{1,255}")),
     ("source-date-epoch", re.compile(r"[0-9]{1,12}")),
     (
         "kbuild-build-timestamp",
@@ -37,6 +51,8 @@ def parse_bundle(path: pathlib.Path) -> tuple[dict[str, str], bytes]:
     except OSError as exc:
         raise BundleError(f"cannot read {path}: {exc}") from exc
 
+    if len(raw) > MAX_BUNDLE_BYTES:
+        raise BundleError(f"bundle exceeds {MAX_BUNDLE_BYTES} bytes: {path}")
     if not raw.endswith(b"\n"):
         raise BundleError(f"bundle must end with LF: {path}")
     if b"\r" in raw:

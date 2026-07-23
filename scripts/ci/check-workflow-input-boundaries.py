@@ -75,6 +75,7 @@ def main() -> None:
         "INPUT_KERNEL_BUILD_ARCHIVE_SHA256: ${{ inputs.kernel_build_archive_sha256 }}",
         "INPUT_KERNEL_BUNDLE_METADATA: ${{ inputs.kernel_bundle_metadata }}",
         "INPUT_KERNEL_BUNDLE_METADATA_SHA256: ${{ inputs.kernel_bundle_metadata_sha256 }}",
+        "INPUT_KERNEL_SDK_MANIFEST: ${{ inputs.kernel_sdk_manifest }}",
         '[[ "$INPUT_HAPTICS_DEB_VERSION" =~ ^[0-9][0-9A-Za-z.+~_-]{0,63}$ ]]',
         'dpkg --validate-version "$INPUT_HAPTICS_DEB_VERSION"',
         '[[ "$INPUT_KERNEL_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]',
@@ -82,11 +83,14 @@ def main() -> None:
         '[[ "$INPUT_KERNEL_BUILD_ARCHIVE_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]]',
         '[[ "$INPUT_KERNEL_BUNDLE_METADATA" =~ ^https://[^[:space:]]{1,2048}$ ]]',
         '[[ "$INPUT_KERNEL_BUNDLE_METADATA_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]]',
-        'if [ -n "$INPUT_RELEASE_TAG" ] && [ -z "$INPUT_KERNEL_BUNDLE_METADATA" ]; then',
+        '[[ "$INPUT_KERNEL_SDK_MANIFEST" =~ ^https://[^[:space:]]{1,2048}$ ]]',
         "printf 'HAPTICS_DEB_VERSION=%s\\n' \"$INPUT_HAPTICS_DEB_VERSION\"",
         "printf 'KERNEL_SOURCE_COMMIT=%s\\n' \"$INPUT_KERNEL_SOURCE_COMMIT\"",
         "printf 'KERNEL_BUILD_ARCHIVE_SHA256=%s\\n' \"${INPUT_KERNEL_BUILD_ARCHIVE_SHA256,,}\"",
         "printf 'KERNEL_BUNDLE_METADATA_SHA256=%s\\n' \"${INPUT_KERNEL_BUNDLE_METADATA_SHA256,,}\"",
+        "printf 'KERNEL_SDK_MANIFEST=%s\\n' \"$INPUT_KERNEL_SDK_MANIFEST\"",
+        'KERNEL_SDK_MANIFEST="$KERNEL_SDK_MANIFEST"',
+        "HAPTICS_RELEASE_MODE=1",
     )
     for token in required:
         if token not in text:

@@ -14,8 +14,7 @@ notes_file=${3:?usage: publish-release.sh RELEASE_TAG RELEASE_DIR NOTES_FILE}
   exit 1
 }
 publish_prerelease=true
-publish_make_latest=false
-release_kind=prerelease
+release_kind='prerelease draft'
 
 [[ $release_tag =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || {
   printf 'unsafe release tag: %s\n' "$release_tag" >&2
@@ -226,7 +225,7 @@ release_record=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
   -f "target_commitish=$GITHUB_SHA" \
   -f "name=$release_title" \
   -F "body=@$notes_file" \
-  -F draft=true -F prerelease=false --jq \
+  -F draft=true -F prerelease="$publish_prerelease" --jq \
   '[.id, .tag_name, (.draft | tostring), .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv') || {
   printf 'cannot create the draft release\n' >&2
   exit 1
@@ -245,7 +244,7 @@ IFS=$'\t' read -r release_id created_tag created_draft \
   printf 'release API did not create a draft\n' >&2
   exit 1
 }
-[ "$created_prerelease" = false ] || {
+[ "$created_prerelease" = "$publish_prerelease" ] || {
   printf 'release API created an unexpected prerelease state\n' >&2
   exit 1
 }
@@ -264,7 +263,7 @@ IFS=$'\t' read -r release_id created_tag created_draft \
 verify_tag_target || exit 1
 initial_snapshot=$(fetch_release_snapshot "$release_id")
 verify_release_snapshot "$initial_snapshot" "$release_id" true \
-  "$release_target_commitish" false "$release_title" "$notes_body_b64" 0 || {
+  "$release_target_commitish" "$publish_prerelease" "$release_title" "$notes_body_b64" 0 || {
   printf 'draft release identity/state changed before asset upload\n' >&2
   printf '%s\n' "$initial_snapshot" >&2
   exit 1
@@ -287,7 +286,7 @@ remote_snapshot=
 for attempt in $(seq 1 10); do
   if remote_snapshot=$(fetch_release_snapshot "$release_id") && \
     verify_release_snapshot "$remote_snapshot" "$release_id" true \
-      "$release_target_commitish" false "$release_title" "$notes_body_b64" 1; then
+      "$release_target_commitish" "$publish_prerelease" "$release_title" "$notes_body_b64" 1; then
     verified=true
   fi
   $verified && break
@@ -300,29 +299,19 @@ $verified || {
   exit 1
 }
 
-final_snapshot=$(fetch_release_snapshot "$release_id")
+final_snapshot=$(fetch_release_snapshot "$release_id") || {
+  printf 'cannot fetch the final verified draft release snapshot\n' >&2
+  exit 1
+}
 verify_release_snapshot "$final_snapshot" "$release_id" true \
-  "$release_target_commitish" false "$release_title" "$notes_body_b64" 1 || {
+  "$release_target_commitish" "$publish_prerelease" "$release_title" "$notes_body_b64" 1 || {
   printf 'release changed concurrently after upload verification; release remains draft\n' >&2
   printf '%s\n' "$final_snapshot" >&2
   exit 1
 }
 verify_tag_target || {
-  printf 'release tag changed before publication; release remains draft\n' >&2
+  printf 'release tag changed after draft verification; release remains draft\n' >&2
   exit 1
 }
-gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
-  -F draft=false -F prerelease="$publish_prerelease" -F make_latest="$publish_make_latest" >/dev/null
-published_snapshot=$(fetch_release_snapshot "$release_id")
-verify_release_snapshot "$published_snapshot" "$release_id" false \
-  "$release_target_commitish" "$publish_prerelease" "$release_title" "$notes_body_b64" 1 || {
-  printf '%s did not reach the expected immutable public state after final PATCH\n' "$release_kind" >&2
-  printf '%s\n' "$published_snapshot" >&2
-  exit 1
-}
-verify_tag_target || {
-  printf 'release tag changed after publication\n' >&2
-  exit 1
-}
-printf 'Published immutable %s %s after verifying %d assets.\n' \
+printf 'Created verified %s %s with %d assets; draft remains private for manual publication.\n' \
   "$release_kind" "$release_tag" "${#assets[@]}"

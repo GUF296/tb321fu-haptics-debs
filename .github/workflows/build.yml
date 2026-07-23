@@ -34,13 +34,18 @@ on:
         default: 75703c4cf2ed10777905d79c57103ce1a9e50a02d09507c4aa15eb81b27c845a
         type: string
       kernel_bundle_metadata:
-        description: KERNEL-BUNDLE.tsv URL paired with the source and SDK; required for release publication.
-        required: false
+        description: HTTPS KERNEL-BUNDLE.tsv v2 URL paired with the source and SDK archive.
+        required: true
         default: ""
         type: string
       kernel_bundle_metadata_sha256:
-        description: SHA-256 of KERNEL-BUNDLE.tsv; required when metadata is provided.
-        required: false
+        description: SHA-256 of the paired KERNEL-BUNDLE.tsv v2.
+        required: true
+        default: ""
+        type: string
+      kernel_sdk_manifest:
+        description: HTTPS KERNEL-SDK-MANIFEST.tsv URL paired with the kernel SDK archive.
+        required: true
         default: ""
         type: string
 
@@ -69,12 +74,14 @@ jobs:
           python3 scripts/ci/check-action-pins.py --self-test
           python3 scripts/ci/check-action-pins.py .github/workflows/build.yml
           python3 scripts/ci/test-kernel-bundle-metadata.py
+          python3 scripts/ci/test-kernel-sdk-verifier.py
           python3 scripts/ci/test-safe-extract-archive.py
           python3 scripts/ci/test-haptics-release-job-isolation.py --self-test
           python3 scripts/ci/test-haptics-release-job-isolation.py .github/workflows/build.yml
           bash scripts/ci/test-haptics-lifecycle.sh
           bash scripts/ci/test-haptics-provenance.sh
           bash scripts/ci/test-haptics-deb-contract.sh
+          bash scripts/ci/test-haptics-kernel-sdk-contract.sh
           bash scripts/ci/test-release-publication.sh
 
       - name: Install dependencies
@@ -95,6 +102,7 @@ jobs:
           INPUT_KERNEL_BUILD_ARCHIVE_SHA256: ${{ inputs.kernel_build_archive_sha256 }}
           INPUT_KERNEL_BUNDLE_METADATA: ${{ inputs.kernel_bundle_metadata }}
           INPUT_KERNEL_BUNDLE_METADATA_SHA256: ${{ inputs.kernel_bundle_metadata_sha256 }}
+          INPUT_KERNEL_SDK_MANIFEST: ${{ inputs.kernel_sdk_manifest }}
         run: |
           set -euo pipefail
           . scripts/ci/common.sh
@@ -119,26 +127,25 @@ jobs:
             echo 'invalid kernel_build_archive_sha256' >&2
             exit 1
           }
-          if [ -n "$INPUT_KERNEL_BUNDLE_METADATA" ] || [ -n "$INPUT_KERNEL_BUNDLE_METADATA_SHA256" ]; then
-            [[ "$INPUT_KERNEL_BUNDLE_METADATA" =~ ^https://[^[:space:]]{1,2048}$ ]] || {
-              echo 'kernel_bundle_metadata must be a bounded HTTPS URL' >&2
-              exit 1
-            }
-            [[ "$INPUT_KERNEL_BUNDLE_METADATA_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]] || {
-              echo 'invalid kernel_bundle_metadata_sha256' >&2
-              exit 1
-            }
-          fi
-          if [ -n "$INPUT_RELEASE_TAG" ] && [ -z "$INPUT_KERNEL_BUNDLE_METADATA" ]; then
-            echo 'release publication requires kernel_bundle_metadata and its SHA-256' >&2
+          [[ "$INPUT_KERNEL_BUNDLE_METADATA" =~ ^https://[^[:space:]]{1,2048}$ ]] || {
+            echo 'kernel_bundle_metadata must be a bounded HTTPS URL' >&2
             exit 1
-          fi
+          }
+          [[ "$INPUT_KERNEL_BUNDLE_METADATA_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]] || {
+            echo 'invalid kernel_bundle_metadata_sha256' >&2
+            exit 1
+          }
+          [[ "$INPUT_KERNEL_SDK_MANIFEST" =~ ^https://[^[:space:]]{1,2048}$ ]] || {
+            echo 'kernel_sdk_manifest must be a bounded HTTPS URL' >&2
+            exit 1
+          }
           printf 'HAPTICS_DEB_VERSION=%s\n' "$INPUT_HAPTICS_DEB_VERSION" >> "$GITHUB_ENV"
           printf 'KERNEL_SOURCE_COMMIT=%s\n' "$INPUT_KERNEL_SOURCE_COMMIT" >> "$GITHUB_ENV"
           printf 'KERNEL_BUILD_ARCHIVE=%s\n' "$INPUT_KERNEL_BUILD_ARCHIVE" >> "$GITHUB_ENV"
           printf 'KERNEL_BUILD_ARCHIVE_SHA256=%s\n' "${INPUT_KERNEL_BUILD_ARCHIVE_SHA256,,}" >> "$GITHUB_ENV"
           printf 'KERNEL_BUNDLE_METADATA=%s\n' "$INPUT_KERNEL_BUNDLE_METADATA" >> "$GITHUB_ENV"
           printf 'KERNEL_BUNDLE_METADATA_SHA256=%s\n' "${INPUT_KERNEL_BUNDLE_METADATA_SHA256,,}" >> "$GITHUB_ENV"
+          printf 'KERNEL_SDK_MANIFEST=%s\n' "$INPUT_KERNEL_SDK_MANIFEST" >> "$GITHUB_ENV"
           printf 'SOURCE_DATE_EPOCH=%s\n' "$(ci_git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
 
       - name: Build haptics deb
@@ -149,12 +156,14 @@ jobs:
             ARCH=arm64 \
             HAPTICS_DEB_VERSION="$HAPTICS_DEB_VERSION" \
             HAPTICS_STRIP=1 \
+            HAPTICS_RELEASE_MODE=1 \
             HAPTICS_PRODUCER_COMMIT="$GITHUB_SHA" \
             KERNEL_SOURCE_COMMIT="$KERNEL_SOURCE_COMMIT" \
             KERNEL_BUILD_ARCHIVE="$KERNEL_BUILD_ARCHIVE" \
             KERNEL_BUILD_ARCHIVE_SHA256="$KERNEL_BUILD_ARCHIVE_SHA256" \
             KERNEL_BUNDLE_METADATA="$KERNEL_BUNDLE_METADATA" \
             KERNEL_BUNDLE_METADATA_SHA256="$KERNEL_BUNDLE_METADATA_SHA256" \
+            KERNEL_SDK_MANIFEST="$KERNEL_SDK_MANIFEST" \
             SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
             bash scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh
 
@@ -186,6 +195,9 @@ jobs:
             echo "- Kernel source commit: $KERNEL_SOURCE_COMMIT"
             echo "- Kernel SDK: $KERNEL_BUILD_ARCHIVE"
             echo "- Kernel SDK SHA-256: $KERNEL_BUILD_ARCHIVE_SHA256"
+            echo "- Kernel bundle metadata: $KERNEL_BUNDLE_METADATA"
+            echo "- Kernel bundle metadata SHA-256: $KERNEL_BUNDLE_METADATA_SHA256"
+            echo "- Kernel SDK manifest: $KERNEL_SDK_MANIFEST"
             echo "- Commit: $GITHUB_SHA"
             echo "- Workflow run: $GITHUB_RUN_ID"
             echo "- Haptics archive SHA-256: $archive_sha256"

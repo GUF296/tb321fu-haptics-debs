@@ -16,7 +16,6 @@
 #include <linux/i2c.h>
 #include <linux/input.h>
 #include <linux/jiffies.h>
-#include <linux/list.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/pm.h>
@@ -98,7 +97,6 @@ struct aw86937_y700 {
 	struct device *dev;
 	struct input_dev *input_dev;
 	struct regmap *regmap;
-	struct list_head node;
 	struct mutex io_lock;
 	spinlock_t pending_lock;
 	struct work_struct play_work;
@@ -110,7 +108,6 @@ struct aw86937_y700 {
 	unsigned int handled_seq;
 	unsigned int play_count;
 	bool ram_ready;
-	bool listed;
 	bool suspended;
 	bool quiescing;
 	bool removing;
@@ -128,9 +125,6 @@ static const struct regmap_config aw86937_y700_regmap_config = {
 	.cache_type = REGCACHE_NONE,
 	.max_register = 0x80,
 };
-
-static LIST_HEAD(aw86937_y700_devices);
-static DEFINE_MUTEX(aw86937_y700_devices_lock);
 
 static bool aw86937_y700_playback_superseded(struct aw86937_y700 *haptics,
 					     unsigned int seq)
@@ -820,13 +814,18 @@ static int aw86937_y700_ff_playback(struct input_dev *input, int effect_id,
 	haptics->pending_duration_ms = clamp(duration_ms, 0U,
 					     AW86937_MAX_DURATION_MS);
 	haptics->pending_seq++;
+	/*
+	 * Queueing must share the state lock with remove. Otherwise remove can
+	 * finish work draining between this callback's state check and a later
+	 * schedule_work(), leaving devm-owned state reachable by work.
+	 */
+	wake_up_all(&haptics->play_wait);
+	schedule_work(&haptics->play_work);
 unlock:
 	spin_unlock_irqrestore(&haptics->pending_lock, flags);
 
 	if (err)
 		return err;
-	wake_up_all(&haptics->play_wait);
-	schedule_work(&haptics->play_work);
 
 	return 0;
 }
@@ -847,7 +846,10 @@ static int aw86937_y700_quiesce(struct aw86937_y700 *haptics,
 	spin_unlock_irqrestore(&haptics->pending_lock, flags);
 
 	wake_up_all(&haptics->play_wait);
-	cancel_work_sync(&haptics->play_work);
+	if (remove)
+		disable_work_sync(&haptics->play_work);
+	else
+		cancel_work_sync(&haptics->play_work);
 
 	mutex_lock(&haptics->io_lock);
 	err = aw86937_y700_stop_locked(haptics);
@@ -959,15 +961,15 @@ static int aw86937_y700_probe(struct i2c_client *client)
 		return dev_err_probe(&client->dev, err,
 				     "failed to register input device\n");
 
-	mutex_lock(&aw86937_y700_devices_lock);
-	list_add_tail(&haptics->node, &aw86937_y700_devices);
-	mutex_unlock(&aw86937_y700_devices_lock);
-
-	regmap_read(haptics->regmap, AW86937_PLAYCFG1_REG, &playcfg1);
-	dev_info(&client->dev,
-		 "AW86937 haptics ready chip_id=0x%04x playcfg1=0x%02x pwm_mode=%u gain_ceiling=0x%02x input=%s\n",
-		 haptics->chip_id, playcfg1, AW86937_PWM_MODE_DEFAULT,
-		 AW86937_GAIN_CEILING_DEFAULT, haptics->input_dev->name);
+	err = regmap_read(haptics->regmap, AW86937_PLAYCFG1_REG, &playcfg1);
+	if (err) {
+		dev_warn(&client->dev, "failed reading PLAYCFG1 register: %d\n", err);
+	} else {
+		dev_info(&client->dev,
+			 "AW86937 haptics ready chip_id=0x%04x playcfg1=0x%02x pwm_mode=%u gain_ceiling=0x%02x input=%s\n",
+			 haptics->chip_id, playcfg1, AW86937_PWM_MODE_DEFAULT,
+			 AW86937_GAIN_CEILING_DEFAULT, haptics->input_dev->name);
+	}
 
 	return 0;
 }
@@ -1013,10 +1015,6 @@ static void aw86937_y700_remove(struct i2c_client *client)
 
 	if (!haptics)
 		return;
-
-	mutex_lock(&aw86937_y700_devices_lock);
-	list_del(&haptics->node);
-	mutex_unlock(&aw86937_y700_devices_lock);
 
 	aw86937_y700_quiesce(haptics, false, true);
 

@@ -6,11 +6,13 @@ export LC_ALL=C
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)
 . "$SCRIPT_DIR/common.sh"
+. "$SCRIPT_DIR/haptics-kernel-sdk-contract.sh"
 
 OUTPUT_DIR=${OUTPUT_DIR:-out/tb321fu-haptics-debs}
 ARCH=${ARCH:-arm64}
 HAPTICS_DEB_VERSION=${HAPTICS_DEB_VERSION:-20260627.1}
 HAPTICS_STRIP=${HAPTICS_STRIP:-1}
+HAPTICS_RELEASE_MODE=${HAPTICS_RELEASE_MODE:-}
 HAPTICS_PRODUCER_COMMIT=${HAPTICS_PRODUCER_COMMIT:-}
 KERNEL_SOURCE_REPO=${KERNEL_SOURCE_REPO:-https://github.com/GUF296/linux.git}
 KERNEL_SOURCE_COMMIT=${KERNEL_SOURCE_COMMIT:-5df8e852ea722929f5359a5ef28ebcec0c4443fd}
@@ -18,12 +20,22 @@ KERNEL_BUILD_ARCHIVE=${KERNEL_BUILD_ARCHIVE:-https://github.com/GUF296/tb321fu-h
 KERNEL_BUILD_ARCHIVE_SHA256=${KERNEL_BUILD_ARCHIVE_SHA256:-75703c4cf2ed10777905d79c57103ce1a9e50a02d09507c4aa15eb81b27c845a}
 KERNEL_BUNDLE_METADATA=${KERNEL_BUNDLE_METADATA:-}
 KERNEL_BUNDLE_METADATA_SHA256=${KERNEL_BUNDLE_METADATA_SHA256:-}
+KERNEL_SDK_MANIFEST=${KERNEL_SDK_MANIFEST:-}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
 
 [[ $HAPTICS_PRODUCER_COMMIT =~ ^[0-9a-f]{40}$ ]] || ci_die "invalid HAPTICS_PRODUCER_COMMIT"
 [[ $KERNEL_SOURCE_COMMIT =~ ^[0-9a-f]{40}$ ]] || ci_die "invalid KERNEL_SOURCE_COMMIT"
-[[ $KERNEL_BUILD_ARCHIVE_SHA256 =~ ^[0-9A-Fa-f]{64}$ ]] || ci_die "invalid KERNEL_BUILD_ARCHIVE_SHA256"
 [[ $SOURCE_DATE_EPOCH =~ ^[0-9]{1,10}$ ]] || ci_die "invalid SOURCE_DATE_EPOCH"
+[ "$HAPTICS_RELEASE_MODE" = 1 ] ||
+  ci_die "kernel SDK archive packaging requires HAPTICS_RELEASE_MODE=1"
+haptics_validate_kernel_build_input_contract \
+  "$HAPTICS_RELEASE_MODE" \
+  "$KERNEL_BUILD_ARCHIVE" \
+  "$KERNEL_BUILD_ARCHIVE_SHA256" \
+  "" \
+  "$KERNEL_BUNDLE_METADATA" \
+  "$KERNEL_BUNDLE_METADATA_SHA256" \
+  "$KERNEL_SDK_MANIFEST"
 
 ci_require_cmd git
 ci_require_cmd gzip
@@ -71,11 +83,13 @@ env \
   HAPTICS_DEB_VERSION="$HAPTICS_DEB_VERSION" \
   HAPTICS_SOURCE_DIR="$REPO_ROOT" \
   EXPECTED_HAPTICS_PRODUCER_COMMIT="$HAPTICS_PRODUCER_COMMIT" \
+  HAPTICS_RELEASE_MODE="$HAPTICS_RELEASE_MODE" \
   KERNEL_SOURCE_DIR="$kernel_source" \
   KERNEL_BUILD_ARCHIVE="$KERNEL_BUILD_ARCHIVE" \
   KERNEL_BUILD_ARCHIVE_SHA256="$KERNEL_BUILD_ARCHIVE_SHA256" \
   KERNEL_BUNDLE_METADATA="$KERNEL_BUNDLE_METADATA" \
   KERNEL_BUNDLE_METADATA_SHA256="$KERNEL_BUNDLE_METADATA_SHA256" \
+  KERNEL_SDK_MANIFEST="$KERNEL_SDK_MANIFEST" \
   EXPECTED_KERNEL_SOURCE_COMMIT="$KERNEL_SOURCE_COMMIT" \
   HAPTICS_STRIP="$HAPTICS_STRIP" \
   SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
@@ -146,6 +160,22 @@ lock_value() {
     "$producer_output/HAPTICS-SOURCE-LOCK.tsv")
   printf '%s\n' "$value"
 }
+
+source_lock_schema=$(lock_value schema)
+source_lock_mode=$(lock_value haptics-output-mode)
+source_lock_input=$(lock_value kernel-build-input)
+source_lock_archive_sha256=$(lock_value kernel-build-archive-sha256)
+source_lock_bundle_id=$(lock_value kernel-bundle-id)
+[ "$source_lock_schema" = tb321fu.haptics-source-lock/v2 ] ||
+  ci_die "release haptics source lock has an unsupported schema: $source_lock_schema"
+[ "$source_lock_mode" = release-candidate ] ||
+  ci_die "release haptics source lock is not a release candidate: $source_lock_mode"
+[ "$source_lock_input" = kernel-sdk-archive ] ||
+  ci_die "release haptics source lock does not identify a kernel SDK archive"
+[ "$source_lock_archive_sha256" = "${KERNEL_BUILD_ARCHIVE_SHA256,,}" ] ||
+  ci_die "release haptics source lock does not bind the requested kernel SDK archive"
+[[ $source_lock_bundle_id =~ ^[0-9a-f]{64}$ ]] ||
+  ci_die "release haptics source lock has an invalid kernel bundle identity"
 
 module_sha256=$(lock_value aw86937-module-sha256)
 helper_sha256=$(lock_value haptic-test-helper-binary-sha256)

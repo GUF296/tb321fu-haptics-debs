@@ -165,6 +165,7 @@ require_failure 'self-contained Git bundle' \
 
 expected_fields=(
   schema
+  haptics-output-mode
   haptics-producer-commit
   haptics-producer-state
   aw86937-driver-sha256
@@ -178,6 +179,7 @@ expected_fields=(
   kernel-release
   kernel-source-commit
   kernel-config-sha256
+  kernel-build-input
   kernel-build-archive-sha256
   source-date-epoch
 )
@@ -192,6 +194,10 @@ for token in "${expected_fields[@]}"; do
 done
 
 for token in \
+  haptics_validate_kernel_build_input_contract \
+  haptics_validate_kernel_sdk_binding \
+  kernel-sdk-archive-sha256 \
+  HAPTICS_RELEASE_MODE \
   ci_export_git_file \
   HAPTICS-SOURCE-SNAPSHOT \
   haptics-producer-commit \
@@ -218,6 +224,104 @@ grep -Fq 'verify_kernel_build_state "after host-tool preparation"' \
 grep -Fq 'verify_kernel_build_state "after external module build"' \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
   fail "builder omits post-module kernel build identity verification"
+for token in \
+  copy_kernel_build_dir_private \
+  'kernel-build-private' \
+  'rsync -a --links --no-specials --no-devices' \
+  'private KERNEL_BUILD_DIR contains an external symlink' \
+  'private kernel source link does not target the verified source'; do
+  grep -Fq -- "$token" "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+    fail "builder omits private KERNEL_BUILD_DIR isolation contract: $token"
+done
+if grep -Eq 'cp[[:space:]].*--reflink|ln[[:space:]]+[^-]' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh"; then
+  fail "builder uses a potentially shared-inode KERNEL_BUILD_DIR copy mechanism"
+fi
+for token in \
+  'rm -f "$KERNEL_BUILD_DIR' \
+  'rm -rf "$KERNEL_BUILD_DIR' \
+  'O="$KERNEL_BUILD_DIR"'; do
+  if grep -Fq -- "$token" "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh"; then
+    fail "builder mutates the caller KERNEL_BUILD_DIR: $token"
+  fi
+done
+python3 - "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+copy = source.index("copy_kernel_build_dir_private()")
+prepare = source.index("prepare_inputs()")
+local_input = source.index('if [ -n "$KERNEL_BUILD_DIR" ]; then', prepare)
+archive_input = source.index('\n  else\n', local_input)
+block = source[local_input:archive_input]
+assert source.index('find_kernel_build_root "$source_dir"', copy) < source.index(
+    'rsync -a --links --no-specials --no-devices', copy
+)
+assert 'copy_kernel_build_dir_private' in block
+assert '"$KERNEL_BUILD_DIR" "$work_dir/kernel-build-private"' in block
+assert 'kernel_make O="$kernel_build_root"' in source
+PY
+
+command -v rsync >/dev/null 2>&1 || fail "rsync is required for private build-copy coverage"
+kernel_copy_functions="$tmp/kernel-build-copy-functions.sh"
+awk '
+  /^find_kernel_build_root\(\)/ || /^copy_kernel_build_dir_private\(\)/ { emit = 1 }
+  emit { print }
+  emit && /^}$/ { emit = 0 }
+' "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" > "$kernel_copy_functions"
+[ -s "$kernel_copy_functions" ] || fail "could not extract private build-copy functions"
+kernel_build_input="$tmp/kernel-build-input"
+kernel_source_fixture="$tmp/kernel-source"
+kernel_build_private="$tmp/kernel-build-private"
+install -d -m 0755 \
+  "$kernel_build_input/include/generated" \
+  "$kernel_build_input/include/config" \
+  "$kernel_build_input/scripts/basic" \
+  "$kernel_source_fixture"
+printf 'fixture config\n' > "$kernel_build_input/.config"
+printf 'fixture symvers\n' > "$kernel_build_input/Module.symvers"
+printf 'fixture autoconf\n' > "$kernel_build_input/include/generated/autoconf.h"
+printf 'fixture release\n' > "$kernel_build_input/include/config/kernel.release"
+printf 'fixture host tool\n' > "$kernel_build_input/scripts/basic/fixdep"
+ln -s "$kernel_source_fixture" "$kernel_build_input/source"
+(
+  set -euo pipefail
+  ci_log() { printf 'fixture log: %s\n' "$*" >&2; }
+  ci_die() { printf 'fixture error: %s\n' "$*" >&2; exit 1; }
+  . "$kernel_copy_functions"
+  kernel_source_root="$kernel_source_fixture"
+  private_root=$(copy_kernel_build_dir_private \
+    "$kernel_build_input" "$kernel_build_private" 2> "$tmp/kernel-build-copy.stderr")
+  [ "$private_root" = "$kernel_build_private" ] ||
+    fail "private build-copy function polluted its stdout return value"
+  [ "$(readlink -f "$private_root/source")" = "$kernel_source_fixture" ] ||
+    fail "private build-copy function did not rewrite the known source link"
+  [ "$(stat -c '%i' "$kernel_build_input/scripts/basic/fixdep")" != \
+    "$(stat -c '%i' "$private_root/scripts/basic/fixdep")" ] ||
+    fail "private build-copy function shared a host-tool inode with its input"
+)
+grep -Fq 'copying KERNEL_BUILD_DIR into private build workspace' \
+  "$tmp/kernel-build-copy.stderr" ||
+  fail "private build-copy function did not keep diagnostics on stderr"
+hostile_kernel_build_input="$tmp/kernel-build-hostile"
+hostile_kernel_build_private="$tmp/kernel-build-hostile-private"
+cp -a "$kernel_build_input" "$hostile_kernel_build_input"
+ln -s "$tmp" "$hostile_kernel_build_input/untrusted-external-link"
+if (
+  set -euo pipefail
+  ci_log() { :; }
+  ci_die() { printf 'fixture error: %s\n' "$*" >&2; exit 1; }
+  . "$kernel_copy_functions"
+  kernel_source_root="$kernel_source_fixture"
+  copy_kernel_build_dir_private \
+    "$hostile_kernel_build_input" "$hostile_kernel_build_private" >/dev/null
+) > "$tmp/kernel-build-hostile.out" 2>&1; then
+  fail "private build-copy function accepted an external symlink"
+fi
+grep -Fq 'private KERNEL_BUILD_DIR contains an external symlink' \
+  "$tmp/kernel-build-hostile.out" ||
+  fail "private build-copy function rejected an external symlink at the wrong boundary"
 grep -Fq -- '-fdebug-prefix-map=$src=$module_prefix -ffile-prefix-map=$src=$module_prefix -fmacro-prefix-map=$src=$module_prefix' \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
   fail "builder omits stable external-module debug path mapping"
@@ -234,6 +338,8 @@ grep -Fq 'fetch-depth: 0' "$REPO_ROOT/.github/workflows/build.yml" ||
   fail "workflow does not fetch complete producer history for the bundle"
 grep -Fq 'ci_git show -s --format=%ct HEAD' "$REPO_ROOT/.github/workflows/build.yml" ||
   fail "workflow timestamp derivation bypasses sanitized Git"
+grep -Fq -- "--proto-redir '=https'" "$SCRIPT_DIR/common.sh" ||
+  fail "remote download path permits a non-HTTPS redirect"
 
 for relative in \
   scripts/ci/haptics-maintainer-scripts.sh \
@@ -275,6 +381,7 @@ for token in \
   'OUTPUT_DIR appeared during atomic promotion' \
   'mv -T -- "$producer_output" "$output_path"' \
   'HAPTICS-COMPILED-DIGESTS.env' \
+  'HAPTICS_RELEASE_MODE=1' \
   'HAPTICS_MODULE_SHA256=' \
   'HAPTICS_HELPER_BINARY_SHA256='; do
   grep -Fq -- "$token" "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" "$sdk_script" ||
@@ -310,8 +417,12 @@ require_failure 'refusing stale OUTPUT_DIR' \
   env \
     OUTPUT_DIR="$stale_output" \
     HAPTICS_PRODUCER_COMMIT=0000000000000000000000000000000000000000 \
+    HAPTICS_RELEASE_MODE=1 \
     KERNEL_SOURCE_COMMIT=0000000000000000000000000000000000000000 \
     KERNEL_BUILD_ARCHIVE_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+    KERNEL_BUNDLE_METADATA=https://example.invalid/KERNEL-BUNDLE.tsv \
+    KERNEL_BUNDLE_METADATA_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+    KERNEL_SDK_MANIFEST=https://example.invalid/KERNEL-SDK-MANIFEST.tsv \
     SOURCE_DATE_EPOCH=0 \
     bash "$sdk_script"
 

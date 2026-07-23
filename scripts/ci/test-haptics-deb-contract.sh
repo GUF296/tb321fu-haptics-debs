@@ -36,6 +36,7 @@ create_package_tree() {
 
   install -d -m 0755 \
     "$root/DEBIAN" \
+    "$root/etc/modprobe.d" \
     "$root/etc/skel/.config" \
     "$root/usr/bin" \
     "$root/usr/lib/firmware" \
@@ -52,6 +53,7 @@ create_package_tree() {
     'Description: fixture' \
     > "$root/DEBIAN/control"
   haptics_write_maintainer_scripts "$root" "$kernel_release"
+  printf 'blacklist aw86937_y700\n' > "$root/etc/modprobe.d/tb321fu-haptics.conf"
   printf 'keyboard\n' > "$root/etc/skel/.config/plasmakeyboardrc"
   printf '#!/bin/sh\nexit 0\n' > "$root/usr/bin/tb321fu-haptic-test"
   printf 'click firmware\n' > "$root/usr/lib/firmware/haptic_click.bin"
@@ -120,6 +122,14 @@ chmod 0755 "$wrong_mode/usr/lib/systemd/system/tb321fu-haptics.service"
 build_deb "$wrong_mode" "$tmp/wrong-mode.deb"
 require_failure 'payload mode mismatch' \
   bash "$verifier" "$wrong_mode" "$tmp/wrong-mode.deb" "$kernel_release" \
+  "$ram_sha" "$click_sha" "$module_sha" "$helper_sha"
+
+wrong_blacklist="$tmp/wrong-blacklist"
+cp -a "$pkg" "$wrong_blacklist"
+printf 'blacklist another_module\n' > "$wrong_blacklist/etc/modprobe.d/tb321fu-haptics.conf"
+build_deb "$wrong_blacklist" "$tmp/wrong-blacklist.deb"
+require_failure 'does not blacklist the legacy AW86937 module' \
+  bash "$verifier" "$wrong_blacklist" "$tmp/wrong-blacklist.deb" "$kernel_release" \
   "$ram_sha" "$click_sha" "$module_sha" "$helper_sha"
 
 wrong_bytes="$tmp/wrong-bytes"

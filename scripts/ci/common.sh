@@ -254,7 +254,7 @@ ci_download() {
     https://*)
       [ -n "$verifier" ] || ci_die "remote download requires an explicit SHA-256: $src"
       ci_require_cmd curl
-      if ! curl --proto '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 -o "$tmp" "$src"; then
+      if ! curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 -o "$tmp" "$src"; then
         rm -f -- "$tmp"
         ci_die "download failed: $src"
       fi

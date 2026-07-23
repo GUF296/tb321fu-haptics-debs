@@ -291,6 +291,27 @@ assert_log_contains "systemctl <--root=$root> <is-enabled> <--quiet> <$service>"
 assert_log_absent uname
 [ -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
   fail 'postinst did not enable the TB321FU unit'
+[ -f "$root/var/lib/tb321fu-haptics/managed-want" ] ||
+  fail 'postinst did not record ownership of the service want it created'
+[ "$(cat "$root/var/lib/tb321fu-haptics/managed-want")" = \
+  /usr/lib/systemd/system/tb321fu-haptics.service ] ||
+  fail 'postinst recorded an unexpected service want target'
+
+prepare_fixture preexisting-user-want
+install -d -m 0755 "$root/etc/systemd/system/multi-user.target.wants"
+ln -s /usr/lib/systemd/system/tb321fu-haptics.service \
+  "$root/etc/systemd/system/multi-user.target.wants/$service"
+clear_log
+run_postinst configure
+assert_log_absent "systemctl <--root=$root> <enable> <$service>"
+assert_log_contains "systemctl <--root=$root> <is-enabled> <--quiet> <$service>"
+[ ! -e "$root/var/lib/tb321fu-haptics/managed-want" ] && \
+  [ ! -L "$root/var/lib/tb321fu-haptics/managed-want" ] ||
+  fail 'postinst claimed ownership of a pre-existing service want'
+clear_log
+run_postrm remove
+[ -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
+  fail 'postrm removed a pre-existing user-owned service want'
 
 prepare_fixture legacy-payload
 install_legacy_payload
@@ -356,6 +377,9 @@ run_postrm remove
 assert_log_contains "depmod <-b> <$root> <-a> <$kernel_release>"
 [ ! -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
   fail 'remove postrm left service enablement behind'
+[ ! -e "$root/var/lib/tb321fu-haptics/managed-want" ] && \
+  [ ! -L "$root/var/lib/tb321fu-haptics/managed-want" ] ||
+  fail 'remove postrm left package-owned service-want state behind'
 
 install -d -m 0755 "$root/etc/systemd/system/multi-user.target.wants"
 ln -s /usr/lib/systemd/system/tb321fu-haptics.service \
@@ -363,8 +387,8 @@ ln -s /usr/lib/systemd/system/tb321fu-haptics.service \
 clear_log
 run_postrm purge
 assert_log_contains "depmod <-b> <$root> <-a> <$kernel_release>"
-[ ! -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
-  fail 'purge postrm left service enablement behind'
+[ -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
+  fail 'purge postrm removed a user-owned service want'
 
 prepare_fixture depmod-failure
 clear_log
@@ -415,7 +439,7 @@ clear_log
 export MOCK_SYSTEMCTL_IS_ENABLED_FAIL=1
 expect_failure preexisting-enable-verification-failure run_postinst configure
 unset MOCK_SYSTEMCTL_IS_ENABLED_FAIL
-assert_log_contains "systemctl <--root=$root> <enable> <$service>"
+assert_log_absent "systemctl <--root=$root> <enable> <$service>"
 assert_log_contains "systemctl <--root=$root> <is-enabled> <--quiet> <$service>"
 [ -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
   fail 'enablement verification failure removed a pre-existing service want'

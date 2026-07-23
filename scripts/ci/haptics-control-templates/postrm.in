@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 022
 
 KERNEL_RELEASE=@KERNEL_RELEASE@
 
@@ -42,11 +43,26 @@ systemd_manager_running()
 remove_managed_want()
 {
 	want=$(root_path "/etc/systemd/system/multi-user.target.wants/$1")
+	state=$(root_path /var/lib/tb321fu-haptics/managed-want)
+	[ -e "$state" ] || [ -L "$state" ] || return 0
+	[ -f "$state" ] && [ ! -L "$state" ] ||
+		die "managed systemd-want state is not a regular file: $state"
+	target=$(cat "$state")
+	[ -n "$target" ] && [ "$(wc -l < "$state")" -eq 1 ] ||
+		die "managed systemd-want state is malformed: $state"
 	if [ -L "$want" ]; then
-		rm -f -- "$want"
+		current_target=$(readlink "$want") ||
+			die "cannot read package-managed systemd want: $want"
+		if [ "$current_target" = "$target" ]; then
+			rm -f -- "$want" ||
+				die "cannot remove package-managed systemd want: $want"
+		else
+			printf '%s\n' "tb321fu-haptics postrm: preserving modified systemd want: $want" >&2
+		fi
 	elif [ -e "$want" ]; then
-		die "refusing to remove non-symlink systemd want: $want"
+		printf '%s\n' "tb321fu-haptics postrm: preserving non-symlink systemd want: $want" >&2
 	fi
+	rm -f -- "$state" || die "cannot remove managed systemd-want state: $state"
 }
 
 reload_systemd_if_running()

@@ -12,14 +12,22 @@ Output:
 - `HAPTICS-COMPILED-DIGESTS.env` (local workflow evidence, outside the tar)
 
 `HAPTICS-SOURCE-LOCK.tsv` uses the ordered
-`tb321fu.haptics-source-lock/v1` schema. It records the exact clean producer
-commit, canonical and patched driver hashes, both firmware hashes, the
-test-helper source hash, final module/helper binary hashes, and the paired
-kernel bundle identity. `HAPTICS-SOURCE-SNAPSHOT/` carries those five source
-inputs at fixed paths. The builder exports the original inputs from the
-expected commit's Git objects into a private snapshot; it never compiles or
-installs the mutable worktree copies. Assume-unchanged and skip-worktree index
-flags are rejected in addition to ordinary dirty-worktree state.
+`tb321fu.haptics-source-lock/v2` schema only for release candidates. Its
+second field is `haptics-output-mode=release-candidate`; its kernel fields end
+with `kernel-build-input=kernel-sdk-archive` and
+`kernel-build-archive-sha256`. That digest must exactly equal the paired
+KERNEL-BUNDLE v2 `kernel-sdk-archive-sha256`. A direct local directory build
+instead emits `tb321fu.haptics-source-lock/v2-local`,
+`haptics-output-mode=local`, `kernel-build-input=local-directory`, and the
+non-digest `local-build-directory` sentinel. Consumers must reject that local
+schema and sentinel. Both schemas otherwise record the exact clean producer
+commit, canonical and patched driver hashes, both firmware hashes, test-helper
+source hash, final module/helper binary hashes, and paired kernel bundle
+identity. `HAPTICS-SOURCE-SNAPSHOT/` carries those five source inputs at fixed
+paths. The builder exports the original inputs from the expected commit's Git
+objects into a private snapshot; it never compiles or installs mutable
+worktree copies. Assume-unchanged and skip-worktree index flags are rejected in
+addition to ordinary dirty-worktree state.
 
 `HAPTICS-PRODUCER.bundle` is a self-contained Git bundle with no prerequisites.
 It exposes exactly one ref, `refs/heads/tb321fu-haptics-producer`, whose tip is
@@ -38,20 +46,24 @@ Before publication, the final DEB is unpacked and checked against a closed
 eight-data-file/three-control-file contract, including member types, paths,
 modes, bytes, and final firmware/module/helper digests.
 
-The workflow builds an external module from a paired kernel source commit and
-kernel build SDK. Release dispatches must provide all five locked inputs:
+The workflow builds a release candidate external module only from a paired
+kernel source commit and kernel SDK archive. It explicitly sets
+`HAPTICS_RELEASE_MODE=1`, which requires all six locked inputs:
 
 - `kernel_source_commit`: exact 40-hex `GUF296/linux` commit
 - `kernel_build_archive`: HTTPS SDK archive URL
 - `kernel_build_archive_sha256`: SHA-256 of that exact archive
-- `kernel_bundle_metadata`: HTTPS URL of the paired `KERNEL-BUNDLE.tsv`
+- `kernel_bundle_metadata`: HTTPS URL of the paired `KERNEL-BUNDLE.tsv` v2
 - `kernel_bundle_metadata_sha256`: SHA-256 of that exact metadata file
+- `kernel_sdk_manifest`: HTTPS URL of the paired `KERNEL-SDK-MANIFEST.tsv`; its
+  SHA-256 must equal the `kernel-sdk-manifest-sha256` field in that bundle
 
-The checked-in defaults reconstruct the tested `7.1.1-g5df8e852ea72`
-baseline. A remediation release must override all five fields with the new
-commit-bound SDK and bundle. The release tag defaults to empty; when explicitly set,
-publication uses a prerelease by default and refuses to modify an existing
-public release.
+The SDK archive, its digest, and the KERNEL-BUNDLE v2 digest are checked before
+the archive is extracted or the module is compiled. A mismatch, an old schema,
+or a missing metadata field fails the build. The release tag defaults to empty;
+when explicitly set, the publisher creates and verifies a prerelease draft,
+then leaves it private for manual publication. It refuses to modify an existing
+release or draft.
 
 Each prerelease also includes `BUILD-PARAMETERS.md` as a checksum-covered
 release asset. The publisher uses those exact bytes as the release body and
@@ -80,8 +92,10 @@ The package provides `tb321fu-haptics.service`, `/usr/libexec/tb321fu-haptics/bi
 For the remediation bootstrap, do not create a duplicate kernel SDK. Invoke
 `build-tb321fu-haptics-deb.sh` directly with the clean local kernel source,
 external kernel Git database, existing build directory, generated
-`KERNEL-BUNDLE.tsv`, and `EXPECTED_HAPTICS_PRODUCER_COMMIT`. The standalone
-GitHub workflow remains the remote-SDK reconstruction path. Any archive handed
-to a rootfs builder must keep `HAPTICS-SOURCE-LOCK.tsv`,
-`HAPTICS-PRODUCER.bundle`, `HAPTICS-SOURCE-SNAPSHOT/`, the DEB, and the portable
-checksum manifest together.
+`KERNEL-BUNDLE.tsv`, and `EXPECTED_HAPTICS_PRODUCER_COMMIT` with
+`HAPTICS_RELEASE_MODE=0`. That output is intentionally nonportable and must
+not be passed to a rootfs builder. The standalone GitHub workflow remains the
+remote-SDK reconstruction path. Any archive handed to a rootfs builder must
+keep `HAPTICS-SOURCE-LOCK.tsv`, `HAPTICS-PRODUCER.bundle`,
+`HAPTICS-SOURCE-SNAPSHOT/`, the DEB, and the portable checksum manifest
+together.

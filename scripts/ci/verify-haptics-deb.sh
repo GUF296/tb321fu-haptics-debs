@@ -44,6 +44,7 @@ data_root="$verify_work/data"
 control_tar="$verify_work/control.tar"
 control_root="$verify_work/control"
 expected_data=(
+  etc/modprobe.d/tb321fu-haptics.conf
   etc/skel/.config/plasmakeyboardrc
   usr/bin/tb321fu-haptic-test
   usr/lib/firmware/haptic_click.bin
@@ -82,6 +83,12 @@ verify_maintainer_script_contract() {
     ci_die "haptics postinst does not roll back newly created enablement"
   grep -F 'record_managed_want_state' "$postinst" >/dev/null ||
     ci_die "haptics postinst does not preserve pre-existing enablement"
+  grep -F 'record_owned_managed_want' "$postinst" >/dev/null ||
+    ci_die "haptics postinst does not record package-owned enablement"
+  grep -F '/var/lib/tb321fu-haptics/managed-want' "$postinst" >/dev/null ||
+    ci_die "haptics postinst lacks durable systemd-want ownership state"
+  grep -F 'preserving modified systemd want' "$postrm" >/dev/null ||
+    ci_die "haptics postrm can remove a user-modified systemd want"
   grep -F "legacy Y700 haptics payload remains" "$postinst" >/dev/null ||
     ci_die "haptics postinst does not reject unmigrated legacy payload"
   grep -F 'remove|deconfigure)' "$prerm" >/dev/null ||
@@ -141,6 +148,8 @@ done
   ci_die "final haptics DEB module digest mismatch"
 [ "$(sha256sum "$data_root/usr/bin/tb321fu-haptic-test" | awk '{print $1}')" = "$haptics_test_helper_binary_sha256" ] ||
   ci_die "final haptics DEB helper digest mismatch"
+grep -Fxq 'blacklist aw86937_y700' "$data_root/etc/modprobe.d/tb321fu-haptics.conf" ||
+  ci_die "final haptics DEB does not blacklist the legacy AW86937 module"
 
 dpkg-deb --ctrl-tarfile "$package_deb" > "$control_tar"
 (umask 022; ci_extract_archive "$control_tar" "$control_root")

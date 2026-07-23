@@ -6,6 +6,7 @@ export LC_ALL=C
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 . "$SCRIPT_DIR/common.sh"
 . "$SCRIPT_DIR/haptics-maintainer-scripts.sh"
+. "$SCRIPT_DIR/haptics-kernel-sdk-contract.sh"
 
 usage() {
   cat <<USAGE
@@ -32,8 +33,11 @@ Environment inputs:
   KERNEL_GIT_DIR             optional external Git object database
   KERNEL_BUNDLE_METADATA     optional KERNEL-BUNDLE.tsv path or HTTPS URL
   KERNEL_BUNDLE_METADATA_SHA256
+  KERNEL_SDK_MANIFEST        external KERNEL-SDK-MANIFEST.tsv path or HTTPS URL
   EXPECTED_KERNEL_SOURCE_COMMIT
                               optional exact 40-hex source identity
+  HAPTICS_RELEASE_MODE        1 requires a portable, archive-bound release candidate;
+                              0 permits a nonportable local KERNEL_BUILD_DIR build
   SOURCE_DATE_EPOCH          reproducible build timestamp
   HAPTICS_STRIP              strip binaries/modules after build, default: 0
 USAGE
@@ -74,12 +78,20 @@ KERNEL_BUILD_DIR=${KERNEL_BUILD_DIR:-}
 KERNEL_GIT_DIR=${KERNEL_GIT_DIR:-}
 KERNEL_BUNDLE_METADATA=${KERNEL_BUNDLE_METADATA:-}
 KERNEL_BUNDLE_METADATA_SHA256=${KERNEL_BUNDLE_METADATA_SHA256:-}
+KERNEL_SDK_MANIFEST=${KERNEL_SDK_MANIFEST:-}
 EXPECTED_KERNEL_SOURCE_COMMIT=${EXPECTED_KERNEL_SOURCE_COMMIT:-}
 HAPTICS_STRIP=${HAPTICS_STRIP:-0}
+HAPTICS_RELEASE_MODE=${HAPTICS_RELEASE_MODE:-0}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
 kernel_build_archive_identity=local-build-directory
+kernel_build_input=local-directory
 kernel_bundle_id=unbound
 kernel_bundle_config_sha256=unbound
+kernel_bundle_sdk_archive_sha256=unbound
+kernel_bundle_sdk_manifest_sha256=unbound
+kernel_sdk_manifest_path=
+haptics_source_lock_schema=
+haptics_output_mode=
 
 [ "$ARCH" = arm64 ] || ci_die "unsupported ARCH=$ARCH; only arm64 is supported"
 [[ $HAPTICS_DEB_VERSION =~ ^[0-9][0-9A-Za-z.+~_-]{0,63}$ ]] || ci_die "unsafe HAPTICS_DEB_VERSION"
@@ -87,6 +99,21 @@ dpkg --validate-version "$HAPTICS_DEB_VERSION" >/dev/null || ci_die "invalid HAP
 [[ $SOURCE_DATE_EPOCH =~ ^[0-9]{1,10}$ ]] || ci_die "invalid SOURCE_DATE_EPOCH"
 [[ $EXPECTED_HAPTICS_PRODUCER_COMMIT =~ ^[0-9a-f]{40}$ ]] ||
   ci_die "EXPECTED_HAPTICS_PRODUCER_COMMIT must be 40 lowercase hex characters"
+haptics_validate_kernel_build_input_contract \
+  "$HAPTICS_RELEASE_MODE" \
+  "$KERNEL_BUILD_ARCHIVE" \
+  "$KERNEL_BUILD_ARCHIVE_SHA256" \
+  "$KERNEL_BUILD_DIR" \
+  "$KERNEL_BUNDLE_METADATA" \
+  "$KERNEL_BUNDLE_METADATA_SHA256" \
+  "$KERNEL_SDK_MANIFEST"
+if [ "$HAPTICS_RELEASE_MODE" = 1 ]; then
+  haptics_source_lock_schema=tb321fu.haptics-source-lock/v2
+  haptics_output_mode=release-candidate
+else
+  haptics_source_lock_schema=tb321fu.haptics-source-lock/v2-local
+  haptics_output_mode=local
+fi
 if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
   [[ $EXPECTED_KERNEL_SOURCE_COMMIT =~ ^[0-9a-f]{40}$ ]] || ci_die "invalid EXPECTED_KERNEL_SOURCE_COMMIT"
   ci_require_cmd git
@@ -191,10 +218,59 @@ find_kernel_build_root() {
   printf '%s\n' "$found"
 }
 
+copy_kernel_build_dir_private() {
+  local source_dir=$1 private_dir=$2 private_root source_link candidate resolved
+  local kernel_source_real special
+
+  source_dir=$(realpath -e -- "$source_dir") ||
+    ci_die "cannot resolve KERNEL_BUILD_DIR: $1"
+  [ -d "$source_dir" ] || ci_die "KERNEL_BUILD_DIR is not a directory: $source_dir"
+  find_kernel_build_root "$source_dir" >/dev/null ||
+    ci_die "KERNEL_BUILD_DIR does not contain kernel build output"
+  special=$(find "$source_dir" -xdev \
+    \( -type b -o -type c -o -type p -o -type s \) -print -quit)
+  [ -z "$special" ] ||
+    ci_die "KERNEL_BUILD_DIR contains an unsupported special file: $special"
+  kernel_source_real=$(realpath -e -- "$kernel_source_root") ||
+    ci_die "cannot resolve kernel source root for private build copy"
+
+  ci_log "copying KERNEL_BUILD_DIR into private build workspace" >&2
+  mkdir -p "$private_dir"
+  # Do not use reflinks or hardlinks: host-tool regeneration must never mutate
+  # the caller's build output through a shared inode.
+  rsync -a --links --no-specials --no-devices -- "$source_dir/" "$private_dir/"
+  private_root=$(find_kernel_build_root "$private_dir") ||
+    ci_die "private KERNEL_BUILD_DIR copy does not contain kernel build output"
+
+  # Kernel O= trees normally keep this link to their source tree. Recreate
+  # only that known link for the separately verified source input, then reject
+  # every other link that escapes the private copy.
+  source_link="$private_root/source"
+  if [ -L "$source_link" ]; then
+    rm -f -- "$source_link"
+    ln -s -- "$kernel_source_real" "$source_link"
+  fi
+  while IFS= read -r -d '' candidate; do
+    resolved=$(realpath -e -- "$candidate") ||
+      ci_die "private KERNEL_BUILD_DIR contains a dangling symlink: $candidate"
+    if [ "$candidate" = "$source_link" ]; then
+      [ "$resolved" = "$kernel_source_real" ] ||
+        ci_die "private kernel source link does not target the verified source"
+      continue
+    fi
+    case "$resolved" in
+      "$private_dir"|"$private_dir"/*) ;;
+      *) ci_die "private KERNEL_BUILD_DIR contains an external symlink: $candidate" ;;
+    esac
+  done < <(find "$private_dir" -type l -print0)
+
+  printf '%s\n' "$private_root"
+}
+
 load_kernel_bundle_metadata() {
   local metadata="$work_dir/KERNEL-BUNDLE.tsv"
   local canonical="$work_dir/KERNEL-BUNDLE.canonical.tsv"
-  local -a lines verify_args
+  local -a verify_args
 
   [ -n "$KERNEL_BUNDLE_METADATA" ] || return 0
   ci_download "$KERNEL_BUNDLE_METADATA" "$metadata" "$KERNEL_BUNDLE_METADATA_SHA256"
@@ -205,12 +281,22 @@ load_kernel_bundle_metadata() {
   python3 "$SCRIPT_DIR/verify-kernel-bundle.py" "${verify_args[@]}" > "$canonical" ||
     ci_die "invalid KERNEL-BUNDLE.tsv"
 
-  mapfile -t lines < "$canonical"
-  kernel_bundle_commit=${lines[1]#*$'\t'}
-  kernel_bundle_release=${lines[2]#*$'\t'}
-  kernel_bundle_config_sha256=${lines[3]#*$'\t'}
-  kernel_bundle_epoch=${lines[4]#*$'\t'}
-  kernel_bundle_id=${lines[9]#*$'\t'}
+  kernel_bundle_value() {
+    local key=$1 value count
+
+    count=$(awk -F '\t' -v key="$key" '$1 == key { count++ } END { print count + 0 }' "$canonical")
+    [ "$count" -eq 1 ] || ci_die "KERNEL-BUNDLE.tsv must contain exactly one $key"
+    value=$(awk -F '\t' -v key="$key" '$1 == key { print $2 }' "$canonical")
+    printf '%s\n' "$value"
+  }
+
+  kernel_bundle_commit=$(kernel_bundle_value kernel-source-commit)
+  kernel_bundle_release=$(kernel_bundle_value kernel-release)
+  kernel_bundle_config_sha256=$(kernel_bundle_value kernel-config-sha256)
+  kernel_bundle_sdk_archive_sha256=$(kernel_bundle_value kernel-sdk-archive-sha256)
+  kernel_bundle_sdk_manifest_sha256=$(kernel_bundle_value kernel-sdk-manifest-sha256)
+  kernel_bundle_epoch=$(kernel_bundle_value source-date-epoch)
+  kernel_bundle_id=$(kernel_bundle_value kernel-bundle-id)
 
   if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
     : # The shared verifier enforced the exact expected commit.
@@ -246,19 +332,46 @@ prepare_inputs() {
     kernel_source_root=$(find_kernel_source_root "$extract") || ci_die "KERNEL_SOURCE_ARCHIVE does not contain kernel source"
   fi
 
+  load_kernel_bundle_metadata
   if [ -n "$KERNEL_BUILD_DIR" ]; then
-    kernel_build_root=$(find_kernel_build_root "$KERNEL_BUILD_DIR") || ci_die "KERNEL_BUILD_DIR does not contain kernel build output"
+    kernel_build_root=$(copy_kernel_build_dir_private \
+      "$KERNEL_BUILD_DIR" "$work_dir/kernel-build-private")
   else
     [ -n "$KERNEL_BUILD_ARCHIVE" ] || ci_die "set KERNEL_BUILD_ARCHIVE or KERNEL_BUILD_DIR"
     archive="$work_dir/kernel-build.archive"
     extract="$work_dir/kernel-build"
     ci_download "$KERNEL_BUILD_ARCHIVE" "$archive" "$KERNEL_BUILD_ARCHIVE_SHA256"
     kernel_build_archive_identity=$(sha256sum "$archive" | awk '{print $1}')
+    kernel_build_input=kernel-sdk-archive
+    haptics_validate_kernel_sdk_binding \
+      "$HAPTICS_RELEASE_MODE" \
+      "$kernel_build_input" \
+      "$kernel_build_archive_identity" \
+      "$kernel_bundle_id" \
+      "$kernel_bundle_sdk_archive_sha256"
+    if [ "$kernel_bundle_id" != unbound ]; then
+      [ -n "$KERNEL_SDK_MANIFEST" ] ||
+        ci_die "KERNEL-BUNDLE.tsv requires KERNEL_SDK_MANIFEST for an SDK archive"
+      kernel_sdk_manifest_path="$work_dir/KERNEL-SDK-MANIFEST.tsv"
+      ci_download "$KERNEL_SDK_MANIFEST" "$kernel_sdk_manifest_path" \
+        "$kernel_bundle_sdk_manifest_sha256"
+    fi
+    if [ -n "$kernel_sdk_manifest_path" ]; then
+      python3 "$SCRIPT_DIR/verify-kernel-sdk.py" --archive-only \
+        "$archive" "$kernel_sdk_manifest_path" ||
+        ci_die "kernel SDK archive does not match KERNEL-SDK-MANIFEST.tsv"
+    fi
     ci_extract_archive "$archive" "$extract"
-    kernel_build_root=$(find_kernel_build_root "$extract") || ci_die "KERNEL_BUILD_ARCHIVE does not contain kernel build output"
+    if [ -n "$kernel_sdk_manifest_path" ]; then
+      python3 "$SCRIPT_DIR/verify-kernel-sdk.py" \
+        "$archive" "$kernel_sdk_manifest_path" "$extract" ||
+        ci_die "kernel SDK archive does not match KERNEL-SDK-MANIFEST.tsv"
+      kernel_build_root="$extract"
+    else
+      kernel_build_root=$(find_kernel_build_root "$extract") || ci_die "KERNEL_BUILD_ARCHIVE does not contain kernel build output"
+    fi
   fi
 
-  load_kernel_bundle_metadata
   kernel_release=$(cat "$kernel_build_root/include/config/kernel.release")
   haptics_validate_kernel_release "$kernel_release" ||
     ci_die "unsafe kernel release from kernel build output: $kernel_release"
@@ -394,7 +507,7 @@ prepare_haptics_source_snapshot() {
   haptics_ram_firmware_sha256=$(sha256sum "$haptics_snapshot_ram_firmware" | awk '{print $1}')
   haptics_click_firmware_sha256=$(sha256sum "$haptics_snapshot_click_firmware" | awk '{print $1}')
   haptics_test_helper_sha256=$(sha256sum "$haptics_snapshot_helper" | awk '{print $1}')
-  [ "$haptics_driver_source_sha256" = 2e0cb7b739496ff6cf4011244ec9c0b2a2367896de65784041018b9d62186e48 ] ||
+  [ "$haptics_driver_source_sha256" = 31342e17cb20c73755623542fdac4fa1e185cb2b123d798f2f7b8024a630d457 ] ||
     ci_die "AW86937 driver source does not match the canonical corrected source: $haptics_driver_source_sha256"
   find "$haptics_snapshot_work" -type f -exec chmod 0444 {} +
   find "$haptics_snapshot_work" -type d -exec chmod 0555 {} +
@@ -505,123 +618,168 @@ write_bind_script() {
 #!/bin/sh
 set -eu
 
-find_haptic_adapter()
+SYSFS_ROOT=${TB321FU_HAPTICS_SYSFS_ROOT:-/sys}
+case "$SYSFS_ROOT" in
+	/*) ;;
+	*) echo "TB321FU_HAPTICS_SYSFS_ROOT must be an absolute path" >&2; exit 1 ;;
+esac
+SYSFS_ROOT=${SYSFS_ROOT%/}
+[ -n "$SYSFS_ROOT" ] || SYSFS_ROOT=/
+I2C_DEVICES="$SYSFS_ROOT/bus/i2c/devices"
+I2C_DRIVERS="$SYSFS_ROOT/bus/i2c/drivers"
+
+compatible_contains()
 {
-	for dev in /sys/bus/i2c/devices/i2c-*; do
-		[ -e "$dev/name" ] || continue
-		real=$(readlink -f "$dev" || true)
-		case "$real" in
-			*a9c000.i2c*) basename "$dev" | sed 's/^i2c-//'; return 0 ;;
-		esac
+	tr '\000' '\n' < "$1" | grep -Fxq "$2"
+}
+
+find_current_dt_client()
+{
+	address=$1
+	target_client=
+	target_problem=
+	matches=0
+	for dev in "$I2C_DEVICES"/*-"$address"; do
+		[ -e "$dev" ] || continue
+		if [ -r "$dev/of_node/compatible" ] && \
+			compatible_contains "$dev/of_node/compatible" "lenovo,tb321fu-aw86937" && \
+			compatible_contains "$dev/of_node/compatible" "awinic,aw86937"; then
+			matches=$((matches + 1))
+			target_client=$dev
+		else
+			target_problem=$dev
+		fi
 	done
+	case "$matches" in
+		1) return 0 ;;
+		0)
+			[ -n "$target_problem" ] && return 3
+			return 1
+			;;
+		*)
+			echo "multiple TB321FU AW86937 DT clients found for I2C address $address" >&2
+			return 2
+			;;
+	esac
+}
+
+wait_for_target_pair()
+{
+	attempt=0
+	right_problem=
+	left_problem=
+	while [ "$attempt" -lt 80 ]; do
+		attempt=$((attempt + 1))
+		right_client=
+		left_client=
+		if find_current_dt_client 005a; then
+			right_client=$target_client
+			right_status=0
+		else
+			right_status=$?
+			right_problem=$target_problem
+		fi
+		if find_current_dt_client 005b; then
+			left_client=$target_client
+			left_status=0
+		else
+			left_status=$?
+			left_problem=$target_problem
+		fi
+		[ "$right_status" -ne 2 ] && [ "$left_status" -ne 2 ] || return 1
+		if [ "$right_status" -eq 0 ] && [ "$left_status" -eq 0 ]; then
+			return 0
+		fi
+		sleep 0.25
+	done
+	if [ -n "$right_problem" ]; then
+		echo "$right_problem is not a current TB321FU AW86937 DT client" >&2
+		return 1
+	fi
+	if [ -n "$left_problem" ]; then
+		echo "$left_problem is not a current TB321FU AW86937 DT client" >&2
+		return 1
+	fi
+	echo "TB321FU AW86937 DT client pair (-005a and -005b) not found" >&2
 	return 1
 }
 
-load_driver()
+module_loaded()
 {
-	if lsmod | awk '{print $1}' | grep -Eq '^(aw86937_haptics|aw86937_y700)$'; then
-		return 0
+	lsmod | awk 'NR > 1 { print $1 }' | grep -Fxq "$1"
+}
+
+load_current_driver()
+{
+	if module_loaded aw86937_y700; then
+		echo "legacy aw86937_y700 module is already loaded; reboot before binding TB321FU haptics" >&2
+		return 1
 	fi
+	module_loaded aw86937_haptics && return 0
 	modprobe aw86937_haptics 2>/dev/null && return 0
-	modprobe aw86937_y700 2>/dev/null && return 0
 
 	krel=$(uname -r)
 	for module_path in \
 		"/lib/modules/$krel/extra/aw86937-haptics.ko" \
-		"/lib/modules/$krel/extra/aw86937-y700.ko" \
-		"/usr/lib/modules/$krel/extra/aw86937-haptics.ko" \
-		"/usr/lib/modules/$krel/extra/aw86937-y700.ko"; do
+		"/usr/lib/modules/$krel/extra/aw86937-haptics.ko"; do
 		[ -f "$module_path" ] || continue
 		insmod "$module_path" && return 0
 	done
 
-	echo "no AW86937 haptics module could be loaded" >&2
+	echo "no current AW86937 haptics module could be loaded" >&2
 	return 1
 }
 
-is_known_haptic_name()
+wait_for_current_driver()
 {
-	case "$1" in
-		aw86937_haptics|aw86937_y700|aw86937|haptic_hv|haptic_hv_r|haptic_hv_l|tb321fu-aw86937|y700-aw86937)
-			return 0
-			;;
-	esac
-	return 1
-}
-
-find_driver_dir()
-{
-	for driver in aw86937-haptics aw86937-y700; do
-		[ -d "/sys/bus/i2c/drivers/$driver" ] || continue
-		printf '%s\n' "/sys/bus/i2c/drivers/$driver"
-		return 0
+	driver_dir="$I2C_DRIVERS/aw86937-haptics"
+	attempt=0
+	while [ "$attempt" -lt 40 ]; do
+		[ -d "$driver_dir" ] && { printf '%s\n' "$driver_dir"; return 0; }
+		attempt=$((attempt + 1))
+		sleep 0.1
 	done
+	echo "current AW86937 haptics I2C driver is not registered" >&2
 	return 1
 }
 
-bind_existing_client()
+bind_current_client()
 {
-	dev="$1"
-	name="$2"
-	driver_dir="$3"
+	dev=$1
+	driver_dir=$2
 	busdev=$(basename "$dev")
-
-	if ! is_known_haptic_name "$name"; then
-		echo "$dev already exists as $name" >&2
-		exit 1
-	fi
 
 	if [ -e "$dev/driver" ]; then
 		driver=$(basename "$(readlink -f "$dev/driver")")
-		case "$driver" in
-			aw86937-haptics|aw86937-y700) return 0 ;;
-		esac
+		[ "$driver" = aw86937-haptics ] && return 0
 		echo "$dev is already bound to unexpected driver $driver" >&2
-		exit 1
+		return 1
 	fi
 
-	printf '%s\n' "$busdev" > "$driver_dir/bind" 2>/dev/null || true
-
-	for _ in $(seq 1 20); do
+	printf '%s\n' "$busdev" > "$driver_dir/bind" || {
+		echo "cannot bind $dev to current AW86937 haptics driver" >&2
+		return 1
+	}
+	attempt=0
+	while [ "$attempt" -lt 20 ]; do
 		if [ -e "$dev/driver" ]; then
 			driver=$(basename "$(readlink -f "$dev/driver")")
-			case "$driver" in
-				aw86937-haptics|aw86937-y700) return 0 ;;
-			esac
+			[ "$driver" = aw86937-haptics ] && return 0
+			echo "$dev bound to unexpected driver $driver" >&2
+			return 1
 		fi
+		attempt=$((attempt + 1))
 		sleep 0.1
 	done
-
-	echo "$dev did not bind to AW86937 haptics driver" >&2
-	exit 1
+	echo "$dev did not bind to current AW86937 haptics driver" >&2
+	return 1
 }
 
-adapter=""
-for _ in $(seq 1 80); do
-	adapter=$(find_haptic_adapter 2>/dev/null || true)
-	[ -n "$adapter" ] && break
-	sleep 0.25
-done
-
-if [ -z "$adapter" ]; then
-	echo "a9c000.i2c adapter not found" >&2
-	exit 1
-fi
-
-load_driver
-driver_dir=$(find_driver_dir) || { echo "AW86937 haptics i2c driver not registered" >&2; exit 1; }
-
-for spec in "0x5a:right" "0x5b:left"; do
-	addr=${spec%%:*}
-	dev="/sys/bus/i2c/devices/${adapter}-00${addr#0x}"
-	if [ -e "$dev/name" ]; then
-		name=$(cat "$dev/name")
-		bind_existing_client "$dev" "$name" "$driver_dir"
-		continue
-	fi
-	printf 'aw86937_haptics %s\n' "$addr" > "/sys/bus/i2c/devices/i2c-$adapter/new_device" 2>/dev/null || \
-		printf 'aw86937_y700 %s\n' "$addr" > "/sys/bus/i2c/devices/i2c-$adapter/new_device"
-done
+wait_for_target_pair || exit 1
+load_current_driver || exit 1
+driver_dir=$(wait_for_current_driver) || exit 1
+bind_current_client "$right_client" "$driver_dir" || exit 1
+bind_current_client "$left_client" "$driver_dir" || exit 1
 EOF_BIND
   chmod 0755 "$dest"
 }
@@ -654,10 +812,21 @@ write_udev_rules() {
   cat > "$dest" <<'EOF_UDEV'
 # TB321FU AW86937 haptics expose standard Linux input force-feedback devices.
 ACTION=="remove", GOTO="tb321fu_haptics_end"
-SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="aw86937-haptics-left", GROUP="input", MODE="0666", TAG+="uaccess", ENV{FEEDBACKD_TYPE}="vibra", SYMLINK+="input/tb321fu-haptics-left"
-SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="aw86937-haptics-right", GROUP="input", MODE="0666", TAG+="uaccess", ENV{FEEDBACKD_TYPE}="vibra", SYMLINK+="input/tb321fu-haptics-right"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="aw86937-haptics-left", GROUP="input", MODE="0660", TAG+="uaccess", ENV{FEEDBACKD_TYPE}="vibra", SYMLINK+="input/tb321fu-haptics-left"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="aw86937-haptics-right", GROUP="input", MODE="0660", TAG+="uaccess", ENV{FEEDBACKD_TYPE}="vibra", SYMLINK+="input/tb321fu-haptics-right"
 LABEL="tb321fu_haptics_end"
 EOF_UDEV
+  chmod 0644 "$dest"
+}
+
+write_legacy_module_blacklist() {
+  local dest=$1
+
+  cat > "$dest" <<'EOF_MODPROBE'
+# The in-tree module shares the TB321FU AW86937 OF aliases. Keep it from
+# claiming DT-created clients before the package's current module is loaded.
+blacklist aw86937_y700
+EOF_MODPROBE
   chmod 0644 "$dest"
 }
 
@@ -723,6 +892,10 @@ EOF_MAKE
   modinfo "$module" | tee "$work_dir/aw86937-haptics.modinfo"
   grep -q '^name:[[:space:]]*aw86937_haptics$' "$work_dir/aw86937-haptics.modinfo" || ci_die "unexpected module name"
   grep -q '^alias:[[:space:]]*i2c:aw86937_haptics$' "$work_dir/aw86937-haptics.modinfo" || ci_die "missing standard i2c alias"
+  grep -Eq '^alias:[[:space:]]*of:.*lenovo,tb321fu-aw86937' "$work_dir/aw86937-haptics.modinfo" ||
+    ci_die "missing TB321FU AW86937 OF alias"
+  grep -Eq '^alias:[[:space:]]*of:.*awinic,aw86937' "$work_dir/aw86937-haptics.modinfo" ||
+    ci_die "missing Awinic AW86937 OF alias"
   grep -q "^vermagic:[[:space:]]*$kernel_release " "$work_dir/aw86937-haptics.modinfo" || ci_die "module vermagic does not match $kernel_release"
 
   install -d -m 0755 \
@@ -731,6 +904,7 @@ EOF_MAKE
     "$pkg/usr/libexec/tb321fu-haptics" \
     "$pkg/usr/lib/systemd/system" \
     "$pkg/usr/lib/udev/rules.d" \
+    "$pkg/etc/modprobe.d" \
     "$pkg/etc/skel/.config" \
     "$pkg/usr/bin"
 
@@ -744,6 +918,7 @@ EOF_MAKE
   write_bind_script "$pkg/usr/libexec/tb321fu-haptics/bind-aw86937"
   write_systemd_unit "$pkg/usr/lib/systemd/system/tb321fu-haptics.service"
   write_udev_rules "$pkg/usr/lib/udev/rules.d/90-tb321fu-haptics.rules"
+  write_legacy_module_blacklist "$pkg/etc/modprobe.d/tb321fu-haptics.conf"
   write_plasma_keyboard_default "$pkg/etc/skel/.config/plasmakeyboardrc"
 
   aarch64-linux-gnu-gcc -O2 -Wall -Wextra -o "$pkg/usr/bin/tb321fu-haptic-test" "$helper_src"
@@ -807,7 +982,8 @@ stage_haptics_source_snapshot() {
 
 write_haptics_source_lock() {
   {
-    printf 'schema\ttb321fu.haptics-source-lock/v1\n'
+    printf 'schema\t%s\n' "$haptics_source_lock_schema"
+    printf 'haptics-output-mode\t%s\n' "$haptics_output_mode"
     printf 'haptics-producer-commit\t%s\n' "$haptics_producer_commit"
     printf 'haptics-producer-state\t%s\n' "$haptics_producer_state"
     printf 'aw86937-driver-sha256\t%s\n' "$haptics_driver_source_sha256"
@@ -821,6 +997,7 @@ write_haptics_source_lock() {
     printf 'kernel-release\t%s\n' "$kernel_release"
     printf 'kernel-source-commit\t%s\n' "${EXPECTED_KERNEL_SOURCE_COMMIT:-unverified-local-source}"
     printf 'kernel-config-sha256\t%s\n' "$kernel_bundle_config_sha256"
+    printf 'kernel-build-input\t%s\n' "$kernel_build_input"
     printf 'kernel-build-archive-sha256\t%s\n' "$kernel_build_archive_identity"
     printf 'source-date-epoch\t%s\n' "$SOURCE_DATE_EPOCH"
   } > "$OUTPUT_DIR/HAPTICS-SOURCE-LOCK.tsv"

@@ -169,7 +169,7 @@ if [ "${1:-}" = api ]; then
         [[ $body == @* ]]
         [ -f "${body#@}" ]
         [ "$draft" = true ]
-        [ "$prerelease" = false ]
+        [ "$prerelease" = true ]
         reported_tag=${GH_RELEASE_TAG_RESPONSE:-$tag}
         reported_target=${GH_RELEASE_TARGET_RESPONSE:-$target}
         reported_name=${GH_RELEASE_NAME_RESPONSE:-$name}
@@ -181,34 +181,19 @@ if [ "${1:-}" = api ]; then
         printf '%s\n' "$reported_name" > "$GH_STATE/name"
         printf '%s\n' "$reported_body_b64" > "$GH_STATE/body-b64"
         printf 'true\n' > "$GH_STATE/draft"
-        printf 'false\n' > "$GH_STATE/prerelease"
+        printf 'true\n' > "$GH_STATE/prerelease"
         printf '101\n' > "$GH_STATE/id"
         : > "$GH_STATE/assets.tsv"
         printf 'create-draft\n' >> "$GH_STATE/events.log"
         [ "$query" = '[.id, .tag_name, (.draft | tostring), .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv' ]
-        printf '101\t%s\ttrue\t%s\tfalse\t%s\t%s\n' \
+        printf '101\t%s\ttrue\t%s\ttrue\t%s\t%s\n' \
           "$reported_tag" "$reported_target" "$reported_name" "$reported_body_b64"
         ;;
       *) printf 'unexpected POST endpoint: %s\n' "$endpoint" >&2; exit 2 ;;
     esac
     exit
   fi
-  if [ "$method" = PATCH ]; then
-    [ "$endpoint" = "repos/owner/repository/releases/101" ]
-    for field in "${fields[@]}"; do
-      key=${field%%=*}
-      value=${field#*=}
-      printf '%s=%s\n' "$key" "$value" >> "$GH_STATE/patch-fields.log"
-      case $key in
-        draft) printf '%s\n' "$value" > "$GH_STATE/draft" ;;
-        prerelease) printf '%s\n' "$value" > "$GH_STATE/prerelease" ;;
-        make_latest) : ;;
-        *) printf 'unexpected PATCH field: %s\n' "$key" >&2; exit 2 ;;
-      esac
-    done
-    printf 'publish\n' >> "$GH_STATE/events.log"
-    exit
-  fi
+  [ "$method" != PATCH ] || { printf 'publisher attempted unsupported release PATCH\n' >&2; exit 2; }
 
   case "$endpoint" in
     'repos/owner/repository/releases?per_page=100')
@@ -263,7 +248,7 @@ if [ "${1:-}" = api ]; then
         draft) draft=false ;;
         tag) tag=other-tag ;;
         target) target=ffffffffffffffffffffffffffffffffffffffff ;;
-        prerelease) prerelease=true ;;
+        prerelease) prerelease=false ;;
         name) name=other-title ;;
         body) body_b64=b3RoZXItYm9keQ== ;;
         extra) : ;;
@@ -348,17 +333,20 @@ if grep -Fq 'repos/owner/repository/releases/tags/' "$state_prerelease/calls.log
   printf 'draft release was queried through the tag endpoint\n' >&2
   exit 1
 fi
-grep -Fxq 'draft=false' "$state_prerelease/patch-fields.log"
-grep -Fxq 'prerelease=true' "$state_prerelease/patch-fields.log"
-grep -Fxq 'make_latest=false' "$state_prerelease/patch-fields.log"
+[ "$(cat "$state_prerelease/draft")" = true ]
+[ ! -f "$state_prerelease/patch-fields.log" ]
+if grep -Fq -- '-X PATCH' "$state_prerelease/calls.log"; then
+  printf 'publisher attempted an unsupported release update\n' >&2
+  exit 1
+fi
 [ "$(cat "$state_prerelease/prerelease")" = true ]
 before=$(wc -l < "$state_prerelease/events.log")
 if run_publish "$state_prerelease" env PRERELEASE=1 >/dev/null 2>&1; then
-  printf 'existing public release was accepted on rerun\n' >&2
+  printf 'existing verified draft was accepted on rerun\n' >&2
   exit 1
 fi
 [ "$before" -eq "$(wc -l < "$state_prerelease/events.log")" ]
-printf 'PASS prerelease is public, never latest, and immutable on rerun\n'
+printf 'PASS prerelease draft is verified, private, and immutable on rerun\n'
 
 state_unused_target=$scratch/state-unused-target
 run_publish "$state_unused_target" env PRERELEASE=1 \
