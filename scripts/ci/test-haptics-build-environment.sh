@@ -155,8 +155,9 @@ haptics_capture_build_tools
   fail "environment-policy digest is not SHA-256"
 [[ $HAPTICS_BUILD_TOOLSET_SHA256 =~ ^[0-9a-f]{64}$ ]] ||
   fail "build-toolset digest is not SHA-256"
-[ "${#HAPTICS_REQUIRED_BUILD_TOOLS[@]}" -eq 64 ] ||
-  fail "build-tool inventory does not contain the exact 64-tool contract"
+expected_build_tool_count=${#HAPTICS_REQUIRED_BUILD_TOOLS[@]}
+[ "$expected_build_tool_count" -eq 67 ] ||
+  fail "build-tool inventory does not contain the exact 67-tool contract"
 [ "${#HAPTICS_BUILD_TOOL_RECORDS[@]}" -eq "${#HAPTICS_REQUIRED_BUILD_TOOLS[@]}" ] ||
   fail "build-tool inventory is incomplete"
 for name in "${HAPTICS_REQUIRED_BUILD_TOOLS[@]}"; do
@@ -182,8 +183,14 @@ haptics_prepare_kbuild_tool_path "$kbuild_tool_path_fixture"
 haptics_verify_kbuild_tool_path "$kbuild_tool_path_fixture"
 [ "$(stat -c '%a' -- "$kbuild_tool_path_fixture")" = 700 ] ||
   fail "private Kbuild tool path fixture is not mode 0700"
-[ "$(find "$kbuild_tool_path_fixture" -mindepth 1 -maxdepth 1 -type l -printf '.\n' | wc -l)" -eq 64 ] ||
-  fail "private Kbuild tool path fixture does not contain exactly 64 links"
+[ "$(find "$kbuild_tool_path_fixture" -mindepth 1 -maxdepth 1 -type l -printf '.\n' | wc -l)" \
+  -eq "$expected_build_tool_count" ] ||
+  fail "private Kbuild tool path fixture does not match the captured tool count"
+for generator in flex bison m4; do
+  [ "$(PATH="$kbuild_tool_path_fixture" command -v -- "$generator")" = \
+    "$kbuild_tool_path_fixture/$generator" ] ||
+    fail "private Kbuild tool path does not resolve required generator: $generator"
+done
 
 tampered_tool=xargs
 rm -- "$kbuild_tool_path_fixture/$tampered_tool"

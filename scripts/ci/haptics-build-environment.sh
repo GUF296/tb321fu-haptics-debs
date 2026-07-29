@@ -42,6 +42,9 @@ HAPTICS_REQUIRED_BUILD_TOOLS=(
   curl
   python3
   make
+  flex
+  bison
+  m4
   gcc
   as
   ld
