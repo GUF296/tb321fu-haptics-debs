@@ -267,6 +267,11 @@ haptics_prepare_kbuild_tool_path "$haptics_kbuild_path"
 kernel_source_root="$tmp/kernel-source"
 KERNEL_GIT_DIR=
 SOURCE_DATE_EPOCH=13579
+kernel_release=7.1.1-00009-g570b90203d97
+kernel_kbuild_timestamp='2026-07-22 20:36:37 UTC'
+kernel_kbuild_user=tb321fu-ci
+kernel_kbuild_host=tb321fu-builder
+kernel_kbuild_version=1
 mkdir -p "$kernel_source_root"
 export ARCH=x86_64
 export CROSS_COMPILE=/tmp/hostile-
@@ -274,9 +279,16 @@ export CC=/tmp/hostile-cc
 export HOSTCC=/tmp/hostile-hostcc
 export KBUILD_OUTPUT=/tmp/hostile-output
 export KCONFIG_CONFIG=/tmp/hostile-config
+export KERNELRELEASE=hostile-environment-release
+export KBUILD_BUILD_TIMESTAMP='hostile environment timestamp'
+export KBUILD_BUILD_USER=hostile-environment-user
+export KBUILD_BUILD_HOST=hostile-environment-host
+export KBUILD_BUILD_VERSION=999
 kernel_make \
   "PROBE_OUTPUT=$tmp/kernel-make.environment" \
-  "PROBE_ARGS=$tmp/kernel-make.arguments"
+  "PROBE_ARGS=$tmp/kernel-make.arguments" \
+  KERNELRELEASE=hostile-caller-release \
+  KBUILD_BUILD_USER=hostile-caller-user
 set +e
 kernel_make \
   "PROBE_OUTPUT=$tmp/kernel-make-failure.environment" \
@@ -304,6 +316,8 @@ done
 eval "$original_haptics_verify_build_tools_unchanged"
 for forbidden in \
   ARCH CROSS_COMPILE CC HOSTCC KBUILD_OUTPUT KCONFIG_CONFIG \
+  KERNELRELEASE KBUILD_BUILD_TIMESTAMP KBUILD_BUILD_USER \
+  KBUILD_BUILD_HOST KBUILD_BUILD_VERSION \
   MAKEFILES GNUMAKEFLAGS TAR_OPTIONS GZIP XZ_OPT DPKG_ROOT; do
   if grep -q "^$forbidden=" "$tmp/kernel-make.environment"; then
     fail "isolated kernel_make inherited $forbidden"
@@ -328,6 +342,11 @@ for expected in \
     fail "isolated kernel_make omitted environment contract: $expected"
 done
 for expected in \
+  "KERNELRELEASE=$kernel_release" \
+  "KBUILD_BUILD_TIMESTAMP=$kernel_kbuild_timestamp" \
+  "KBUILD_BUILD_USER=$kernel_kbuild_user" \
+  "KBUILD_BUILD_HOST=$kernel_kbuild_host" \
+  "KBUILD_BUILD_VERSION=$kernel_kbuild_version" \
   ARCH=arm64 \
   CROSS_COMPILE= \
   "CONFIG_SHELL=$locked_dash" \
@@ -337,6 +356,15 @@ for expected in \
   "STRIP=${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-strip]}"; do
   grep -Fxq -- "$expected" "$tmp/kernel-make.arguments" ||
     fail "isolated kernel_make omitted fixed command argument: $expected"
+done
+for expected in \
+  "KERNELRELEASE=$kernel_release" \
+  "KBUILD_BUILD_USER=$kernel_kbuild_user"; do
+  key=${expected%%=*}
+  actual=$(awk -F= -v key="$key" '$1 == key { value = $0 } END { print value }' \
+    "$tmp/kernel-make.arguments")
+  [ "$actual" = "$expected" ] ||
+    fail "caller-controlled make assignment overrode verified identity: $key"
 done
 HAPTICS_BUILD_TOOL_PATHS[make]=$(haptics_resolve_build_tool make)
 

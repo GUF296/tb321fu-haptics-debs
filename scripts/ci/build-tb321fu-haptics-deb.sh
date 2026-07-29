@@ -146,6 +146,10 @@ kernel_bundle_id=unbound
 kernel_bundle_config_sha256=unbound
 kernel_bundle_sdk_archive_sha256=unbound
 kernel_bundle_sdk_manifest_sha256=unbound
+kernel_kbuild_timestamp=
+kernel_kbuild_user=
+kernel_kbuild_host=
+kernel_kbuild_version=
 kernel_sdk_manifest_path=
 haptics_source_lock_schema=
 haptics_output_mode=
@@ -365,6 +369,10 @@ load_kernel_bundle_metadata() {
   kernel_bundle_sdk_archive_sha256=$(kernel_bundle_value kernel-sdk-archive-sha256)
   kernel_bundle_sdk_manifest_sha256=$(kernel_bundle_value kernel-sdk-manifest-sha256)
   kernel_bundle_epoch=$(kernel_bundle_value source-date-epoch)
+  kernel_kbuild_timestamp=$(kernel_bundle_value kbuild-build-timestamp)
+  kernel_kbuild_user=$(kernel_bundle_value kbuild-build-user)
+  kernel_kbuild_host=$(kernel_bundle_value kbuild-build-host)
+  kernel_kbuild_version=$(kernel_bundle_value kbuild-build-version)
   kernel_bundle_id=$(kernel_bundle_value kernel-bundle-id)
 
   if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
@@ -374,6 +382,26 @@ load_kernel_bundle_metadata() {
   fi
   SOURCE_DATE_EPOCH=$kernel_bundle_epoch
   export SOURCE_DATE_EPOCH
+}
+
+prepare_kernel_kbuild_identity() {
+  if [ "$kernel_bundle_id" = unbound ]; then
+    kernel_kbuild_timestamp=$(haptics_run_isolated_tool date -u \
+      -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%d %H:%M:%S UTC') ||
+      ci_die "cannot derive local Kbuild timestamp from SOURCE_DATE_EPOCH"
+    kernel_kbuild_user=tb321fu-haptics
+    kernel_kbuild_host=tb321fu-builder
+    kernel_kbuild_version=1
+  fi
+
+  [[ $kernel_kbuild_timestamp =~ ^[0-9A-Za-z][0-9A-Za-z,:+._\ -]{0,95}$ ]] ||
+    ci_die "invalid Kbuild timestamp from verified kernel identity"
+  [[ $kernel_kbuild_user =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] ||
+    ci_die "invalid Kbuild user from verified kernel identity"
+  [[ $kernel_kbuild_host =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] ||
+    ci_die "invalid Kbuild host from verified kernel identity"
+  [[ $kernel_kbuild_version =~ ^[1-9][0-9]{0,8}$ ]] ||
+    ci_die "invalid Kbuild version from verified kernel identity"
 }
 
 prepare_inputs() {
@@ -402,6 +430,7 @@ prepare_inputs() {
   fi
 
   load_kernel_bundle_metadata
+  prepare_kernel_kbuild_identity
   if [ -n "$KERNEL_BUILD_DIR" ]; then
     kernel_build_root=$(copy_kernel_build_dir_private \
       "$KERNEL_BUILD_DIR" "$work_dir/kernel-build-private")
@@ -652,6 +681,11 @@ kernel_make() {
   haptics_verify_kbuild_tool_path "$haptics_kbuild_path"
   if "${HAPTICS_BUILD_TOOL_PATHS[env]}" -i "${make_env[@]}" \
       "${HAPTICS_BUILD_TOOL_PATHS[make]}" -C "$kernel_source_root" "$@" \
+      KERNELRELEASE="$kernel_release" \
+      KBUILD_BUILD_TIMESTAMP="$kernel_kbuild_timestamp" \
+      KBUILD_BUILD_USER="$kernel_kbuild_user" \
+      KBUILD_BUILD_HOST="$kernel_kbuild_host" \
+      KBUILD_BUILD_VERSION="$kernel_kbuild_version" \
       ARCH=arm64 \
       CONFIG_SHELL="${HAPTICS_BUILD_TOOL_PATHS[dash]}" \
       SHELL="${HAPTICS_BUILD_TOOL_PATHS[dash]}" \

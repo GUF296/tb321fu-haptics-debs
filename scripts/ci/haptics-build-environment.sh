@@ -103,6 +103,8 @@ haptics_build_environment_policy() {
     'debian-compression=xz,level=6,threads=1,uniform=yes' \
     'kbuild-path=private-locked-tool-directory-v1' \
     'kbuild-shell=absolute-locked-dash-v1' \
+    'kbuild-kernelrelease=verified-sdk-command-line-v1' \
+    'kbuild-compile-identity=verified-bundle-or-epoch-command-line-v1' \
     'command-resolution=absolute-recorded-paths' \
     'generated-kernel-host-tools=absolute-private-path,sha256,pre-and-post-use-verification' \
     'tool-identity=absolute-realpath,sha256,version,post-use-verification'

@@ -278,6 +278,44 @@ require_failure 'HAPTICS_RELEASE_MODE=1 requires a kernel SDK archive input' \
 haptics_validate_kernel_sdk_binding \
   0 local-directory local-build-directory unbound unbound
 
+identity_fixture="$download_fixture/prepare-kernel-kbuild-identity.sh"
+awk '
+  /^prepare_kernel_kbuild_identity\(\)/ { emit = 1 }
+  emit { print }
+  emit && /^}$/ { exit }
+' "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" > "$identity_fixture"
+[ -s "$identity_fixture" ] || fail "could not extract Kbuild identity preparation"
+. "$identity_fixture"
+haptics_run_isolated_tool() {
+  [ "$1" = date ] || fail "Kbuild identity fixture invoked an unexpected tool: $1"
+  shift
+  /usr/bin/date "$@"
+}
+
+kernel_bundle_id=unbound
+SOURCE_DATE_EPOCH=1784752597
+kernel_kbuild_timestamp=
+kernel_kbuild_user=
+kernel_kbuild_host=
+kernel_kbuild_version=
+prepare_kernel_kbuild_identity
+[ "$kernel_kbuild_timestamp" = '2026-07-22 20:36:37 UTC' ] ||
+  fail "local Kbuild timestamp was not derived from SOURCE_DATE_EPOCH"
+[ "$kernel_kbuild_user" = tb321fu-haptics ] || fail "local Kbuild user is not deterministic"
+[ "$kernel_kbuild_host" = tb321fu-builder ] || fail "local Kbuild host is not deterministic"
+[ "$kernel_kbuild_version" = 1 ] || fail "local Kbuild version is not deterministic"
+
+kernel_bundle_id="$bundle_id"
+kernel_kbuild_timestamp='2026-07-22 20:36:37 UTC'
+kernel_kbuild_user=tb321fu-ci
+kernel_kbuild_host=tb321fu-builder
+kernel_kbuild_version=1
+prepare_kernel_kbuild_identity
+[ "$kernel_kbuild_user" = tb321fu-ci ] || fail "verified bundle Kbuild identity was replaced"
+kernel_kbuild_user='bad bundle user'
+require_failure 'invalid Kbuild user from verified kernel identity' \
+  prepare_kernel_kbuild_identity
+
 python3 - "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" <<'PY'
 from pathlib import Path
 import sys
@@ -299,6 +337,23 @@ remove_archive = source.index('rm -f -- "$archive"', verifier)
 assert metadata < archive_download < binding < manifest_download < preflight < extract < verifier < remove_archive
 assert '--kernel-release "$kernel_bundle_release"' in source[preflight:extract]
 assert '--kernel-release "$kernel_bundle_release"' in source[verifier:remove_archive]
+for field, variable in (
+    ("kbuild-build-timestamp", "kernel_kbuild_timestamp"),
+    ("kbuild-build-user", "kernel_kbuild_user"),
+    ("kbuild-build-host", "kernel_kbuild_host"),
+    ("kbuild-build-version", "kernel_kbuild_version"),
+):
+    assert f'{variable}=$(kernel_bundle_value {field})' in source
+kernel_make = source[source.index("kernel_make()") : source.index("record_kernel_host_tools()")]
+caller_args = kernel_make.index('"$@"')
+for assignment in (
+    'KERNELRELEASE="$kernel_release"',
+    'KBUILD_BUILD_TIMESTAMP="$kernel_kbuild_timestamp"',
+    'KBUILD_BUILD_USER="$kernel_kbuild_user"',
+    'KBUILD_BUILD_HOST="$kernel_kbuild_host"',
+    'KBUILD_BUILD_VERSION="$kernel_kbuild_version"',
+):
+    assert kernel_make.index(assignment) > caller_args
 start = source.index("write_haptics_source_lock()")
 end = source.index("\n}\n", start) + 2
 block = source[start:end]
