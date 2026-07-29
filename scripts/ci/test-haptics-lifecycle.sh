@@ -57,7 +57,7 @@ for token in \
   HAPTICS_MODULE_SHA256= \
   HAPTICS_HELPER_BINARY_SHA256= \
   'refusing stale OUTPUT_DIR' \
-  'mv -T'; do
+  'haptics_promote_directory_no_clobber'; do
   grep -F "$token" "$build_script" "$sdk_script" "$SCRIPT_DIR/common.sh" >/dev/null ||
     fail "haptics production contract omits $token"
 done

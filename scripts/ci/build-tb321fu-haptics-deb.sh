@@ -1,12 +1,80 @@
-#!/usr/bin/env bash
-set -euo pipefail
-umask 022
-export LC_ALL=C
-
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+#!/bin/sh
+if [ "${HAPTICS_BUILDER_CLEAN_ENV:-}" != 1 ] || [ -z "${BASH_VERSION:-}" ]; then
+  script_path=$(/usr/bin/realpath -e -- "$0") || exit 1
+  exec /usr/bin/env -i \
+    PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+    LANG=C LC_ALL=C TZ=UTC HOME=/nonexistent TMPDIR=/tmp \
+    HAPTICS_BUILDER_CLEAN_ENV=1 \
+    OUTPUT_DIR="${OUTPUT_DIR-}" \
+    ARCH="${ARCH-}" \
+    HAPTICS_DEB_VERSION="${HAPTICS_DEB_VERSION-}" \
+    HAPTICS_SOURCE_ARCHIVE="${HAPTICS_SOURCE_ARCHIVE-}" \
+    HAPTICS_SOURCE_ARCHIVE_SHA256="${HAPTICS_SOURCE_ARCHIVE_SHA256-}" \
+    HAPTICS_SOURCE_DIR="${HAPTICS_SOURCE_DIR-}" \
+    HAPTICS_GIT_DIR="${HAPTICS_GIT_DIR-}" \
+    EXPECTED_HAPTICS_PRODUCER_COMMIT="${EXPECTED_HAPTICS_PRODUCER_COMMIT-}" \
+    KERNEL_SOURCE_ARCHIVE="${KERNEL_SOURCE_ARCHIVE-}" \
+    KERNEL_SOURCE_ARCHIVE_SHA256="${KERNEL_SOURCE_ARCHIVE_SHA256-}" \
+    KERNEL_SOURCE_DIR="${KERNEL_SOURCE_DIR-}" \
+    KERNEL_BUILD_ARCHIVE="${KERNEL_BUILD_ARCHIVE-}" \
+    KERNEL_BUILD_ARCHIVE_SHA256="${KERNEL_BUILD_ARCHIVE_SHA256-}" \
+    KERNEL_BUILD_DIR="${KERNEL_BUILD_DIR-}" \
+    KERNEL_GIT_DIR="${KERNEL_GIT_DIR-}" \
+    KERNEL_BUNDLE_METADATA="${KERNEL_BUNDLE_METADATA-}" \
+    KERNEL_BUNDLE_METADATA_SHA256="${KERNEL_BUNDLE_METADATA_SHA256-}" \
+    KERNEL_SDK_MANIFEST="${KERNEL_SDK_MANIFEST-}" \
+    EXPECTED_KERNEL_SOURCE_COMMIT="${EXPECTED_KERNEL_SOURCE_COMMIT-}" \
+    HAPTICS_STRIP="${HAPTICS_STRIP-}" \
+    HAPTICS_RELEASE_MODE="${HAPTICS_RELEASE_MODE-}" \
+    SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-}" \
+    EXPECTED_HAPTICS_BUILD_TOOLSET_SHA256="${EXPECTED_HAPTICS_BUILD_TOOLSET_SHA256-}" \
+    EXPECTED_HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256="${EXPECTED_HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256-}" \
+    http_proxy="${http_proxy-}" HTTP_PROXY="${HTTP_PROXY-}" \
+    https_proxy="${https_proxy-}" HTTPS_PROXY="${HTTPS_PROXY-}" \
+    no_proxy="${no_proxy-}" NO_PROXY="${NO_PROXY-}" \
+    /usr/bin/bash --noprofile --norc "$script_path" "$@"
+fi
+SCRIPT_SOURCE=${BASH_SOURCE[0]}
+case "$SCRIPT_SOURCE" in
+  /*) SCRIPT_PATH=$SCRIPT_SOURCE ;;
+  */*) SCRIPT_PATH=$(cd -P -- "${SCRIPT_SOURCE%/*}" && printf '%s/%s\n' "$PWD" "${SCRIPT_SOURCE##*/}") ;;
+  *) SCRIPT_PATH=$PWD/$SCRIPT_SOURCE ;;
+esac
+SCRIPT_DIR=${SCRIPT_PATH%/*}
 . "$SCRIPT_DIR/common.sh"
+. "$SCRIPT_DIR/haptics-build-environment.sh"
 . "$SCRIPT_DIR/haptics-maintainer-scripts.sh"
 . "$SCRIPT_DIR/haptics-kernel-sdk-contract.sh"
+
+haptics_enter_clean_environment HAPTICS_BUILDER_CLEAN_ENV "$SCRIPT_PATH" \
+  OUTPUT_DIR \
+  ARCH \
+  HAPTICS_DEB_VERSION \
+  HAPTICS_SOURCE_ARCHIVE \
+  HAPTICS_SOURCE_ARCHIVE_SHA256 \
+  HAPTICS_SOURCE_DIR \
+  HAPTICS_GIT_DIR \
+  EXPECTED_HAPTICS_PRODUCER_COMMIT \
+  KERNEL_SOURCE_ARCHIVE \
+  KERNEL_SOURCE_ARCHIVE_SHA256 \
+  KERNEL_SOURCE_DIR \
+  KERNEL_BUILD_ARCHIVE \
+  KERNEL_BUILD_ARCHIVE_SHA256 \
+  KERNEL_BUILD_DIR \
+  KERNEL_GIT_DIR \
+  KERNEL_BUNDLE_METADATA \
+  KERNEL_BUNDLE_METADATA_SHA256 \
+  KERNEL_SDK_MANIFEST \
+  EXPECTED_KERNEL_SOURCE_COMMIT \
+  HAPTICS_STRIP \
+  HAPTICS_RELEASE_MODE \
+  SOURCE_DATE_EPOCH \
+  EXPECTED_HAPTICS_BUILD_TOOLSET_SHA256 \
+  EXPECTED_HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256 \
+  -- "$@"
+
+set -euo pipefail
+umask 022
 
 usage() {
   cat <<USAGE
@@ -48,19 +116,6 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   exit 0
 fi
 
-ci_require_cmd make
-ci_require_cmd python3
-ci_require_cmd rsync
-ci_require_cmd dpkg-deb
-ci_require_cmd sha256sum
-ci_require_cmd aarch64-linux-gnu-gcc
-ci_require_cmd aarch64-linux-gnu-strip
-ci_require_cmd modinfo
-ci_require_cmd dpkg
-ci_require_cmd cmp
-ci_require_cmd dash
-ci_require_cmd bash
-
 OUTPUT_DIR=${OUTPUT_DIR:-out/tb321fu-haptics-debs}
 ARCH=${ARCH:-arm64}
 HAPTICS_DEB_VERSION=${HAPTICS_DEB_VERSION:-20260627.1}
@@ -83,6 +138,8 @@ EXPECTED_KERNEL_SOURCE_COMMIT=${EXPECTED_KERNEL_SOURCE_COMMIT:-}
 HAPTICS_STRIP=${HAPTICS_STRIP:-0}
 HAPTICS_RELEASE_MODE=${HAPTICS_RELEASE_MODE:-0}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
+EXPECTED_HAPTICS_BUILD_TOOLSET_SHA256=${EXPECTED_HAPTICS_BUILD_TOOLSET_SHA256:-}
+EXPECTED_HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256=${EXPECTED_HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256:-}
 kernel_build_archive_identity=local-build-directory
 kernel_build_input=local-directory
 kernel_bundle_id=unbound
@@ -92,13 +149,17 @@ kernel_bundle_sdk_manifest_sha256=unbound
 kernel_sdk_manifest_path=
 haptics_source_lock_schema=
 haptics_output_mode=
+build_tools_manifest_sha256=
 
 [ "$ARCH" = arm64 ] || ci_die "unsupported ARCH=$ARCH; only arm64 is supported"
 [[ $HAPTICS_DEB_VERSION =~ ^[0-9][0-9A-Za-z.+~_-]{0,63}$ ]] || ci_die "unsafe HAPTICS_DEB_VERSION"
-dpkg --validate-version "$HAPTICS_DEB_VERSION" >/dev/null || ci_die "invalid HAPTICS_DEB_VERSION"
 [[ $SOURCE_DATE_EPOCH =~ ^[0-9]{1,10}$ ]] || ci_die "invalid SOURCE_DATE_EPOCH"
 [[ $EXPECTED_HAPTICS_PRODUCER_COMMIT =~ ^[0-9a-f]{40}$ ]] ||
   ci_die "EXPECTED_HAPTICS_PRODUCER_COMMIT must be 40 lowercase hex characters"
+haptics_capture_build_tools
+haptics_verify_expected_build_environment
+haptics_run_isolated_tool dpkg --validate-version "$HAPTICS_DEB_VERSION" >/dev/null ||
+  ci_die "invalid HAPTICS_DEB_VERSION"
 haptics_validate_kernel_build_input_contract \
   "$HAPTICS_RELEASE_MODE" \
   "$KERNEL_BUILD_ARCHIVE" \
@@ -108,10 +169,10 @@ haptics_validate_kernel_build_input_contract \
   "$KERNEL_BUNDLE_METADATA_SHA256" \
   "$KERNEL_SDK_MANIFEST"
 if [ "$HAPTICS_RELEASE_MODE" = 1 ]; then
-  haptics_source_lock_schema=tb321fu.haptics-source-lock/v2
+  haptics_source_lock_schema=tb321fu.haptics-source-lock/v3
   haptics_output_mode=release-candidate
 else
-  haptics_source_lock_schema=tb321fu.haptics-source-lock/v2-local
+  haptics_source_lock_schema=tb321fu.haptics-source-lock/v3-local
   haptics_output_mode=local
 fi
 if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
@@ -138,6 +199,10 @@ haptics_deb_name=
 producer_bundle=
 output_path=
 output_stage=
+kernel_fixdep_path=
+kernel_fixdep_sha256=
+kernel_modpost_path=
+kernel_modpost_sha256=
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/tb321fu-haptics-build.XXXXXX")
 
@@ -150,6 +215,8 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+haptics_kbuild_path="$work_dir/kbuild-tools"
+haptics_prepare_kbuild_tool_path "$haptics_kbuild_path"
 
 output_requested=$(ci_abs_path "$OUTPUT_DIR")
 output_parent=$(dirname -- "$output_requested")
@@ -238,7 +305,8 @@ copy_kernel_build_dir_private() {
   mkdir -p "$private_dir"
   # Do not use reflinks or hardlinks: host-tool regeneration must never mutate
   # the caller's build output through a shared inode.
-  rsync -a --links --no-specials --no-devices -- "$source_dir/" "$private_dir/"
+  haptics_run_isolated_tool rsync -a --links --no-specials --no-devices -- \
+    "$source_dir/" "$private_dir/"
   private_root=$(find_kernel_build_root "$private_dir") ||
     ci_die "private KERNEL_BUILD_DIR copy does not contain kernel build output"
 
@@ -278,7 +346,8 @@ load_kernel_bundle_metadata() {
   if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
     verify_args+=(--expect "kernel-source-commit=$EXPECTED_KERNEL_SOURCE_COMMIT")
   fi
-  python3 "$SCRIPT_DIR/verify-kernel-bundle.py" "${verify_args[@]}" > "$canonical" ||
+  haptics_run_isolated_tool python3 \
+    "$SCRIPT_DIR/verify-kernel-bundle.py" "${verify_args[@]}" > "$canonical" ||
     ci_die "invalid KERNEL-BUNDLE.tsv"
 
   kernel_bundle_value() {
@@ -341,7 +410,7 @@ prepare_inputs() {
     archive="$work_dir/kernel-build.archive"
     extract="$work_dir/kernel-build"
     ci_download "$KERNEL_BUILD_ARCHIVE" "$archive" "$KERNEL_BUILD_ARCHIVE_SHA256"
-    kernel_build_archive_identity=$(sha256sum "$archive" | awk '{print $1}')
+    kernel_build_archive_identity=$(haptics_sha256_file "$archive")
     kernel_build_input=kernel-sdk-archive
     haptics_validate_kernel_sdk_binding \
       "$HAPTICS_RELEASE_MODE" \
@@ -357,13 +426,13 @@ prepare_inputs() {
         "$kernel_bundle_sdk_manifest_sha256"
     fi
     if [ -n "$kernel_sdk_manifest_path" ]; then
-      python3 "$SCRIPT_DIR/verify-kernel-sdk.py" --archive-only \
+      haptics_run_isolated_tool python3 "$SCRIPT_DIR/verify-kernel-sdk.py" --archive-only \
         "$archive" "$kernel_sdk_manifest_path" ||
         ci_die "kernel SDK archive does not match KERNEL-SDK-MANIFEST.tsv"
     fi
     ci_extract_archive "$archive" "$extract"
     if [ -n "$kernel_sdk_manifest_path" ]; then
-      python3 "$SCRIPT_DIR/verify-kernel-sdk.py" \
+      haptics_run_isolated_tool python3 "$SCRIPT_DIR/verify-kernel-sdk.py" \
         "$archive" "$kernel_sdk_manifest_path" "$extract" ||
         ci_die "kernel SDK archive does not match KERNEL-SDK-MANIFEST.tsv"
       kernel_build_root="$extract"
@@ -377,7 +446,7 @@ prepare_inputs() {
     ci_die "unsafe kernel release from kernel build output: $kernel_release"
   if [ "$kernel_bundle_id" != unbound ]; then
     [ "$kernel_release" = "$kernel_bundle_release" ] || ci_die "kernel release differs from KERNEL-BUNDLE.tsv"
-    [ "$(sha256sum "$kernel_build_root/.config" | awk '{print $1}')" = "$kernel_bundle_config_sha256" ] ||
+    [ "$(haptics_sha256_file "$kernel_build_root/.config")" = "$kernel_bundle_config_sha256" ] ||
       ci_die "kernel build config differs from KERNEL-BUNDLE.tsv"
   fi
   if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
@@ -474,7 +543,7 @@ verify_kernel_build_state() {
   if [ "$kernel_bundle_id" != unbound ]; then
     [ "$actual_release" = "$kernel_bundle_release" ] ||
       ci_die "kernel build release differs from KERNEL-BUNDLE.tsv $phase"
-    actual_config_sha256=$(sha256sum "$kernel_build_root/.config" | awk '{print $1}')
+    actual_config_sha256=$(haptics_sha256_file "$kernel_build_root/.config")
     [ "$actual_config_sha256" = "$kernel_bundle_config_sha256" ] ||
       ci_die "kernel build config differs from KERNEL-BUNDLE.tsv $phase: expected $kernel_bundle_config_sha256, got $actual_config_sha256"
   fi
@@ -503,10 +572,10 @@ prepare_haptics_source_snapshot() {
   ci_export_git_file "$haptics_root" "$EXPECTED_HAPTICS_PRODUCER_COMMIT" \
     haptics/baseline-20260614-daily-clean/testing-tools/y700-haptic-test.c \
     "$haptics_snapshot_helper" "$HAPTICS_GIT_DIR"
-  haptics_driver_source_sha256=$(sha256sum "$haptics_snapshot_driver" | awk '{print $1}')
-  haptics_ram_firmware_sha256=$(sha256sum "$haptics_snapshot_ram_firmware" | awk '{print $1}')
-  haptics_click_firmware_sha256=$(sha256sum "$haptics_snapshot_click_firmware" | awk '{print $1}')
-  haptics_test_helper_sha256=$(sha256sum "$haptics_snapshot_helper" | awk '{print $1}')
+  haptics_driver_source_sha256=$(haptics_sha256_file "$haptics_snapshot_driver")
+  haptics_ram_firmware_sha256=$(haptics_sha256_file "$haptics_snapshot_ram_firmware")
+  haptics_click_firmware_sha256=$(haptics_sha256_file "$haptics_snapshot_click_firmware")
+  haptics_test_helper_sha256=$(haptics_sha256_file "$haptics_snapshot_helper")
   [ "$haptics_driver_source_sha256" = 31342e17cb20c73755623542fdac4fa1e185cb2b123d798f2f7b8024a630d457 ] ||
     ci_die "AW86937 driver source does not match the canonical corrected source: $haptics_driver_source_sha256"
   find "$haptics_snapshot_work" -type f -exec chmod 0444 {} +
@@ -524,13 +593,13 @@ verify_private_haptics_source_snapshot() {
     ci_die "private haptic_click.bin snapshot is not regular $label"
   [ -f "$haptics_snapshot_helper" ] && [ ! -L "$haptics_snapshot_helper" ] ||
     ci_die "private haptics helper snapshot is not regular $label"
-  [ "$(sha256sum "$haptics_snapshot_driver" | awk '{print $1}')" = "$haptics_driver_source_sha256" ] ||
+  [ "$(haptics_sha256_file "$haptics_snapshot_driver")" = "$haptics_driver_source_sha256" ] ||
     ci_die "private AW86937 driver snapshot changed $label"
-  [ "$(sha256sum "$haptics_snapshot_ram_firmware" | awk '{print $1}')" = "$haptics_ram_firmware_sha256" ] ||
+  [ "$(haptics_sha256_file "$haptics_snapshot_ram_firmware")" = "$haptics_ram_firmware_sha256" ] ||
     ci_die "private haptic_ram.bin snapshot changed $label"
-  [ "$(sha256sum "$haptics_snapshot_click_firmware" | awk '{print $1}')" = "$haptics_click_firmware_sha256" ] ||
+  [ "$(haptics_sha256_file "$haptics_snapshot_click_firmware")" = "$haptics_click_firmware_sha256" ] ||
     ci_die "private haptic_click.bin snapshot changed $label"
-  [ "$(sha256sum "$haptics_snapshot_helper" | awk '{print $1}')" = "$haptics_test_helper_sha256" ] ||
+  [ "$(haptics_sha256_file "$haptics_snapshot_helper")" = "$haptics_test_helper_sha256" ] ||
     ci_die "private haptics helper snapshot changed $label"
 }
 
@@ -547,13 +616,93 @@ create_haptics_producer_bundle() {
 }
 
 kernel_make() {
+  local status
+  local -a make_env=(
+    "PATH=$haptics_kbuild_path"
+    LANG=C
+    LC_ALL=C
+    TZ=UTC
+    "HOME=$HAPTICS_BUILD_HOME"
+    "TMPDIR=$HAPTICS_BUILD_TMPDIR"
+    "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+    GIT_CONFIG_NOSYSTEM=1
+    GIT_CONFIG_GLOBAL=/dev/null
+    GIT_ATTR_NOSYSTEM=1
+    GIT_OPTIONAL_LOCKS=0
+    GIT_TERMINAL_PROMPT=0
+    GIT_NO_REPLACE_OBJECTS=1
+    GIT_CONFIG_COUNT=3
+    GIT_CONFIG_KEY_0=core.fsmonitor
+    GIT_CONFIG_VALUE_0=false
+    GIT_CONFIG_KEY_1=core.untrackedCache
+    GIT_CONFIG_VALUE_1=false
+    GIT_CONFIG_KEY_2=core.excludesFile
+    GIT_CONFIG_VALUE_2=/dev/null
+    "CONFIG_SHELL=${HAPTICS_BUILD_TOOL_PATHS[dash]}"
+    "SHELL=${HAPTICS_BUILD_TOOL_PATHS[dash]}"
+  )
+
   if [ -n "$KERNEL_GIT_DIR" ]; then
-    ci_sanitized_git_env \
-      env GIT_DIR="$KERNEL_GIT_DIR" GIT_WORK_TREE="$kernel_source_root" \
-      make -C "$kernel_source_root" "$@"
-  else
-    ci_sanitized_git_env make -C "$kernel_source_root" "$@"
+    make_env+=("GIT_DIR=$KERNEL_GIT_DIR" "GIT_WORK_TREE=$kernel_source_root")
   fi
+  haptics_verify_build_tools_unchanged "before Kbuild invocation"
+  haptics_verify_kbuild_tool_path "$haptics_kbuild_path"
+  if "${HAPTICS_BUILD_TOOL_PATHS[env]}" -i "${make_env[@]}" \
+      "${HAPTICS_BUILD_TOOL_PATHS[make]}" -C "$kernel_source_root" "$@" \
+      ARCH=arm64 \
+      CONFIG_SHELL="${HAPTICS_BUILD_TOOL_PATHS[dash]}" \
+      SHELL="${HAPTICS_BUILD_TOOL_PATHS[dash]}" \
+      HOSTCC="${HAPTICS_BUILD_TOOL_PATHS[gcc]}" \
+      HOSTAS="${HAPTICS_BUILD_TOOL_PATHS[as]}" \
+      HOSTLD="${HAPTICS_BUILD_TOOL_PATHS[ld]}" \
+      HOSTAR="${HAPTICS_BUILD_TOOL_PATHS[ar]}" \
+      CROSS_COMPILE= \
+      CC="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-gcc]}" \
+      CPP="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-cpp]}" \
+      AS="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-as]}" \
+      LD="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-ld]}" \
+      AR="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-ar]}" \
+      NM="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-nm]}" \
+      OBJCOPY="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-objcopy]}" \
+      OBJDUMP="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-objdump]}" \
+      READELF="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-readelf]}" \
+      STRIP="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-strip]}"; then
+    status=0
+  else
+    status=$?
+  fi
+  haptics_verify_kbuild_tool_path "$haptics_kbuild_path"
+  haptics_verify_build_tools_unchanged "after Kbuild invocation"
+  return "$status"
+}
+
+record_kernel_host_tools() {
+  local path
+
+  kernel_fixdep_path=$(realpath -e -- "$kernel_build_root/scripts/basic/fixdep") ||
+    ci_die "cannot resolve rebuilt kernel host tool: scripts/basic/fixdep"
+  kernel_modpost_path=$(realpath -e -- "$kernel_build_root/scripts/mod/modpost") ||
+    ci_die "cannot resolve rebuilt kernel host tool: scripts/mod/modpost"
+  for path in "$kernel_fixdep_path" "$kernel_modpost_path"; do
+    [ -f "$path" ] && [ -x "$path" ] && [ ! -L "$path" ] ||
+      ci_die "rebuilt kernel host tool is not an absolute regular executable: $path"
+  done
+  kernel_fixdep_sha256=$(haptics_sha256_file "$kernel_fixdep_path")
+  kernel_modpost_sha256=$(haptics_sha256_file "$kernel_modpost_path")
+  ci_log "generated build tool: kernel-fixdep $kernel_fixdep_path $kernel_fixdep_sha256"
+  ci_log "generated build tool: kernel-modpost $kernel_modpost_path $kernel_modpost_sha256"
+}
+
+verify_kernel_host_tools_unchanged() {
+  local phase=$1
+
+  [ -n "$kernel_fixdep_sha256" ] && [ -n "$kernel_modpost_sha256" ] ||
+    ci_die "kernel host-tool evidence is missing $phase"
+  [ "$(haptics_sha256_file "$kernel_fixdep_path")" = "$kernel_fixdep_sha256" ] ||
+    ci_die "kernel fixdep bytes changed $phase"
+  [ "$(haptics_sha256_file "$kernel_modpost_path")" = "$kernel_modpost_sha256" ] ||
+    ci_die "kernel modpost bytes changed $phase"
+  ci_log "generated kernel host tools unchanged $phase"
 }
 
 prepare_kernel_host_tools() {
@@ -564,12 +713,11 @@ prepare_kernel_host_tools() {
     "$kernel_build_root/scripts/basic/fixdep" \
     "$kernel_build_root/scripts/mod/modpost"
   kernel_make O="$kernel_build_root" \
-    ARCH=arm64 \
-    CROSS_COMPILE=aarch64-linux-gnu- \
     scripts_basic scripts/mod/
 
   [ -x "$kernel_build_root/scripts/basic/fixdep" ] || ci_die "missing rebuilt kernel host tool: scripts/basic/fixdep"
   [ -x "$kernel_build_root/scripts/mod/modpost" ] || ci_die "missing rebuilt kernel host tool: scripts/mod/modpost"
+  record_kernel_host_tools
   verify_kernel_build_state "after host-tool preparation"
 }
 
@@ -845,7 +993,7 @@ EOF_CONF
 
 strip_if_requested() {
   [ "$HAPTICS_STRIP" = 1 ] || return 0
-  aarch64-linux-gnu-strip --strip-unneeded "$@"
+  haptics_run_isolated_tool aarch64-linux-gnu-strip --strip-unneeded "$@"
 }
 
 build_haptics_package() {
@@ -866,7 +1014,7 @@ build_haptics_package() {
   verify_private_haptics_source_snapshot "before package input consumption"
   mkdir -p "$src"
   install -m 0644 "$driver_src" "$src/aw86937-haptics.c"
-  [ "$(sha256sum "$src/aw86937-haptics.c" | awk '{print $1}')" = "$haptics_driver_source_sha256" ] ||
+  [ "$(haptics_sha256_file "$src/aw86937-haptics.c")" = "$haptics_driver_source_sha256" ] ||
     ci_die "copied AW86937 driver differs from the Git-object snapshot"
   grep -q 'wait_event_timeout(haptics->play_wait' "$src/aw86937-haptics.c" ||
     ci_die "AW86937 driver lacks cancellable playback"
@@ -877,19 +1025,21 @@ build_haptics_package() {
   fi
   patch_source_for_standard_module_name "$src/aw86937-haptics.c"
   haptics_build_source_path="$src/aw86937-haptics.c"
-  haptics_build_source_sha256=$(sha256sum "$haptics_build_source_path" | awk '{print $1}')
+  haptics_build_source_sha256=$(haptics_sha256_file "$haptics_build_source_path")
   cat > "$src/Makefile" <<'EOF_MAKE'
 obj-m := aw86937-haptics.o
 EOF_MAKE
 
-  kernel_make O="$kernel_build_root" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+  verify_kernel_host_tools_unchanged "before external module build"
+  kernel_make O="$kernel_build_root" \
     KCFLAGS="-fdebug-prefix-map=$src=$module_prefix -ffile-prefix-map=$src=$module_prefix -fmacro-prefix-map=$src=$module_prefix" \
     M="$src" modules
+  verify_kernel_host_tools_unchanged "after external module build"
   verify_kernel_build_state "after external module build"
   [ -f "$module" ] || ci_die "missing built module: $module"
-  [ "$(sha256sum "$haptics_build_source_path" | awk '{print $1}')" = "$haptics_build_source_sha256" ] ||
+  [ "$(haptics_sha256_file "$haptics_build_source_path")" = "$haptics_build_source_sha256" ] ||
     ci_die "patched AW86937 build source changed during module compilation"
-  modinfo "$module" | tee "$work_dir/aw86937-haptics.modinfo"
+  haptics_run_isolated_tool kmod modinfo "$module" | tee "$work_dir/aw86937-haptics.modinfo"
   grep -q '^name:[[:space:]]*aw86937_haptics$' "$work_dir/aw86937-haptics.modinfo" || ci_die "unexpected module name"
   grep -q '^alias:[[:space:]]*i2c:aw86937_haptics$' "$work_dir/aw86937-haptics.modinfo" || ci_die "missing standard i2c alias"
   grep -Eq '^alias:[[:space:]]*of:.*lenovo,tb321fu-aw86937' "$work_dir/aw86937-haptics.modinfo" ||
@@ -911,9 +1061,9 @@ EOF_MAKE
   install -m 0644 "$module" "$pkg/usr/lib/modules/$kernel_release/extra/aw86937-haptics.ko"
   install -m 0644 "$ram_firmware" "$pkg/usr/lib/firmware/haptic_ram.bin"
   install -m 0644 "$click_firmware" "$pkg/usr/lib/firmware/haptic_click.bin"
-  [ "$(sha256sum "$pkg/usr/lib/firmware/haptic_ram.bin" | awk '{print $1}')" = "$haptics_ram_firmware_sha256" ] ||
+  [ "$(haptics_sha256_file "$pkg/usr/lib/firmware/haptic_ram.bin")" = "$haptics_ram_firmware_sha256" ] ||
     ci_die "packaged haptic_ram.bin differs from the Git-object snapshot"
-  [ "$(sha256sum "$pkg/usr/lib/firmware/haptic_click.bin" | awk '{print $1}')" = "$haptics_click_firmware_sha256" ] ||
+  [ "$(haptics_sha256_file "$pkg/usr/lib/firmware/haptic_click.bin")" = "$haptics_click_firmware_sha256" ] ||
     ci_die "packaged haptic_click.bin differs from the Git-object snapshot"
   write_bind_script "$pkg/usr/libexec/tb321fu-haptics/bind-aw86937"
   write_systemd_unit "$pkg/usr/lib/systemd/system/tb321fu-haptics.service"
@@ -921,16 +1071,17 @@ EOF_MAKE
   write_legacy_module_blacklist "$pkg/etc/modprobe.d/tb321fu-haptics.conf"
   write_plasma_keyboard_default "$pkg/etc/skel/.config/plasmakeyboardrc"
 
-  aarch64-linux-gnu-gcc -O2 -Wall -Wextra -o "$pkg/usr/bin/tb321fu-haptic-test" "$helper_src"
+  haptics_run_isolated_tool aarch64-linux-gnu-gcc \
+    -O2 -Wall -Wextra -o "$pkg/usr/bin/tb321fu-haptic-test" "$helper_src"
   verify_private_haptics_source_snapshot "after package input consumption"
   chmod 0755 "$pkg/usr/bin/tb321fu-haptic-test"
   strip_if_requested "$pkg/usr/bin/tb321fu-haptic-test"
 
   strip_if_requested "$pkg/usr/lib/modules/$kernel_release/extra/aw86937-haptics.ko"
-  haptics_module_sha256=$(sha256sum \
-    "$pkg/usr/lib/modules/$kernel_release/extra/aw86937-haptics.ko" | awk '{print $1}')
-  haptics_test_helper_binary_sha256=$(sha256sum \
-    "$pkg/usr/bin/tb321fu-haptic-test" | awk '{print $1}')
+  haptics_module_sha256=$(haptics_sha256_file \
+    "$pkg/usr/lib/modules/$kernel_release/extra/aw86937-haptics.ko")
+  haptics_test_helper_binary_sha256=$(haptics_sha256_file \
+    "$pkg/usr/bin/tb321fu-haptic-test")
   write_control "$pkg"
   haptics_write_maintainer_scripts "$pkg" "$kernel_release"
 
@@ -938,13 +1089,15 @@ EOF_MAKE
   find "$pkg" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
   haptics_deb_name="tb321fu-haptics_${HAPTICS_DEB_VERSION}_${ARCH}.deb"
   deb="$OUTPUT_DIR/$haptics_deb_name"
-  dpkg-deb --build --root-owner-group "$pkg" "$deb" >/dev/null
+  haptics_run_isolated_tool dpkg-deb \
+    --build --root-owner-group --uniform-compression --threads-max=1 \
+    -Zxz -z6 "$pkg" "$deb" >/dev/null
   verify_built_haptics_deb "$pkg" "$deb"
-  sha256sum "$deb"
+  "${HAPTICS_BUILD_TOOL_PATHS[sha256sum]}" "$deb"
 }
 
 verify_built_haptics_deb() {
-  bash "$SCRIPT_DIR/verify-haptics-deb.sh" \
+  haptics_run_isolated_tool bash "$SCRIPT_DIR/verify-haptics-deb.sh" \
     "$1" "$2" "$kernel_release" \
     "$haptics_ram_firmware_sha256" \
     "$haptics_click_firmware_sha256" \
@@ -968,15 +1121,15 @@ stage_haptics_source_snapshot() {
   install -D -m 0644 "$haptics_build_source_path" \
     "$stage/build/aw86937-haptics.c"
 
-  [ "$(sha256sum "$source_root/haptics/daily-current/linux/drivers/input/misc/aw86937-y700.c" | awk '{print $1}')" = "$haptics_driver_source_sha256" ] ||
+  [ "$(haptics_sha256_file "$source_root/haptics/daily-current/linux/drivers/input/misc/aw86937-y700.c")" = "$haptics_driver_source_sha256" ] ||
     ci_die "staged AW86937 driver snapshot changed"
-  [ "$(sha256sum "$stage/build/aw86937-haptics.c" | awk '{print $1}')" = "$haptics_build_source_sha256" ] ||
+  [ "$(haptics_sha256_file "$stage/build/aw86937-haptics.c")" = "$haptics_build_source_sha256" ] ||
     ci_die "staged AW86937 build source changed"
-  [ "$(sha256sum "$source_root/haptics/rootfs-reference/usr/lib/firmware/haptic_ram.bin" | awk '{print $1}')" = "$haptics_ram_firmware_sha256" ] ||
+  [ "$(haptics_sha256_file "$source_root/haptics/rootfs-reference/usr/lib/firmware/haptic_ram.bin")" = "$haptics_ram_firmware_sha256" ] ||
     ci_die "staged haptic_ram.bin changed"
-  [ "$(sha256sum "$source_root/haptics/rootfs-reference/usr/lib/firmware/haptic_click.bin" | awk '{print $1}')" = "$haptics_click_firmware_sha256" ] ||
+  [ "$(haptics_sha256_file "$source_root/haptics/rootfs-reference/usr/lib/firmware/haptic_click.bin")" = "$haptics_click_firmware_sha256" ] ||
     ci_die "staged haptic_click.bin changed"
-  [ "$(sha256sum "$source_root/haptics/baseline-20260614-daily-clean/testing-tools/y700-haptic-test.c" | awk '{print $1}')" = "$haptics_test_helper_sha256" ] ||
+  [ "$(haptics_sha256_file "$source_root/haptics/baseline-20260614-daily-clean/testing-tools/y700-haptic-test.c")" = "$haptics_test_helper_sha256" ] ||
     ci_die "staged haptics test helper source changed"
 }
 
@@ -986,6 +1139,11 @@ write_haptics_source_lock() {
     printf 'haptics-output-mode\t%s\n' "$haptics_output_mode"
     printf 'haptics-producer-commit\t%s\n' "$haptics_producer_commit"
     printf 'haptics-producer-state\t%s\n' "$haptics_producer_state"
+    printf 'environment-policy\t%s\n' "$HAPTICS_BUILD_ENVIRONMENT_POLICY"
+    printf 'environment-policy-sha256\t%s\n' "$HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256"
+    printf 'build-toolset-sha256\t%s\n' "$HAPTICS_BUILD_TOOLSET_SHA256"
+    printf 'build-tools-manifest\t%s\n' HAPTICS-BUILD-TOOLS.tsv
+    printf 'build-tools-manifest-sha256\t%s\n' "$build_tools_manifest_sha256"
     printf 'aw86937-driver-sha256\t%s\n' "$haptics_driver_source_sha256"
     printf 'aw86937-build-source-sha256\t%s\n' "$haptics_build_source_sha256"
     printf 'haptic-ram-firmware-sha256\t%s\n' "$haptics_ram_firmware_sha256"
@@ -1006,9 +1164,10 @@ write_haptics_source_lock() {
 write_haptics_checksums() {
   (
     cd "$OUTPUT_DIR"
-    sha256sum \
+    "${HAPTICS_BUILD_TOOL_PATHS[sha256sum]}" \
       "./$haptics_deb_name" \
       ./HAPTICS-SOURCE-LOCK.tsv \
+      ./HAPTICS-BUILD-TOOLS.tsv \
       ./HAPTICS-PRODUCER.bundle \
       ./HAPTICS-SOURCE-SNAPSHOT/source/haptics/daily-current/linux/drivers/input/misc/aw86937-y700.c \
       ./HAPTICS-SOURCE-SNAPSHOT/build/aw86937-haptics.c \
@@ -1023,6 +1182,7 @@ finalize_haptics_output() {
   local index relative
   local manifest="$OUTPUT_DIR/SHA256SUMS-tb321fu-haptics-debs.txt"
   local -a expected_root=(
+    HAPTICS-BUILD-TOOLS.tsv
     HAPTICS-PRODUCER.bundle
     HAPTICS-SOURCE-LOCK.tsv
     HAPTICS-SOURCE-SNAPSHOT
@@ -1032,6 +1192,7 @@ finalize_haptics_output() {
   local -a actual_root=() expected_manifest=(
     "./$haptics_deb_name"
     ./HAPTICS-SOURCE-LOCK.tsv
+    ./HAPTICS-BUILD-TOOLS.tsv
     ./HAPTICS-PRODUCER.bundle
     ./HAPTICS-SOURCE-SNAPSHOT/source/haptics/daily-current/linux/drivers/input/misc/aw86937-y700.c
     ./HAPTICS-SOURCE-SNAPSHOT/build/aw86937-haptics.c
@@ -1052,6 +1213,7 @@ finalize_haptics_output() {
   for relative in \
     "$haptics_deb_name" \
     HAPTICS-SOURCE-LOCK.tsv \
+    HAPTICS-BUILD-TOOLS.tsv \
     HAPTICS-PRODUCER.bundle \
     SHA256SUMS-tb321fu-haptics-debs.txt; do
     [ -f "$OUTPUT_DIR/$relative" ] && [ ! -L "$OUTPUT_DIR/$relative" ] ||
@@ -1067,9 +1229,12 @@ finalize_haptics_output() {
     [ "${actual_manifest[$index]}" = "${expected_manifest[$index]}" ] ||
       ci_die "haptics checksum manifest order mismatch: expected ${expected_manifest[$index]}, got ${actual_manifest[$index]}"
   done
-  (cd "$OUTPUT_DIR" && sha256sum --strict -c SHA256SUMS-tb321fu-haptics-debs.txt >/dev/null)
+  (cd "$OUTPUT_DIR" && \
+    "${HAPTICS_BUILD_TOOL_PATHS[sha256sum]}" --strict \
+      -c SHA256SUMS-tb321fu-haptics-debs.txt >/dev/null)
 
   [ ! -e "$output_path" ] || ci_die "OUTPUT_DIR appeared during atomic promotion: $output_path"
+  haptics_verify_build_tools_unchanged "after external-module and DEB production"
   chmod 0755 "$OUTPUT_DIR"
   mv -T -- "$OUTPUT_DIR" "$output_path"
   output_stage=
@@ -1088,6 +1253,10 @@ verify_haptics_producer_state "after package build"
 verify_private_haptics_source_snapshot "before final source snapshot staging"
 stage_haptics_source_snapshot
 install -m 0644 "$producer_bundle" "$OUTPUT_DIR/HAPTICS-PRODUCER.bundle"
+haptics_verify_build_tools_unchanged "before build-environment evidence"
+haptics_write_build_tools_manifest "$OUTPUT_DIR/HAPTICS-BUILD-TOOLS.tsv"
+haptics_verify_build_tools_manifest "$OUTPUT_DIR/HAPTICS-BUILD-TOOLS.tsv"
+build_tools_manifest_sha256=$(haptics_sha256_file "$OUTPUT_DIR/HAPTICS-BUILD-TOOLS.tsv")
 write_haptics_source_lock
 
 ci_log "writing haptics package checksums"

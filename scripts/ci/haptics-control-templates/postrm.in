@@ -3,6 +3,7 @@ set -eu
 umask 022
 
 KERNEL_RELEASE=@KERNEL_RELEASE@
+MANAGED_WANT_TARGET=/usr/lib/systemd/system/tb321fu-haptics.service
 
 die()
 {
@@ -50,6 +51,8 @@ remove_managed_want()
 	target=$(cat "$state")
 	[ -n "$target" ] && [ "$(wc -l < "$state")" -eq 1 ] ||
 		die "managed systemd-want state is malformed: $state"
+	[ "$target" = "$MANAGED_WANT_TARGET" ] ||
+		die "managed systemd-want state has an unexpected target: $state"
 	if [ -L "$want" ]; then
 		current_target=$(readlink "$want") ||
 			die "cannot read package-managed systemd want: $want"

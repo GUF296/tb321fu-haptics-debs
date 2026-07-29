@@ -66,6 +66,15 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ca-certificates git curl tar gzip xz-utils zstd unzip rsync \
+            make flex bison gcc binutils gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu kmod dpkg-dev \
+            python3-yaml
+
       - name: Validate workflow and lifecycle boundaries
         run: |
           set -euo pipefail
@@ -80,17 +89,10 @@ jobs:
           python3 scripts/ci/test-haptics-release-job-isolation.py .github/workflows/build.yml
           bash scripts/ci/test-haptics-lifecycle.sh
           bash scripts/ci/test-haptics-provenance.sh
+          bash scripts/ci/test-haptics-build-environment.sh
           bash scripts/ci/test-haptics-deb-contract.sh
           bash scripts/ci/test-haptics-kernel-sdk-contract.sh
           bash scripts/ci/test-release-publication.sh
-
-      - name: Install dependencies
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            ca-certificates git curl tar xz-utils zstd unzip rsync \
-            make flex bison gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu kmod dpkg-dev
 
       - name: Validate build inputs
         env:
@@ -151,7 +153,16 @@ jobs:
       - name: Build haptics deb
         run: |
           set -euo pipefail
-          env \
+          /usr/bin/env -i \
+            PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            LANG=C \
+            LC_ALL=C \
+            TZ=UTC \
+            HOME=/nonexistent \
+            TMPDIR=/tmp \
+            http_proxy="${http_proxy:-${HTTP_PROXY:-}}" \
+            https_proxy="${https_proxy:-${HTTPS_PROXY:-}}" \
+            no_proxy="${no_proxy:-${NO_PROXY:-}}" \
             OUTPUT_DIR=out/tb321fu-haptics-debs \
             ARCH=arm64 \
             HAPTICS_DEB_VERSION="$HAPTICS_DEB_VERSION" \
@@ -165,7 +176,7 @@ jobs:
             KERNEL_BUNDLE_METADATA_SHA256="$KERNEL_BUNDLE_METADATA_SHA256" \
             KERNEL_SDK_MANIFEST="$KERNEL_SDK_MANIFEST" \
             SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-            bash scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh
+            /bin/bash scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -181,12 +192,31 @@ jobs:
           release_dir="$release_stage/assets"
           notes="$release_dir/BUILD-PARAMETERS.md"
           compiled=out/tb321fu-haptics-debs/HAPTICS-COMPILED-DIGESTS.env
+          source_lock=out/tb321fu-haptics-debs/HAPTICS-SOURCE-LOCK.tsv
+          package_checksums=out/tb321fu-haptics-debs/SHA256SUMS-tb321fu-haptics-debs.txt
+          haptics_deb=out/tb321fu-haptics-debs/tb321fu-haptics_${HAPTICS_DEB_VERSION}_arm64.deb
+          for evidence in "$compiled" "$source_lock" "$package_checksums" "$haptics_deb"; do
+            [ -f "$evidence" ] && [ ! -L "$evidence" ]
+          done
           module_sha256=$(awk -F= '$1 == "HAPTICS_MODULE_SHA256" { print $2 }' "$compiled")
           helper_sha256=$(awk -F= '$1 == "HAPTICS_HELPER_BINARY_SHA256" { print $2 }' "$compiled")
           archive_sha256=$(awk -F= '$1 == "HAPTICS_ARCHIVE_SHA256" { print $2 }' "$compiled")
+          compiled_deb_sha256=$(awk -F= '$1 == "HAPTICS_DEB_SHA256" { print $2 }' "$compiled")
+          kernel_bundle_id=$(awk -F '\t' '$1 == "kernel-bundle-id" { print $2 }' "$source_lock")
+          manifest_deb_sha256=$(awk -v name="./tb321fu-haptics_${HAPTICS_DEB_VERSION}_arm64.deb" \
+            '$2 == name { print $1 }' "$package_checksums")
+          haptics_deb_sha256=$(sha256sum -- "$haptics_deb" | awk '{ print $1 }')
+          source_lock_sha256=$(sha256sum -- "$source_lock" | awk '{ print $1 }')
           [[ "$module_sha256" =~ ^[0-9a-f]{64}$ ]]
           [[ "$helper_sha256" =~ ^[0-9a-f]{64}$ ]]
           [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$compiled_deb_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$kernel_bundle_id" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$manifest_deb_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$haptics_deb_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$source_lock_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [ "$compiled_deb_sha256" = "$haptics_deb_sha256" ]
+          [ "$manifest_deb_sha256" = "$haptics_deb_sha256" ]
           mkdir -p "$release_dir"
           {
             echo '# TB321FU Haptics Debs'
@@ -197,10 +227,13 @@ jobs:
             echo "- Kernel SDK SHA-256: $KERNEL_BUILD_ARCHIVE_SHA256"
             echo "- Kernel bundle metadata: $KERNEL_BUNDLE_METADATA"
             echo "- Kernel bundle metadata SHA-256: $KERNEL_BUNDLE_METADATA_SHA256"
+            echo "- Kernel bundle ID: $kernel_bundle_id"
             echo "- Kernel SDK manifest: $KERNEL_SDK_MANIFEST"
             echo "- Commit: $GITHUB_SHA"
             echo "- Workflow run: $GITHUB_RUN_ID"
             echo "- Haptics archive SHA-256: $archive_sha256"
+            echo "- Haptics DEB SHA-256: $haptics_deb_sha256"
+            echo "- Haptics source lock SHA-256: $source_lock_sha256"
             echo "- Candidate HAPTICS_MODULE_SHA256: $module_sha256"
             echo "- Candidate HAPTICS_HELPER_BINARY_SHA256: $helper_sha256"
             echo

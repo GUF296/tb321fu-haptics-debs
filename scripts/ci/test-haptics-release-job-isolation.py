@@ -91,6 +91,16 @@ def validate(data: dict) -> None:
         fail("build job invokes the release publisher")
 
     build_steps = steps_for(build, "jobs.build")
+    dependencies = named_step(build_steps, "Install dependencies")
+    validation = named_step(build_steps, "Validate workflow and lifecycle boundaries")
+    if build_steps.index(dependencies) >= build_steps.index(validation):
+        fail("declared test dependencies must be installed before validation")
+    dependencies_run = dependencies.get("run")
+    if not isinstance(dependencies_run, str):
+        fail("dependency installation must have a shell body")
+    for package in ("python3-yaml", "rsync"):
+        if package not in dependencies_run:
+            fail(f"dependency installation is missing {package}")
     staging = named_step(build_steps, "Stage release assets")
     require_release_guard(staging, "release asset staging")
     staging_run = staging.get("run")
@@ -102,7 +112,13 @@ def validate(data: dict) -> None:
         'notes="$release_dir/BUILD-PARAMETERS.md"',
         'echo "- Kernel bundle metadata: $KERNEL_BUNDLE_METADATA"',
         'echo "- Kernel bundle metadata SHA-256: $KERNEL_BUNDLE_METADATA_SHA256"',
+        'echo "- Kernel bundle ID: $kernel_bundle_id"',
         'echo "- Kernel SDK manifest: $KERNEL_SDK_MANIFEST"',
+        'haptics_deb_sha256=$(sha256sum -- "$haptics_deb"',
+        '[ "$compiled_deb_sha256" = "$haptics_deb_sha256" ]',
+        '[ "$manifest_deb_sha256" = "$haptics_deb_sha256" ]',
+        'echo "- Haptics DEB SHA-256: $haptics_deb_sha256"',
+        'echo "- Haptics source lock SHA-256: $source_lock_sha256"',
         "BUILD-PARAMETERS.md > SHA256SUMS.txt",
         "SHA256SUMS.txt",
     ):
@@ -187,6 +203,14 @@ def fixture() -> dict:
                 "permissions": {"contents": "read"},
                 "steps": [
                     {
+                        "name": "Install dependencies",
+                        "run": "sudo apt-get install -y python3-yaml rsync",
+                    },
+                    {
+                        "name": "Validate workflow and lifecycle boundaries",
+                        "run": "python3 fixture.py",
+                    },
+                    {
                         "name": "Stage release assets",
                         "if": RELEASE_GUARD,
                         "run": "\n".join((
@@ -195,7 +219,13 @@ def fixture() -> dict:
                             'notes="$release_dir/BUILD-PARAMETERS.md"',
                             'echo "- Kernel bundle metadata: $KERNEL_BUNDLE_METADATA"',
                             'echo "- Kernel bundle metadata SHA-256: $KERNEL_BUNDLE_METADATA_SHA256"',
+                            'echo "- Kernel bundle ID: $kernel_bundle_id"',
                             'echo "- Kernel SDK manifest: $KERNEL_SDK_MANIFEST"',
+                            'haptics_deb_sha256=$(sha256sum -- "$haptics_deb"',
+                            '[ "$compiled_deb_sha256" = "$haptics_deb_sha256" ]',
+                            '[ "$manifest_deb_sha256" = "$haptics_deb_sha256" ]',
+                            'echo "- Haptics DEB SHA-256: $haptics_deb_sha256"',
+                            'echo "- Haptics source lock SHA-256: $source_lock_sha256"',
                             "BUILD-PARAMETERS.md > SHA256SUMS.txt",
                             "SHA256SUMS.txt",
                         )),
@@ -258,6 +288,16 @@ def self_test() -> None:
         pass
     else:
         fail("self-test accepted a build-job token")
+    late_dependencies = copy.deepcopy(valid)
+    late_dependencies["jobs"]["build"]["steps"][0:2] = reversed(
+        late_dependencies["jobs"]["build"]["steps"][0:2]
+    )
+    try:
+        validate(late_dependencies)
+    except SystemExit:
+        pass
+    else:
+        fail("self-test accepted validation before dependency installation")
     leaked_publish_job_token = copy.deepcopy(valid)
     leaked_publish_job_token["jobs"]["publish"]["env"] = {
         "GH_TOKEN": GITHUB_TOKEN

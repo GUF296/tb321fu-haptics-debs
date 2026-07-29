@@ -313,6 +313,48 @@ run_postrm remove
 [ -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
   fail 'postrm removed a pre-existing user-owned service want'
 
+for hostile_spec in \
+  'foreign:/usr/lib/systemd/system/foreign.service' \
+  'dangling:/nonexistent/tb321fu-haptics.service' \
+  'relative:../../../usr/lib/systemd/system/tb321fu-haptics.service'; do
+  hostile_name=${hostile_spec%%:*}
+  hostile_target=${hostile_spec#*:}
+  prepare_fixture "hostile-$hostile_name-want"
+  install -d -m 0755 "$root/etc/systemd/system/multi-user.target.wants"
+  ln -s "$hostile_target" "$root/etc/systemd/system/multi-user.target.wants/$service"
+  clear_log
+  expect_failure "hostile-$hostile_name-want" run_postinst configure
+  [ "$(readlink "$root/etc/systemd/system/multi-user.target.wants/$service")" = "$hostile_target" ] ||
+    fail "postinst modified a hostile $hostile_name systemd want"
+  [ ! -e "$root/var/lib/tb321fu-haptics/managed-want" ] && \
+    [ ! -L "$root/var/lib/tb321fu-haptics/managed-want" ] ||
+    fail "postinst claimed a hostile $hostile_name systemd want"
+  assert_log_absent "systemctl <--root=$root> <enable> <$service>"
+done
+
+prepare_fixture hostile-managed-state
+install -d -m 0755 \
+  "$root/etc/systemd/system/multi-user.target.wants" \
+  "$root/var/lib/tb321fu-haptics"
+ln -s /usr/lib/systemd/system/foreign.service \
+  "$root/etc/systemd/system/multi-user.target.wants/$service"
+printf '%s\n' /usr/lib/systemd/system/foreign.service > \
+  "$root/var/lib/tb321fu-haptics/managed-want"
+clear_log
+expect_failure hostile-managed-state run_postinst configure
+[ "$(cat "$root/var/lib/tb321fu-haptics/managed-want")" = \
+  /usr/lib/systemd/system/foreign.service ] ||
+  fail 'postinst modified hostile managed-want state'
+[ "$(readlink "$root/etc/systemd/system/multi-user.target.wants/$service")" = \
+  /usr/lib/systemd/system/foreign.service ] ||
+  fail 'postinst modified a hostile state-owned systemd want'
+clear_log
+expect_failure hostile-managed-state-postrm run_postrm remove
+[ -f "$root/var/lib/tb321fu-haptics/managed-want" ] ||
+  fail 'postrm removed hostile managed-want state'
+[ -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
+  fail 'postrm removed a hostile state-owned systemd want'
+
 prepare_fixture legacy-payload
 install_legacy_payload
 install -d -m 0755 "$root/usr/local/bin" "$root/usr/lib/udev/rules.d"

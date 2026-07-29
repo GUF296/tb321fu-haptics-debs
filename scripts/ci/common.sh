@@ -29,7 +29,7 @@ ci_abs_path() {
 }
 
 ci_sanitized_git_env() {
-  env \
+  "${CI_ENV_BIN:-env}" \
     -u GIT_DIR \
     -u GIT_WORK_TREE \
     -u GIT_COMMON_DIR \
@@ -77,8 +77,10 @@ ci_sanitized_git_env() {
 }
 
 ci_git() {
+  local git_bin=${CI_GIT_BIN:-git}
+
   ci_sanitized_git_env \
-    git --no-replace-objects \
+    "$git_bin" --no-replace-objects \
     -c core.fsmonitor=false \
     -c core.untrackedCache=false \
     -c core.excludesFile=/dev/null \
@@ -238,7 +240,7 @@ ci_verify_download() {
   local actual
 
   [[ $expected =~ ^[A-Fa-f0-9]{64}$ ]] || ci_die "invalid SHA-256 verifier for $file"
-  actual=$(sha256sum "$file" | awk '{print $1}')
+  actual=$("${CI_SHA256SUM_BIN:-sha256sum}" "$file" | awk '{print $1}')
   [ "$actual" = "${expected,,}" ] ||
     ci_die "SHA-256 mismatch for $file: expected ${expected,,}, got $actual"
 }
@@ -253,8 +255,8 @@ ci_download() {
   case "$src" in
     https://*)
       [ -n "$verifier" ] || ci_die "remote download requires an explicit SHA-256: $src"
-      ci_require_cmd curl
-      if ! curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 -o "$tmp" "$src"; then
+      ci_require_cmd "${CI_CURL_BIN:-curl}"
+      if ! "${CI_CURL_BIN:-curl}" --proto '=https' --proto-redir '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 -o "$tmp" "$src"; then
         rm -f -- "$tmp"
         ci_die "download failed: $src"
       fi
@@ -285,7 +287,8 @@ ci_extract_archive() {
   local helper
 
   helper=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/safe-extract-archive.py
-  ci_require_cmd python3
+  ci_require_cmd "${CI_PYTHON3_BIN:-python3}"
   [ -f "$archive" ] || ci_die "archive not found: $archive"
-  python3 "$helper" "$archive" "$dest" || ci_die "safe archive extraction failed: $archive"
+  "${CI_PYTHON3_BIN:-python3}" "$helper" "$archive" "$dest" ||
+    ci_die "safe archive extraction failed: $archive"
 }

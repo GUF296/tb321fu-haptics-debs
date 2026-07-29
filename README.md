@@ -7,17 +7,18 @@ Output:
 - `tb321fu-haptics_<version>_arm64.deb`
 - `tb321fu-haptics-debs_<version>_arm64.tar.gz`
 - `HAPTICS-PRODUCER.bundle`
+- `HAPTICS-BUILD-TOOLS.tsv`
 - `HAPTICS-SOURCE-SNAPSHOT/`
 - `HAPTICS-SOURCE-LOCK.tsv` and portable SHA-256 manifests
 - `HAPTICS-COMPILED-DIGESTS.env` (local workflow evidence, outside the tar)
 
 `HAPTICS-SOURCE-LOCK.tsv` uses the ordered
-`tb321fu.haptics-source-lock/v2` schema only for release candidates. Its
+`tb321fu.haptics-source-lock/v3` schema only for release candidates. Its
 second field is `haptics-output-mode=release-candidate`; its kernel fields end
 with `kernel-build-input=kernel-sdk-archive` and
 `kernel-build-archive-sha256`. That digest must exactly equal the paired
 KERNEL-BUNDLE v2 `kernel-sdk-archive-sha256`. A direct local directory build
-instead emits `tb321fu.haptics-source-lock/v2-local`,
+instead emits `tb321fu.haptics-source-lock/v3-local`,
 `haptics-output-mode=local`, `kernel-build-input=local-directory`, and the
 non-digest `local-build-directory` sentinel. Consumers must reject that local
 schema and sentinel. Both schemas otherwise record the exact clean producer
@@ -29,10 +30,24 @@ objects into a private snapshot; it never compiles or installs mutable
 worktree copies. Assume-unchanged and skip-worktree index flags are rejected in
 addition to ordinary dirty-worktree state.
 
+Both producer layers run with the `isolated-allowlist-v1` environment policy:
+`env -i`, `PATH=/usr/sbin:/usr/bin:/sbin:/bin`, C locale, UTC, an explicit
+`SOURCE_DATE_EPOCH`, declared producer inputs, and only normalized
+`http_proxy`, `https_proxy`, and `no_proxy` transport settings. Dynamic Make,
+Kbuild, compiler, tar, gzip, xz, and dpkg environment variables are discarded.
+Every external build/packaging tool is resolved to an absolute regular
+executable before use; its path, SHA-256, and version line are recorded in
+`HAPTICS-BUILD-TOOLS.tsv`, then rechecked before atomic promotion. The v3 lock
+binds the policy name/digest, toolset digest, fixed manifest name, and manifest
+digest. DEB compression is explicitly xz level 6 with one thread, independent
+of runner CPU count and dpkg defaults. The build-tools manifest is itself named by the portable checksum
+manifest.
+
 `HAPTICS-PRODUCER.bundle` is a self-contained Git bundle with no prerequisites.
 It exposes exactly one ref, `refs/heads/tb321fu-haptics-producer`, whose tip is
-the producer commit recorded in the lock. The outer tar has exactly five root
+the producer commit recorded in the lock. The outer tar has exactly six root
 entries: the versioned DEB, `HAPTICS-SOURCE-LOCK.tsv`,
+`HAPTICS-BUILD-TOOLS.tsv`,
 `SHA256SUMS-tb321fu-haptics-debs.txt`, `HAPTICS-PRODUCER.bundle`, and
 `HAPTICS-SOURCE-SNAPSHOT/`. The tar command names the DEB and all five snapshot
 files explicitly; it uses neither a DEB glob nor recursive directory selection.
@@ -43,7 +58,7 @@ exact root/member lists and portable checksums, and use one `mv -T` promotion.
 The outer archive is streamed once into its final staging filesystem, avoiding
 a second full archive copy before promotion.
 Before publication, the final DEB is unpacked and checked against a closed
-eight-data-file/three-control-file contract, including member types, paths,
+nine-data-file/four-control-file contract, including member types, paths,
 modes, bytes, and final firmware/module/helper digests.
 
 The workflow builds a release candidate external module only from a paired
@@ -73,7 +88,7 @@ publication.
 The SDK wrapper also emits deterministic `HAPTICS-COMPILED-DIGESTS.env` lines
 for `HAPTICS_PRODUCER_COMMIT`, `HAPTICS_DEB_SHA256`,
 `HAPTICS_ARCHIVE_SHA256`, `HAPTICS_MODULE_SHA256`, and
-`HAPTICS_HELPER_BINARY_SHA256`. This file is outside the five-root tar and is
+`HAPTICS_HELPER_BINARY_SHA256`. This file is outside the six-root tar and is
 not an additional bootstrap release asset. Its values are evidence/input
 material only: the record is not self-authenticating when obtained from the
 same untrusted build. A release consumer must receive the module/helper values

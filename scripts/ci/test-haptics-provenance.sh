@@ -168,6 +168,11 @@ expected_fields=(
   haptics-output-mode
   haptics-producer-commit
   haptics-producer-state
+  environment-policy
+  environment-policy-sha256
+  build-toolset-sha256
+  build-tools-manifest
+  build-tools-manifest-sha256
   aw86937-driver-sha256
   aw86937-build-source-sha256
   haptic-ram-firmware-sha256
@@ -200,6 +205,7 @@ for token in \
   HAPTICS_RELEASE_MODE \
   ci_export_git_file \
   HAPTICS-SOURCE-SNAPSHOT \
+  HAPTICS-BUILD-TOOLS.tsv \
   haptics-producer-commit \
   haptics-producer-state \
   aw86937-driver-sha256 \
@@ -212,6 +218,9 @@ for token in \
   grep -Fq -- "$token" "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
     fail "builder omits provenance boundary: $token"
 done
+grep -Fq 'HAPTICS_BUILD_ENVIRONMENT_POLICY=isolated-allowlist-v1' \
+  "$SCRIPT_DIR/haptics-build-environment.sh" ||
+  fail "build environment helper omits the canonical policy name"
 grep -Fq 'verify_kernel_source_state "before package build"' \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
   fail "builder omits strict pre-build kernel source verification"
@@ -289,6 +298,7 @@ ln -s "$kernel_source_fixture" "$kernel_build_input/source"
   set -euo pipefail
   ci_log() { printf 'fixture log: %s\n' "$*" >&2; }
   ci_die() { printf 'fixture error: %s\n' "$*" >&2; exit 1; }
+  haptics_run_isolated_tool() { local tool=$1; shift; "$tool" "$@"; }
   . "$kernel_copy_functions"
   kernel_source_root="$kernel_source_fixture"
   private_root=$(copy_kernel_build_dir_private \
@@ -312,6 +322,7 @@ if (
   set -euo pipefail
   ci_log() { :; }
   ci_die() { printf 'fixture error: %s\n' "$*" >&2; exit 1; }
+  haptics_run_isolated_tool() { local tool=$1; shift; "$tool" "$@"; }
   . "$kernel_copy_functions"
   kernel_source_root="$kernel_source_fixture"
   copy_kernel_build_dir_private \
@@ -379,7 +390,8 @@ for token in \
   '.delivery.XXXXXX' \
   'refusing stale OUTPUT_DIR' \
   'OUTPUT_DIR appeared during atomic promotion' \
-  'mv -T -- "$producer_output" "$output_path"' \
+  'haptics_run_isolated_tool tar -tzf "$archive_tmp" > "$archive_member_list"' \
+  'haptics_promote_directory_no_clobber "$producer_output" "$output_path"' \
   'HAPTICS-COMPILED-DIGESTS.env' \
   'HAPTICS_RELEASE_MODE=1' \
   'HAPTICS_MODULE_SHA256=' \
@@ -399,6 +411,7 @@ block = source[start:end]
 expected = [
     '"$deb_name"',
     "HAPTICS-SOURCE-LOCK.tsv",
+    "HAPTICS-BUILD-TOOLS.tsv",
     "HAPTICS-PRODUCER.bundle",
     "HAPTICS-SOURCE-SNAPSHOT/source/haptics/daily-current/linux/drivers/input/misc/aw86937-y700.c",
     "HAPTICS-SOURCE-SNAPSHOT/build/aw86937-haptics.c",

@@ -3,6 +3,7 @@ set -eu
 umask 022
 
 KERNEL_RELEASE=@KERNEL_RELEASE@
+MANAGED_WANT_TARGET=/usr/lib/systemd/system/tb321fu-haptics.service
 
 die()
 {
@@ -109,10 +110,14 @@ record_managed_want_state()
 		managed_want_target=$(cat "$managed_want_state")
 		[ -n "$managed_want_target" ] && [ "$(wc -l < "$managed_want_state")" -eq 1 ] ||
 			die "managed systemd-want state is malformed: $managed_want_state"
+		[ "$managed_want_target" = "$MANAGED_WANT_TARGET" ] ||
+			die "managed systemd-want state has an unexpected target: $managed_want_state"
 	fi
 	if [ -L "$managed_want" ]; then
 		current_target=$(readlink "$managed_want") ||
 			die "cannot read existing systemd want: $managed_want"
+		[ "$current_target" = "$MANAGED_WANT_TARGET" ] ||
+			die "existing systemd want has an unexpected target: $managed_want"
 		managed_want_preexisting=1
 		if [ -n "$managed_want_target" ]; then
 			if [ "$current_target" = "$managed_want_target" ]; then
@@ -138,8 +143,8 @@ record_owned_managed_want()
 {
 	managed_want_target=$(readlink "$managed_want") ||
 		die "cannot read package-managed systemd want: $managed_want"
-	[ -n "$managed_want_target" ] ||
-		die "package-managed systemd want has an empty target: $managed_want"
+	[ "$managed_want_target" = "$MANAGED_WANT_TARGET" ] ||
+		die "package-managed systemd want has an unexpected target: $managed_want"
 	install -d -m 0755 "$(dirname -- "$managed_want_state")" ||
 		die "cannot create managed systemd-want state directory"
 	tmp_state="$managed_want_state.tmp.$$"
@@ -155,6 +160,10 @@ rollback_new_managed_want()
 {
 	[ "$managed_want_created" = 1 ] || return 0
 	if [ -L "$managed_want" ]; then
+		rollback_target=$(readlink "$managed_want") ||
+			die "cannot read newly created systemd want: $managed_want"
+		[ "$rollback_target" = "$MANAGED_WANT_TARGET" ] ||
+			die "newly created systemd want has an unexpected target: $managed_want"
 		rm -f -- "$managed_want" ||
 			die "cannot remove newly created systemd want: $managed_want"
 	elif [ -e "$managed_want" ]; then

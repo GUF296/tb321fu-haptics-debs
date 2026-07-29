@@ -101,6 +101,11 @@ expected = [
     "haptics-output-mode",
     "haptics-producer-commit",
     "haptics-producer-state",
+    "environment-policy",
+    "environment-policy-sha256",
+    "build-toolset-sha256",
+    "build-tools-manifest",
+    "build-tools-manifest-sha256",
     "aw86937-driver-sha256",
     "aw86937-build-source-sha256",
     "haptic-ram-firmware-sha256",
@@ -123,8 +128,8 @@ for line in block.splitlines():
     field = line.split("printf '", 1)[1].split("\\t", 1)[0]
     actual.append(field)
 assert actual == expected, (actual, expected)
-assert "tb321fu.haptics-source-lock/v2" in source
-assert "tb321fu.haptics-source-lock/v2-local" in source
+assert "tb321fu.haptics-source-lock/v3" in source
+assert "tb321fu.haptics-source-lock/v3-local" in source
 assert "haptics_output_mode=release-candidate" in source
 assert "haptics_output_mode=local" in source
 assert "kernel_build_input=kernel-sdk-archive" in source
