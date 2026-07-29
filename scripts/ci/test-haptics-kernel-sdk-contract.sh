@@ -25,6 +25,208 @@ require_failure() {
     fail "fixture failed at the wrong boundary: $output"
 }
 
+download_fixture=$(mktemp -d "${TMPDIR:-/tmp}/tb321fu-haptics-download.XXXXXX")
+cleanup_download_fixture() {
+  rm -rf -- "$download_fixture"
+}
+trap cleanup_download_fixture EXIT
+
+printf 'complete pinned SDK bytes\n' > "$download_fixture/payload"
+printf 'wrong bytes\n' > "$download_fixture/wrong-payload"
+download_sha256=$(sha256sum "$download_fixture/payload" | awk '{print $1}')
+cat > "$download_fixture/curl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${FAKE_CURL_ARGS:?}"
+: "${FAKE_CURL_COUNT:?}"
+: "${FAKE_CURL_MODE:?}"
+: "${FAKE_CURL_PAYLOAD:?}"
+: "${FAKE_CURL_WRONG_PAYLOAD:?}"
+count=0
+if [ -f "$FAKE_CURL_COUNT" ]; then
+  read -r count < "$FAKE_CURL_COUNT"
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$FAKE_CURL_COUNT"
+printf '%s\n' "$@" > "$FAKE_CURL_ARGS.$count"
+output=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output)
+      [ "$#" -ge 2 ] || exit 2
+      output=$2
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+[ -n "$output" ] || exit 2
+case "$FAKE_CURL_MODE" in
+  resume)
+    case "$count" in
+      1)
+        head -c 8 -- "$FAKE_CURL_PAYLOAD" > "$output"
+        exit 92
+        ;;
+      2)
+        [ "$(head -c 8 -- "$output")" = "$(head -c 8 -- "$FAKE_CURL_PAYLOAD")" ] || exit 3
+        offset=$(wc -c < "$output")
+        tail -c "+$((offset + 1))" -- "$FAKE_CURL_PAYLOAD" >> "$output"
+        ;;
+      *) exit 4 ;;
+    esac
+    ;;
+  range-reset)
+    case "$count" in
+      1)
+        head -c 8 -- "$FAKE_CURL_PAYLOAD" > "$output"
+        exit 92
+        ;;
+      2)
+        [ -s "$output" ] || exit 5
+        exit 33
+        ;;
+      3)
+        [ ! -e "$output" ] || exit 6
+        cp -- "$FAKE_CURL_PAYLOAD" "$output"
+        ;;
+      *) exit 7 ;;
+    esac
+    ;;
+  complete-error)
+    cp -- "$FAKE_CURL_PAYLOAD" "$output"
+    exit 92
+    ;;
+  exhaust)
+    head -c 8 -- "$FAKE_CURL_PAYLOAD" > "$output"
+    exit 92
+    ;;
+  corrupt)
+    cp -- "$FAKE_CURL_WRONG_PAYLOAD" "$output"
+    ;;
+  *) exit 8 ;;
+esac
+SH
+chmod 0700 "$download_fixture/curl"
+export FAKE_CURL_PAYLOAD="$download_fixture/payload"
+export FAKE_CURL_WRONG_PAYLOAD="$download_fixture/wrong-payload"
+export FAKE_CURL_ARGS="$download_fixture/curl-resume.args"
+export FAKE_CURL_COUNT="$download_fixture/curl-resume.count"
+export FAKE_CURL_MODE=resume
+CI_CURL_BIN="$download_fixture/curl" ci_download \
+  https://example.invalid/kernel-sdk.tar.gz \
+  "$download_fixture/downloaded" \
+  "$download_sha256"
+cmp -- "$download_fixture/payload" "$download_fixture/downloaded" ||
+  fail 'resumed HTTPS download did not promote the verified payload'
+[ "$(cat "$FAKE_CURL_COUNT")" = 2 ] ||
+  fail 'resumed HTTPS download used an unexpected attempt count'
+python3 - "$FAKE_CURL_ARGS" "$download_fixture/downloaded.part.$$" <<'PY'
+from pathlib import Path
+import sys
+
+expected = [
+    "--disable",
+    "--proto", "=https",
+    "--proto-redir", "=https",
+    "--tlsv1.2",
+    "--http1.1",
+    "--fail",
+    "--location",
+    "--connect-timeout", "30",
+    "--max-time", "3600",
+    "--speed-limit", "1024",
+    "--speed-time", "300",
+    "--continue-at", "-",
+    "--output", sys.argv[2],
+    "https://example.invalid/kernel-sdk.tar.gz",
+]
+logs = sorted(Path(sys.argv[1]).parent.glob(Path(sys.argv[1]).name + ".*"))
+assert len(logs) == 2, logs
+for log in logs:
+    actual = log.read_text().splitlines()
+    assert actual == expected, (log, actual, expected)
+PY
+[ ! -e "$download_fixture/downloaded.part.$$" ] ||
+  fail 'verified HTTPS download left its private partial file behind'
+
+export FAKE_CURL_ARGS="$download_fixture/curl-complete-error.args"
+export FAKE_CURL_COUNT="$download_fixture/curl-complete-error.count"
+export FAKE_CURL_MODE=complete-error
+CI_CURL_BIN="$download_fixture/curl" ci_download \
+  https://example.invalid/kernel-sdk.tar.gz \
+  "$download_fixture/complete-error" \
+  "$download_sha256"
+cmp -- "$download_fixture/payload" "$download_fixture/complete-error" ||
+  fail 'complete-before-error HTTPS download did not promote the verified payload'
+[ "$(cat "$FAKE_CURL_COUNT")" = 1 ] ||
+  fail 'complete-before-error HTTPS download performed a redundant retry'
+[ ! -e "$download_fixture/complete-error.part.$$" ] ||
+  fail 'complete-before-error HTTPS download left its private partial file behind'
+
+export FAKE_CURL_ARGS="$download_fixture/curl-range.args"
+export FAKE_CURL_COUNT="$download_fixture/curl-range.count"
+export FAKE_CURL_MODE=range-reset
+CI_CURL_BIN="$download_fixture/curl" ci_download \
+  https://example.invalid/kernel-sdk.tar.gz \
+  "$download_fixture/range-reset" \
+  "$download_sha256"
+cmp -- "$download_fixture/payload" "$download_fixture/range-reset" ||
+  fail 'range-reset HTTPS download did not promote the verified payload'
+[ "$(cat "$FAKE_CURL_COUNT")" = 3 ] ||
+  fail 'range-reset HTTPS download used an unexpected attempt count'
+[ ! -e "$download_fixture/range-reset.part.$$" ] ||
+  fail 'range-reset HTTPS download left its private partial file behind'
+
+require_failure 'download verification failed' env \
+  CI_CURL_BIN="$download_fixture/curl" \
+  FAKE_CURL_ARGS="$download_fixture/curl-corrupt.args" \
+  FAKE_CURL_COUNT="$download_fixture/curl-corrupt.count" \
+  FAKE_CURL_MODE=corrupt \
+  FAKE_CURL_PAYLOAD="$download_fixture/payload" \
+  FAKE_CURL_WRONG_PAYLOAD="$download_fixture/wrong-payload" \
+  bash -c '. "$1"; ci_download "$2" "$3" "$4"' _ \
+  "$SCRIPT_DIR/common.sh" \
+  https://example.invalid/kernel-sdk.tar.gz \
+  "$download_fixture/rejected" \
+  "$download_sha256"
+[ ! -e "$download_fixture/rejected" ] ||
+  fail 'wrong-digest HTTPS payload was promoted'
+if compgen -G "$download_fixture/rejected.part.*" >/dev/null; then
+  fail 'wrong-digest HTTPS payload left a partial file behind'
+fi
+
+require_failure 'download failed after 24 attempts' env \
+  CI_CURL_BIN="$download_fixture/curl" \
+  FAKE_CURL_ARGS="$download_fixture/curl-exhaust.args" \
+  FAKE_CURL_COUNT="$download_fixture/curl-exhaust.count" \
+  FAKE_CURL_MODE=exhaust \
+  FAKE_CURL_PAYLOAD="$download_fixture/payload" \
+  FAKE_CURL_WRONG_PAYLOAD="$download_fixture/wrong-payload" \
+  bash -c '. "$1"; ci_download "$2" "$3" "$4"' _ \
+  "$SCRIPT_DIR/common.sh" \
+  https://example.invalid/kernel-sdk.tar.gz \
+  "$download_fixture/exhausted" \
+  "$download_sha256"
+[ "$(cat "$download_fixture/curl-exhaust.count")" = 24 ] ||
+  fail 'exhausted HTTPS download did not stop at the fixed attempt limit'
+[ ! -e "$download_fixture/exhausted" ] ||
+  fail 'exhausted HTTPS download promoted a payload'
+if compgen -G "$download_fixture/exhausted.part.*" >/dev/null; then
+  fail 'exhausted HTTPS download left a partial file behind'
+fi
+
+ln -s payload "$download_fixture/local-link"
+require_failure 'local download source is not a regular file' \
+  bash -c '. "$1"; ci_download "$2" "$3"' _ \
+  "$SCRIPT_DIR/common.sh" \
+  "$download_fixture/local-link" \
+  "$download_fixture/local-link-output"
+[ ! -e "$download_fixture/local-link-output" ] ||
+  fail 'symlink local download source was promoted'
+
 archive_sha256=1111111111111111111111111111111111111111111111111111111111111111
 metadata_sha256=2222222222222222222222222222222222222222222222222222222222222222
 bundle_id=3333333333333333333333333333333333333333333333333333333333333333
@@ -81,6 +283,7 @@ from pathlib import Path
 import sys
 
 source = Path(sys.argv[1]).read_text()
+assert 'cp --reflink=auto -- "$src" "$tmp"' in (Path(sys.argv[1]).parent / "common.sh").read_text()
 prepare = source.index("prepare_inputs()")
 metadata = source.index("load_kernel_bundle_metadata", prepare)
 archive_download = source.index(
@@ -92,7 +295,10 @@ manifest_download = source.index('ci_download "$KERNEL_SDK_MANIFEST" "$kernel_sd
 preflight = source.index('verify-kernel-sdk.py" --archive-only', manifest_download)
 extract = source.index('ci_extract_archive "$archive" "$extract"', preflight)
 verifier = source.index('verify-kernel-sdk.py', extract)
-assert metadata < archive_download < binding < manifest_download < preflight < extract < verifier
+remove_archive = source.index('rm -f -- "$archive"', verifier)
+assert metadata < archive_download < binding < manifest_download < preflight < extract < verifier < remove_archive
+assert '--kernel-release "$kernel_bundle_release"' in source[preflight:extract]
+assert '--kernel-release "$kernel_bundle_release"' in source[verifier:remove_archive]
 start = source.index("write_haptics_source_lock()")
 end = source.index("\n}\n", start) + 2
 block = source[start:end]
@@ -144,6 +350,16 @@ for token in \
   grep -Fq -- "$token" "$SCRIPT_DIR/build-tb321fu-haptics-deb-from-kernel-sdk.sh" ||
     fail "SDK wrapper omits release lock contract token: $token"
 done
+python3 - "$SCRIPT_DIR/build-tb321fu-haptics-deb-from-kernel-sdk.sh" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+preflight = source.index('ci_verify_clean_git_commit "$REPO_ROOT" "$HAPTICS_PRODUCER_COMMIT"')
+fetch = source.index('ci_git -C "$kernel_source" fetch')
+producer = source.index('build-tb321fu-haptics-deb.sh', fetch)
+assert preflight < fetch < producer
+PY
 workflow=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)/.github/workflows/build.yml
 readme=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)/README.md
 grep -Fq 'HAPTICS_RELEASE_MODE=1' "$workflow" ||

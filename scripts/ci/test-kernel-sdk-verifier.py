@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import pathlib
 import subprocess
 import sys
@@ -22,12 +23,13 @@ REQUIRED = {
     "./include/generated/autoconf.h": b"#define CONFIG_TB321FU 1\n",
     "./include/generated/utsrelease.h": b'#define UTS_RELEASE "7.1.1-fixture"\n',
 }
+RELEASE = "7.1.1-fixture"
 
 
-def add_directory(archive: tarfile.TarFile, name: str) -> None:
+def add_directory(archive: tarfile.TarFile, name: str, mode: int = 0o755) -> None:
     info = tarfile.TarInfo(name)
     info.type = tarfile.DIRTYPE
-    info.mode = 0o755
+    info.mode = mode
     archive.addfile(info)
 
 
@@ -47,18 +49,30 @@ def add_symlink(archive: tarfile.TarFile, name: str, target: str, mode: int = 0o
 
 
 def manifest_records(
-    prefix: str = "", *, include_link: bool = True, link_target: str = "autoconf.h"
+    prefix: str = "",
+    *,
+    include_link: bool = True,
+    link_target: str = "autoconf.h",
+    required: dict[str, bytes] = REQUIRED,
+    file_modes: dict[str, int] | None = None,
+    link_mode: int = 0o777,
 ) -> list[tuple[str, str, int, str]]:
+    file_modes = file_modes or {}
     records = [
-        ("file", hashlib.sha256(data).hexdigest(), 0o644, f"./{prefix}{path[2:]}")
-        for path, data in REQUIRED.items()
+        (
+            "file",
+            hashlib.sha256(data).hexdigest(),
+            file_modes.get(path, 0o644),
+            f"./{prefix}{path[2:]}",
+        )
+        for path, data in required.items()
     ]
     if include_link:
         records.append(
             (
                 "symlink",
                 hashlib.sha256(link_target.encode("utf-8")).hexdigest(),
-                0o777,
+                link_mode,
                 f"./{prefix}include/generated/autoconf-link",
             )
         )
@@ -80,17 +94,33 @@ def write_archive(
     duplicate_root: bool = False,
     noncanonical_member: bool = False,
     link_target: str = "autoconf.h",
+    required: dict[str, bytes] = REQUIRED,
+    directory_mode: int = 0o755,
+    file_modes: dict[str, int] | None = None,
+    link_mode: int = 0o777,
+    long_component: bool = False,
+    deep_path: bool = False,
 ) -> None:
+    file_modes = file_modes or {}
     with tarfile.open(path, "w:gz", format=tarfile.GNU_FORMAT) as archive:
-        add_directory(archive, "./")
+        add_directory(archive, "./", directory_mode)
         for directory in ("include", "include/config", "include/generated"):
-            add_directory(archive, f"./{prefix}{directory}")
-        for name, data in REQUIRED.items():
+            add_directory(archive, f"./{prefix}{directory}", directory_mode)
+        for name, data in required.items():
             archive_name = f"./{prefix}{name[2:]}"
             if noncanonical_member and name == "./.config":
                 archive_name = f"./{prefix}./.config"
-            add_regular(archive, archive_name, data)
-        add_symlink(archive, f"./{prefix}include/generated/autoconf-link", link_target)
+            add_regular(archive, archive_name, data, file_modes.get(name, 0o644))
+        add_symlink(
+            archive,
+            f"./{prefix}include/generated/autoconf-link",
+            link_target,
+            link_mode,
+        )
+        if long_component:
+            add_regular(archive, "./" + "x" * 256, b"long\n")
+        if deep_path:
+            add_regular(archive, "./" + "/".join(["d"] * 129), b"deep\n")
         if extra:
             add_regular(archive, f"./{prefix}unexpected", b"unexpected\n")
         if source:
@@ -120,6 +150,7 @@ def run(*arguments: pathlib.Path | str) -> subprocess.CompletedProcess[str]:
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        timeout=30,
     )
 
 
@@ -141,12 +172,12 @@ def require_rejected(result: subprocess.CompletedProcess[str], label: str) -> No
 
 
 def validate_fixture(root: pathlib.Path, archive: pathlib.Path, manifest: pathlib.Path) -> None:
-    preflight = run(archive, manifest, "--archive-only")
+    preflight = run(archive, manifest, "--archive-only", "--kernel-release", RELEASE)
     if preflight.returncode or preflight.stdout.strip() != "KERNEL_SDK=PASS":
         raise SystemExit(f"valid SDK archive-only fixture failed: {preflight.stderr}")
     extracted = root / "extract"
     extract(archive, extracted)
-    result = run(archive, manifest, extracted)
+    result = run(archive, manifest, extracted, "--kernel-release", RELEASE)
     if result.returncode or result.stdout.strip() != "KERNEL_SDK=PASS":
         raise SystemExit(f"valid SDK fixture failed: {result.stderr}")
 
@@ -159,6 +190,162 @@ def main() -> None:
         write_archive(good_archive)
         write_manifest(good_manifest, manifest_records())
         validate_fixture(root / "good", good_archive, good_manifest)
+
+        require_rejected(
+            run(good_archive, good_manifest, "--archive-only", "--kernel-release", "7.1.1-wrong"),
+            "outer kernel release mismatch",
+        )
+
+        empty_symvers = dict(REQUIRED)
+        empty_symvers["./Module.symvers"] = b""
+        empty_symvers_archive = root / "empty-symvers.tar.gz"
+        empty_symvers_manifest = root / "empty-symvers.tsv"
+        write_archive(empty_symvers_archive, required=empty_symvers)
+        write_manifest(empty_symvers_manifest, manifest_records(required=empty_symvers))
+        require_rejected(
+            run(
+                empty_symvers_archive,
+                empty_symvers_manifest,
+                "--archive-only",
+                "--kernel-release",
+                RELEASE,
+            ),
+            "empty Module.symvers",
+        )
+
+        wrong_identity = dict(REQUIRED)
+        wrong_identity["./include/config/kernel.release"] = b"7.1.1-wrong\n"
+        wrong_identity["./include/generated/utsrelease.h"] = b'#define UTS_RELEASE "7.1.1-wrong"\n'
+        wrong_identity_archive = root / "wrong-identity.tar.gz"
+        wrong_identity_manifest = root / "wrong-identity.tsv"
+        write_archive(wrong_identity_archive, required=wrong_identity)
+        write_manifest(wrong_identity_manifest, manifest_records(required=wrong_identity))
+        require_rejected(
+            run(
+                wrong_identity_archive,
+                wrong_identity_manifest,
+                "--archive-only",
+                "--kernel-release",
+                RELEASE,
+            ),
+            "synchronized SDK release mismatch",
+        )
+
+        required_mode = {"./include/config/kernel.release": 0o600}
+        required_mode_archive = root / "required-mode.tar.gz"
+        required_mode_manifest = root / "required-mode.tsv"
+        write_archive(required_mode_archive, file_modes=required_mode)
+        write_manifest(required_mode_manifest, manifest_records(file_modes=required_mode))
+        require_rejected(
+            run(required_mode_archive, required_mode_manifest, "--archive-only"),
+            "synchronized required-file mode",
+        )
+
+        directory_mode_archive = root / "directory-mode.tar.gz"
+        write_archive(directory_mode_archive, directory_mode=0o777)
+        require_rejected(
+            run(directory_mode_archive, good_manifest, "--archive-only"),
+            "unsafe directory mode",
+        )
+
+        file_mode = {"./include/generated/autoconf.h": 0o666}
+        file_mode_archive = root / "file-mode.tar.gz"
+        file_mode_manifest = root / "file-mode.tsv"
+        write_archive(file_mode_archive, file_modes=file_mode)
+        write_manifest(file_mode_manifest, manifest_records(file_modes=file_mode))
+        require_rejected(run(file_mode_archive, file_mode_manifest, "--archive-only"), "unsafe file mode")
+
+        symlink_mode_archive = root / "symlink-mode.tar.gz"
+        symlink_mode_manifest = root / "symlink-mode.tsv"
+        write_archive(symlink_mode_archive, link_mode=0o755)
+        write_manifest(symlink_mode_manifest, manifest_records(link_mode=0o755))
+        require_rejected(
+            run(symlink_mode_archive, symlink_mode_manifest, "--archive-only"),
+            "unsafe symlink mode",
+        )
+
+        parent_target_archive = root / "parent-target.tar.gz"
+        parent_target_manifest = root / "parent-target.tsv"
+        write_archive(parent_target_archive, link_target="../generated/autoconf.h")
+        write_manifest(
+            parent_target_manifest,
+            manifest_records(link_target="../generated/autoconf.h"),
+        )
+        require_rejected(
+            run(parent_target_archive, parent_target_manifest, "--archive-only"),
+            "symlink parent traversal",
+        )
+
+        long_component_archive = root / "long-component.tar.gz"
+        write_archive(long_component_archive, long_component=True)
+        require_rejected(
+            run(long_component_archive, good_manifest, "--archive-only"),
+            "overlong path component",
+        )
+
+        deep_path_archive = root / "deep-path.tar.gz"
+        write_archive(deep_path_archive, deep_path=True)
+        require_rejected(
+            run(deep_path_archive, good_manifest, "--archive-only"),
+            "overdeep archive path",
+        )
+
+        deep_manifest = root / "deep-manifest.tsv"
+        deep_records = manifest_records()
+        deep_records.append(("file", hashlib.sha256(b"deep\n").hexdigest(), 0o644, "./" + "/".join(["d"] * 129)))
+        write_manifest(deep_manifest, sorted(deep_records, key=lambda record: record[3]))
+        require_rejected(
+            run(good_archive, deep_manifest, "--archive-only"),
+            "overdeep manifest path",
+        )
+
+        oversized_manifest = root / "oversized.tsv"
+        with oversized_manifest.open("wb") as stream:
+            stream.truncate(16 * 1024 * 1024 + 1)
+        require_rejected(
+            run(good_archive, oversized_manifest, "--archive-only"),
+            "oversized manifest",
+        )
+
+        symlink_manifest = root / "symlink-manifest.tsv"
+        symlink_manifest.symlink_to(good_manifest.name)
+        require_rejected(
+            run(good_archive, symlink_manifest, "--archive-only"),
+            "symlink manifest",
+        )
+
+        fifo_manifest = root / "fifo-manifest.tsv"
+        fifo_manifest.unlink(missing_ok=True)
+        fifo_manifest.parent.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(fifo_manifest)
+        require_rejected(
+            run(good_archive, fifo_manifest, "--archive-only"),
+            "FIFO manifest",
+        )
+
+        symlink_archive = root / "symlink-archive.tar.gz"
+        symlink_archive.symlink_to(good_archive.name)
+        require_rejected(
+            run(symlink_archive, good_manifest, "--archive-only"),
+            "symlink archive",
+        )
+
+        fifo_archive = root / "fifo-archive.tar.gz"
+        os.mkfifo(fifo_archive)
+        require_rejected(
+            run(fifo_archive, good_manifest, "--archive-only"),
+            "FIFO archive",
+        )
+
+        require_rejected(
+            run(root, good_manifest, "--archive-only"),
+            "directory archive",
+        )
+
+        oversized_archive = root / "oversized.tar.gz"
+        with oversized_archive.open("wb") as stream:
+            stream.truncate(2 * 1024 * 1024 * 1024 + 1)
+        require_rejected(run(oversized_archive, good_manifest, "--archive-only"), "oversized archive")
 
         wrapped_archive = root / "wrapped.tar.gz"
         wrapped_manifest = root / "wrapped.tsv"
@@ -229,6 +416,11 @@ def main() -> None:
         mode_extract = root / "mode-extract"
         extract(good_archive, mode_extract)
         require_rejected(run(good_archive, bad_mode_manifest, mode_extract), "mode mismatch")
+
+        directory_extract = root / "directory-extract"
+        extract(good_archive, directory_extract)
+        (directory_extract / "include").chmod(0o777)
+        require_rejected(run(good_archive, good_manifest, directory_extract), "extracted directory mode")
 
         unsorted_manifest = root / "unsorted.tsv"
         write_manifest(unsorted_manifest, list(reversed(manifest_records())))

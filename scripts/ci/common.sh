@@ -245,21 +245,69 @@ ci_verify_download() {
     ci_die "SHA-256 mismatch for $file: expected ${expected,,}, got $actual"
 }
 
+ci_download_matches_sha256() {
+  local file=$1
+  local expected=$2
+  local actual
+
+  [[ $expected =~ ^[A-Fa-f0-9]{64}$ ]] || return 1
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  actual=$("${CI_SHA256SUM_BIN:-sha256sum}" "$file" 2>/dev/null | awk '{print $1}') || return 1
+  [ "$actual" = "${expected,,}" ]
+}
+
 ci_download() {
   local src=$1
   local dst=$2
   local verifier=${3:-}
   local tmp="${dst}.part.$$"
+  local attempt=1
+  local max_attempts=24
+  local resume_reset=0
+  local curl_rc
 
   rm -f -- "$tmp"
   case "$src" in
     https://*)
       [ -n "$verifier" ] || ci_die "remote download requires an explicit SHA-256: $src"
       ci_require_cmd "${CI_CURL_BIN:-curl}"
-      if ! "${CI_CURL_BIN:-curl}" --proto '=https' --proto-redir '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 -o "$tmp" "$src"; then
-        rm -f -- "$tmp"
-        ci_die "download failed: $src"
-      fi
+      while :; do
+        if "${CI_CURL_BIN:-curl}" \
+          --disable \
+          --proto '=https' \
+          --proto-redir '=https' \
+          --tlsv1.2 \
+          --http1.1 \
+          --fail \
+          --location \
+          --connect-timeout 30 \
+          --max-time 3600 \
+          --speed-limit 1024 \
+          --speed-time 300 \
+          --continue-at - \
+          --output "$tmp" \
+          "$src"; then
+          break
+        else
+          curl_rc=$?
+        fi
+
+        if [ -s "$tmp" ] && ci_download_matches_sha256 "$tmp" "$verifier"; then
+          ci_log "HTTPS download completed before curl exit $curl_rc: $src"
+          break
+        fi
+        if [ "$curl_rc" -eq 33 ] && [ -s "$tmp" ] && [ "$resume_reset" -eq 0 ]; then
+          rm -f -- "$tmp"
+          resume_reset=1
+          ci_log "server rejected HTTPS resume; retrying once from byte zero: $src"
+        fi
+        if [ "$attempt" -ge "$max_attempts" ]; then
+          rm -f -- "$tmp"
+          ci_die "download failed after $max_attempts attempts: $src"
+        fi
+        attempt=$((attempt + 1))
+        ci_log "retrying HTTPS download ($attempt/$max_attempts) after curl exit $curl_rc: $src"
+      done
       ;;
     http://*)
       ci_die "refusing insecure HTTP download: $src"
@@ -268,8 +316,9 @@ ci_download() {
       ci_die "empty download source for $dst"
       ;;
     *)
-      [ -f "$src" ] || ci_die "local download source is not a regular file: $src"
-      cp -- "$src" "$tmp"
+      [ -f "$src" ] && [ ! -L "$src" ] ||
+        ci_die "local download source is not a regular file: $src"
+      cp --reflink=auto -- "$src" "$tmp"
       ;;
   esac
   if [ -n "$verifier" ]; then

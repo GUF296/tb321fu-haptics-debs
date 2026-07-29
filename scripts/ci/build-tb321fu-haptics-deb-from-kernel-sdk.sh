@@ -85,8 +85,22 @@ haptics_validate_kernel_build_input_contract \
   "$KERNEL_BUNDLE_METADATA_SHA256" \
   "$KERNEL_SDK_MANIFEST"
 
+output_requested=$(ci_abs_path "$OUTPUT_DIR")
+output_parent=$(dirname -- "$output_requested")
+output_name=$(basename -- "$output_requested")
+[[ $output_name =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
+  ci_die "unsafe OUTPUT_DIR basename: $output_name"
+mkdir -p "$output_parent"
+output_parent=$(realpath -e -- "$output_parent")
+output_path="$output_parent/$output_name"
+[ ! -e "$output_path" ] || ci_die "refusing stale OUTPUT_DIR: $output_path"
+
 haptics_capture_build_tools
 haptics_verify_expected_build_environment
+preflight_haptics_commit=$(ci_verify_clean_git_commit "$REPO_ROOT" "$HAPTICS_PRODUCER_COMMIT")
+[ "$preflight_haptics_commit" = "$HAPTICS_PRODUCER_COMMIT" ] ||
+  ci_die "haptics producer preflight returned an unexpected commit"
+ci_log "haptics producer preflight passed: $preflight_haptics_commit"
 
 delivery_stage=
 producer_output=
@@ -100,15 +114,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-output_requested=$(ci_abs_path "$OUTPUT_DIR")
-output_parent=$(dirname -- "$output_requested")
-output_name=$(basename -- "$output_requested")
-[[ $output_name =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
-  ci_die "unsafe OUTPUT_DIR basename: $output_name"
-mkdir -p "$output_parent"
-output_parent=$(realpath -e -- "$output_parent")
-output_path="$output_parent/$output_name"
-[ ! -e "$output_path" ] || ci_die "refusing stale OUTPUT_DIR: $output_path"
 delivery_stage=$(mktemp -d "$output_parent/.${output_name}.delivery.XXXXXX")
 chmod 0700 "$delivery_stage"
 producer_output="$delivery_stage/producer-output"

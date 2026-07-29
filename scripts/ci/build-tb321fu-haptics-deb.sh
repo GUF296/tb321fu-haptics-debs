@@ -427,18 +427,21 @@ prepare_inputs() {
     fi
     if [ -n "$kernel_sdk_manifest_path" ]; then
       haptics_run_isolated_tool python3 "$SCRIPT_DIR/verify-kernel-sdk.py" --archive-only \
-        "$archive" "$kernel_sdk_manifest_path" ||
+        "$archive" "$kernel_sdk_manifest_path" \
+        --kernel-release "$kernel_bundle_release" ||
         ci_die "kernel SDK archive does not match KERNEL-SDK-MANIFEST.tsv"
     fi
     ci_extract_archive "$archive" "$extract"
     if [ -n "$kernel_sdk_manifest_path" ]; then
       haptics_run_isolated_tool python3 "$SCRIPT_DIR/verify-kernel-sdk.py" \
-        "$archive" "$kernel_sdk_manifest_path" "$extract" ||
+        "$archive" "$kernel_sdk_manifest_path" "$extract" \
+        --kernel-release "$kernel_bundle_release" ||
         ci_die "kernel SDK archive does not match KERNEL-SDK-MANIFEST.tsv"
       kernel_build_root="$extract"
     else
       kernel_build_root=$(find_kernel_build_root "$extract") || ci_die "KERNEL_BUILD_ARCHIVE does not contain kernel build output"
     fi
+    rm -f -- "$archive"
   fi
 
   kernel_release=$(cat "$kernel_build_root/include/config/kernel.release")
