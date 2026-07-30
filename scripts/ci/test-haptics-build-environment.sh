@@ -161,10 +161,16 @@ expected_build_tool_count=${#HAPTICS_REQUIRED_BUILD_TOOLS[@]}
 [ "${#HAPTICS_BUILD_TOOL_RECORDS[@]}" -eq "${#HAPTICS_REQUIRED_BUILD_TOOLS[@]}" ] ||
   fail "build-tool inventory is incomplete"
 for name in "${HAPTICS_REQUIRED_BUILD_TOOLS[@]}"; do
+  command_path=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[$name]}
   path=${HAPTICS_BUILD_TOOL_PATHS[$name]}
+  case "$command_path" in /*) ;; *) fail "build-tool command path is not absolute: $name" ;; esac
+  [ -e "$command_path" ] && [ -x "$command_path" ] ||
+    fail "build-tool command path is not executable: $name"
   case "$path" in /*) ;; *) fail "build tool path is not absolute: $name" ;; esac
   [ -f "$path" ] && [ -x "$path" ] && [ ! -L "$path" ] ||
     fail "build tool path is not a regular executable: $name"
+  [ "$(readlink -f -- "$command_path")" = "$path" ] ||
+    fail "build-tool command does not resolve to recorded target: $name"
   [[ ${HAPTICS_BUILD_TOOL_SHA256[$name]} =~ ^[0-9a-f]{64}$ ]] ||
     fail "build tool lacks a captured digest: $name"
 done
@@ -172,7 +178,7 @@ tools_manifest="$tmp/HAPTICS-BUILD-TOOLS.tsv"
 haptics_write_build_tools_manifest "$tools_manifest"
 haptics_verify_build_tools_manifest "$tools_manifest"
 cp -- "$tools_manifest" "$tmp/HAPTICS-BUILD-TOOLS.mutated.tsv"
-printf 'tool\tforged\t/usr/bin/false\t%s\tforged\n' \
+printf 'tool\tforged\t/usr/bin/false\t/usr/bin/false\t%s\tforged\n' \
   0000000000000000000000000000000000000000000000000000000000000000 >> \
   "$tmp/HAPTICS-BUILD-TOOLS.mutated.tsv"
 require_failure 'build-tools manifest has an unexpected line count' \
@@ -191,6 +197,10 @@ for generator in flex bison m4; do
     "$kbuild_tool_path_fixture/$generator" ] ||
     fail "private Kbuild tool path does not resolve required generator: $generator"
 done
+[ "$(basename -- "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[modinfo]}")" = modinfo ] ||
+  fail "captured modinfo invocation path does not preserve argv0"
+haptics_run_isolated_tool modinfo --version >/dev/null ||
+  fail "captured modinfo invocation path is not executable"
 
 tampered_tool=xargs
 rm -- "$kbuild_tool_path_fixture/$tampered_tool"
@@ -262,6 +272,7 @@ haptics_verify_build_tools_unchanged() {
 }
 . "$kernel_make_fixture"
 HAPTICS_BUILD_TOOL_PATHS[make]=$fake_make
+HAPTICS_BUILD_TOOL_COMMAND_PATHS[make]=$fake_make
 haptics_kbuild_path="$tmp/kernel-make-kbuild-tools"
 haptics_prepare_kbuild_tool_path "$haptics_kbuild_path"
 kernel_source_root="$tmp/kernel-source"
@@ -344,7 +355,7 @@ for forbidden in \
     fail "isolated kernel_make inherited $forbidden"
   fi
 done
-locked_dash=${HAPTICS_BUILD_TOOL_PATHS[dash]}
+locked_dash=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}
 case "$locked_dash" in
   /*) ;;
   *) fail "recorded dash path is not absolute: $locked_dash" ;;
@@ -403,6 +414,7 @@ for expected in "${expected_make_arguments[@]}"; do
   [ "$actual" = "$expected" ] ||
     fail "caller-controlled make assignment overrode verified value: $key"
 done
+HAPTICS_BUILD_TOOL_COMMAND_PATHS[make]=$(haptics_resolve_build_tool_command make)
 HAPTICS_BUILD_TOOL_PATHS[make]=$(haptics_resolve_build_tool make)
 
 deb_fixture="$tmp/deb-fixture"
@@ -425,17 +437,61 @@ cmp -s "$tmp/fixture-a.deb" "$tmp/fixture-b.deb" ||
   fail "fixed dpkg-deb policy did not produce byte-identical fixture packages"
 
 (
-  fixture_tool="$tmp/fixture-tool"
-  cp -- /usr/bin/true "$fixture_tool"
-  chmod 0755 "$fixture_tool"
+  fixture_target="$tmp/fixture-target"
+  fixture_command="$tmp/fixture-command"
+  cp -- /usr/bin/true "$fixture_target"
+  chmod 0755 "$fixture_target"
+  ln -s -- "$fixture_target" "$fixture_command"
   HAPTICS_BUILD_TOOL_PATHS=()
+  HAPTICS_BUILD_TOOL_COMMAND_PATHS=()
   HAPTICS_BUILD_TOOL_SHA256=()
   HAPTICS_BUILD_TOOL_VERSIONS=()
+  HAPTICS_BUILD_TOOL_STATES=()
+  HAPTICS_BUILD_TOOL_COMMAND_STATES=()
   HAPTICS_BUILD_TOOL_RECORDS=()
-  haptics_record_build_tool fixture "$fixture_tool"
-  printf 'drift\n' >> "$fixture_tool"
-  require_failure 'build tool bytes changed after fixture use: fixture' \
-    haptics_verify_recorded_build_tool fixture "$fixture_tool" 'after fixture use'
+  haptics_record_build_tool fixture "$fixture_command"
+  printf 'drift\n' >> "$fixture_target"
+  require_failure 'build-tool target state changed after fixture use: fixture' \
+    haptics_verify_recorded_build_tool fixture "$fixture_command" 'after fixture use'
+)
+(
+  fixture_true="$tmp/fixture-command-true"
+  fixture_false="$tmp/fixture-command-false"
+  fixture_command="$tmp/fixture-retarget-command"
+  cp -- /usr/bin/true "$fixture_true"
+  cp -- /usr/bin/false "$fixture_false"
+  chmod 0755 "$fixture_true" "$fixture_false"
+  ln -s -- "$fixture_true" "$fixture_command"
+  HAPTICS_BUILD_TOOL_PATHS=()
+  HAPTICS_BUILD_TOOL_COMMAND_PATHS=()
+  HAPTICS_BUILD_TOOL_SHA256=()
+  HAPTICS_BUILD_TOOL_VERSIONS=()
+  HAPTICS_BUILD_TOOL_STATES=()
+  HAPTICS_BUILD_TOOL_COMMAND_STATES=()
+  HAPTICS_BUILD_TOOL_RECORDS=()
+  haptics_record_build_tool fixture "$fixture_command"
+  rm -- "$fixture_command"
+  ln -s -- "$fixture_false" "$fixture_command"
+  require_failure 'build-tool command path changed after fixture retarget: fixture' \
+    haptics_verify_recorded_build_tool fixture "$fixture_command" 'after fixture retarget'
+)
+(
+  fixture_target="$tmp/fixture-disappear-target"
+  fixture_command="$tmp/fixture-disappear-command"
+  cp -- /usr/bin/true "$fixture_target"
+  chmod 0755 "$fixture_target"
+  ln -s -- "$fixture_target" "$fixture_command"
+  HAPTICS_BUILD_TOOL_PATHS=()
+  HAPTICS_BUILD_TOOL_COMMAND_PATHS=()
+  HAPTICS_BUILD_TOOL_SHA256=()
+  HAPTICS_BUILD_TOOL_VERSIONS=()
+  HAPTICS_BUILD_TOOL_STATES=()
+  HAPTICS_BUILD_TOOL_COMMAND_STATES=()
+  HAPTICS_BUILD_TOOL_RECORDS=()
+  haptics_record_build_tool fixture "$fixture_command"
+  rm -- "$fixture_command"
+  require_failure 'build-tool command is no longer executable after fixture disappearance: fixture' \
+    haptics_verify_recorded_build_tool fixture "$fixture_command" 'after fixture disappearance'
 )
 
 promotion_source="$tmp/promotion-source"
@@ -469,8 +525,8 @@ done
 for token in \
   '"SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"' \
   '"PATH=$haptics_kbuild_path"' \
-  '"CONFIG_SHELL=${HAPTICS_BUILD_TOOL_PATHS[dash]}"' \
-  '"SHELL=${HAPTICS_BUILD_TOOL_PATHS[dash]}"' \
+  '"CONFIG_SHELL=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}"' \
+  '"SHELL=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}"' \
   'GIT_CONFIG_NOSYSTEM=1' \
   'CROSS_COMPILE=' \
   'HOSTCC="$haptics_kbuild_path/gcc"' \
@@ -491,6 +547,15 @@ grep -Fq 'debian-compression=xz,level=6,threads=1,uniform=yes' \
 grep -Fq 'kbuild-tool-invocation=private-canonical-command-symlink-v1' \
   "$SCRIPT_DIR/haptics-build-environment.sh" ||
   fail "environment policy does not bind canonical Kbuild command names"
+grep -Fq 'command-invocation=locked-command-path-resolved-target-v1' \
+  "$SCRIPT_DIR/haptics-build-environment.sh" ||
+  fail "environment policy does not bind command paths separately from tool targets"
+grep -Fq 'HAPTICS_BUILD_TOOLS_SCHEMA=tb321fu.haptics-build-tools/v2' \
+  "$SCRIPT_DIR/haptics-build-environment.sh" ||
+  fail "build-tools evidence does not use the invocation-path v2 schema"
+grep -Fq 'haptics_run_isolated_tool modinfo "$module"' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+  fail "module verification does not invoke the locked modinfo command"
 for token in \
   record_kernel_host_tools \
   'verify_kernel_host_tools_unchanged "before external module build"' \

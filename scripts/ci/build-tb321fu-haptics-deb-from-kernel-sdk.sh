@@ -155,8 +155,8 @@ producer_env=(
   EXPECTED_HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256="$HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256"
 )
 producer_env+=("${HAPTICS_TRANSPORT_ENVIRONMENT[@]}")
-"${HAPTICS_BUILD_TOOL_PATHS[env]}" -i "${producer_env[@]}" \
-  "${HAPTICS_BUILD_TOOL_PATHS[bash]}" "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh"
+"${HAPTICS_BUILD_TOOL_COMMAND_PATHS[env]}" -i "${producer_env[@]}" \
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[bash]}" "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh"
 
 deb_name="tb321fu-haptics_${HAPTICS_DEB_VERSION}_${ARCH}.deb"
 archive_name="tb321fu-haptics-debs_${HAPTICS_DEB_VERSION}_${ARCH}.tar.gz"
@@ -218,7 +218,7 @@ done
 mv -- "$archive_tmp" "$producer_output/$archive_name"
 (
   cd "$producer_output"
-  "${HAPTICS_BUILD_TOOL_PATHS[sha256sum]}" "./$archive_name" > "$archive_manifest"
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[sha256sum]}" "./$archive_name" > "$archive_manifest"
 )
 
 lock_value() {
@@ -298,7 +298,7 @@ for index in "${!expected_output_roots[@]}"; do
     ci_die "haptics delivery root mismatch: expected ${expected_output_roots[$index]}, got ${actual_output_roots[$index]}"
 done
 (cd "$producer_output" && \
-  "${HAPTICS_BUILD_TOOL_PATHS[sha256sum]}" --strict -c "$archive_manifest" >/dev/null)
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[sha256sum]}" --strict -c "$archive_manifest" >/dev/null)
 
 [ ! -e "$output_path" ] && [ ! -L "$output_path" ] ||
   ci_die "OUTPUT_DIR appeared during atomic promotion: $output_path"

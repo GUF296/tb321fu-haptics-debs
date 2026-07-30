@@ -670,8 +670,8 @@ kernel_make() {
     GIT_CONFIG_VALUE_1=false
     GIT_CONFIG_KEY_2=core.excludesFile
     GIT_CONFIG_VALUE_2=/dev/null
-    "CONFIG_SHELL=${HAPTICS_BUILD_TOOL_PATHS[dash]}"
-    "SHELL=${HAPTICS_BUILD_TOOL_PATHS[dash]}"
+    "CONFIG_SHELL=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}"
+    "SHELL=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}"
   )
 
   if [ -n "$KERNEL_GIT_DIR" ]; then
@@ -679,16 +679,16 @@ kernel_make() {
   fi
   haptics_verify_build_tools_unchanged "before Kbuild invocation"
   haptics_verify_kbuild_tool_path "$haptics_kbuild_path"
-  if "${HAPTICS_BUILD_TOOL_PATHS[env]}" -i "${make_env[@]}" \
-      "${HAPTICS_BUILD_TOOL_PATHS[make]}" -C "$kernel_source_root" "$@" \
+  if "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[env]}" -i "${make_env[@]}" \
+      "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[make]}" -C "$kernel_source_root" "$@" \
       KERNELRELEASE="$kernel_release" \
       KBUILD_BUILD_TIMESTAMP="$kernel_kbuild_timestamp" \
       KBUILD_BUILD_USER="$kernel_kbuild_user" \
       KBUILD_BUILD_HOST="$kernel_kbuild_host" \
       KBUILD_BUILD_VERSION="$kernel_kbuild_version" \
       ARCH=arm64 \
-      CONFIG_SHELL="${HAPTICS_BUILD_TOOL_PATHS[dash]}" \
-      SHELL="${HAPTICS_BUILD_TOOL_PATHS[dash]}" \
+      CONFIG_SHELL="${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}" \
+      SHELL="${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}" \
       HOSTCC="$haptics_kbuild_path/gcc" \
       HOSTAS="$haptics_kbuild_path/as" \
       HOSTLD="$haptics_kbuild_path/ld" \
@@ -1076,7 +1076,7 @@ EOF_MAKE
   [ -f "$module" ] || ci_die "missing built module: $module"
   [ "$(haptics_sha256_file "$haptics_build_source_path")" = "$haptics_build_source_sha256" ] ||
     ci_die "patched AW86937 build source changed during module compilation"
-  haptics_run_isolated_tool kmod modinfo "$module" | tee "$work_dir/aw86937-haptics.modinfo"
+  haptics_run_isolated_tool modinfo "$module" | tee "$work_dir/aw86937-haptics.modinfo"
   grep -q '^name:[[:space:]]*aw86937_haptics$' "$work_dir/aw86937-haptics.modinfo" || ci_die "unexpected module name"
   grep -q '^alias:[[:space:]]*i2c:aw86937_haptics$' "$work_dir/aw86937-haptics.modinfo" || ci_die "missing standard i2c alias"
   grep -Eq '^alias:[[:space:]]*of:.*lenovo,tb321fu-aw86937' "$work_dir/aw86937-haptics.modinfo" ||
@@ -1130,7 +1130,7 @@ EOF_MAKE
     --build --root-owner-group --uniform-compression --threads-max=1 \
     -Zxz -z6 "$pkg" "$deb" >/dev/null
   verify_built_haptics_deb "$pkg" "$deb"
-  "${HAPTICS_BUILD_TOOL_PATHS[sha256sum]}" "$deb"
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[sha256sum]}" "$deb"
 }
 
 verify_built_haptics_deb() {
@@ -1201,7 +1201,7 @@ write_haptics_source_lock() {
 write_haptics_checksums() {
   (
     cd "$OUTPUT_DIR"
-    "${HAPTICS_BUILD_TOOL_PATHS[sha256sum]}" \
+    "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[sha256sum]}" \
       "./$haptics_deb_name" \
       ./HAPTICS-SOURCE-LOCK.tsv \
       ./HAPTICS-BUILD-TOOLS.tsv \
@@ -1267,7 +1267,7 @@ finalize_haptics_output() {
       ci_die "haptics checksum manifest order mismatch: expected ${expected_manifest[$index]}, got ${actual_manifest[$index]}"
   done
   (cd "$OUTPUT_DIR" && \
-    "${HAPTICS_BUILD_TOOL_PATHS[sha256sum]}" --strict \
+    "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[sha256sum]}" --strict \
       -c SHA256SUMS-tb321fu-haptics-debs.txt >/dev/null)
 
   [ ! -e "$output_path" ] || ci_die "OUTPUT_DIR appeared during atomic promotion: $output_path"

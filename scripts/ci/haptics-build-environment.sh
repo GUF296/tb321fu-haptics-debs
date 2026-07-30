@@ -3,7 +3,7 @@
 
 HAPTICS_BUILD_ENVIRONMENT_POLICY=isolated-allowlist-v1
 HAPTICS_BUILD_ENVIRONMENT_SCHEMA=tb321fu.haptics-build-environment/v1
-HAPTICS_BUILD_TOOLS_SCHEMA=tb321fu.haptics-build-tools/v1
+HAPTICS_BUILD_TOOLS_SCHEMA=tb321fu.haptics-build-tools/v2
 HAPTICS_BUILD_PATH=/usr/sbin:/usr/bin:/sbin:/bin
 HAPTICS_BUILD_HOME=/nonexistent
 HAPTICS_BUILD_TMPDIR=/tmp
@@ -63,7 +63,7 @@ HAPTICS_REQUIRED_BUILD_TOOLS=(
   aarch64-linux-gnu-objdump
   aarch64-linux-gnu-readelf
   aarch64-linux-gnu-strip
-  kmod
+  modinfo
   tar
   gzip
   xz
@@ -79,8 +79,11 @@ HAPTICS_REQUIRED_BUILD_TOOLS=(
 )
 
 declare -gA HAPTICS_BUILD_TOOL_PATHS=()
+declare -gA HAPTICS_BUILD_TOOL_COMMAND_PATHS=()
 declare -gA HAPTICS_BUILD_TOOL_SHA256=()
 declare -gA HAPTICS_BUILD_TOOL_VERSIONS=()
+declare -gA HAPTICS_BUILD_TOOL_STATES=()
+declare -gA HAPTICS_BUILD_TOOL_COMMAND_STATES=()
 declare -ga HAPTICS_BUILD_TOOL_RECORDS=()
 declare -ga HAPTICS_TRANSPORT_ENVIRONMENT=()
 HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256=
@@ -106,9 +109,9 @@ haptics_build_environment_policy() {
     'kbuild-tool-invocation=private-canonical-command-symlink-v1' \
     'kbuild-kernelrelease=verified-sdk-command-line-v1' \
     'kbuild-compile-identity=verified-bundle-or-epoch-command-line-v1' \
-    'command-resolution=absolute-recorded-paths' \
+    'command-invocation=locked-command-path-resolved-target-v1' \
     'generated-kernel-host-tools=absolute-private-path,sha256,pre-and-post-use-verification' \
-    'tool-identity=absolute-realpath,sha256,version,post-use-verification'
+    'tool-identity=absolute-command-path,absolute-realpath,sha256,version,pre-and-post-use-verification'
 }
 
 haptics_validate_clean_input() {
@@ -274,8 +277,8 @@ haptics_enter_clean_environment() {
     "$bash_path" --noprofile --norc "$script" "${command_args[@]}"
 }
 
-haptics_resolve_build_tool() {
-  local name=$1 candidate resolved
+haptics_resolve_build_tool_command() {
+  local name=$1 candidate command_directory command_path
 
   candidate=$(PATH="$HAPTICS_BUILD_PATH" command -v -- "$name") ||
     ci_die "required build tool not found: $name"
@@ -283,8 +286,24 @@ haptics_resolve_build_tool() {
     /*) ;;
     *) ci_die "build tool did not resolve to an absolute path: $name -> $candidate" ;;
   esac
-  resolved=$(/usr/bin/readlink -f -- "$candidate") ||
-    ci_die "cannot resolve build tool: $name -> $candidate"
+  command_directory=$(/usr/bin/readlink -f -- "$(/usr/bin/dirname -- "$candidate")") ||
+    ci_die "cannot resolve build-tool command directory: $name -> $candidate"
+  command_path="$command_directory/$(/usr/bin/basename -- "$candidate")"
+  case "$command_path" in
+    /usr/sbin/*|/usr/bin/*|/sbin/*|/bin/*) ;;
+    *) ci_die "build-tool command is outside the canonical PATH: $name -> $command_path" ;;
+  esac
+  [ -e "$command_path" ] && [ -x "$command_path" ] ||
+    ci_die "build-tool command is not executable: $name -> $command_path"
+  printf '%s\n' "$command_path"
+}
+
+haptics_resolve_build_tool() {
+  local name=$1 command_path resolved
+
+  command_path=$(haptics_resolve_build_tool_command "$name")
+  resolved=$(/usr/bin/readlink -f -- "$command_path") ||
+    ci_die "cannot resolve build tool: $name -> $command_path"
   case "$resolved" in
     /usr/sbin/*|/usr/bin/*|/sbin/*|/bin/*) ;;
     *) ci_die "build tool resolved outside the canonical PATH: $name -> $resolved" ;;
@@ -295,12 +314,12 @@ haptics_resolve_build_tool() {
 }
 
 haptics_build_tool_version() {
-  local path=$1 version
+  local command_path=$1 version
 
   version=$(/usr/bin/env -i \
     "PATH=$HAPTICS_BUILD_PATH" LANG=C LC_ALL=C TZ=UTC \
     "HOME=$HAPTICS_BUILD_HOME" "TMPDIR=$HAPTICS_BUILD_TMPDIR" \
-    "$path" --version 2>&1 || :)
+    "$command_path" --version 2>&1 || :)
   version=${version%%$'\n'*}
   version=${version//$'\t'/ }
   version=${version//$'\r'/ }
@@ -308,36 +327,48 @@ haptics_build_tool_version() {
 }
 
 haptics_record_build_tool() {
-  local name=$1 path=$2 digest version
+  local name=$1 command_path=$2 path digest version state command_state
 
-  case "$path" in /*) ;; *) ci_die "tool fixture path is not absolute: $name" ;; esac
-  path=$(/usr/bin/readlink -f -- "$path") || ci_die "cannot resolve build tool: $name"
+  case "$command_path" in /*) ;; *) ci_die "tool fixture path is not absolute: $name" ;; esac
+  [ -e "$command_path" ] && [ -x "$command_path" ] ||
+    ci_die "build-tool command is not executable: $name -> $command_path"
+  path=$(/usr/bin/readlink -f -- "$command_path") || ci_die "cannot resolve build tool: $name"
   [ -f "$path" ] && [ -x "$path" ] && [ ! -L "$path" ] ||
     ci_die "build tool is not an absolute regular executable: $name -> $path"
   digest=$(/usr/bin/sha256sum -- "$path") || ci_die "cannot hash build tool: $name"
   digest=${digest%% *}
   [[ $digest =~ ^[0-9a-f]{64}$ ]] || ci_die "invalid build-tool digest: $name"
-  version=$(haptics_build_tool_version "$path")
+  version=$(haptics_build_tool_version "$command_path")
+  state=$(/usr/bin/stat -Lc '%d:%i:%s:%Y' -- "$path") ||
+    ci_die "cannot stat build-tool target: $name"
+  command_state=$(/usr/bin/stat -c '%d:%i:%s:%Y:%F' -- "$command_path") ||
+    ci_die "cannot stat build-tool command: $name"
   HAPTICS_BUILD_TOOL_PATHS[$name]=$path
+  HAPTICS_BUILD_TOOL_COMMAND_PATHS[$name]=$command_path
   HAPTICS_BUILD_TOOL_SHA256[$name]=$digest
   HAPTICS_BUILD_TOOL_VERSIONS[$name]=$version
-  HAPTICS_BUILD_TOOL_RECORDS+=("tool"$'\t'"$name"$'\t'"$path"$'\t'"$digest"$'\t'"$version")
+  HAPTICS_BUILD_TOOL_STATES[$name]=$state
+  HAPTICS_BUILD_TOOL_COMMAND_STATES[$name]=$command_state
+  HAPTICS_BUILD_TOOL_RECORDS+=("tool"$'\t'"$name"$'\t'"$command_path"$'\t'"$path"$'\t'"$digest"$'\t'"$version")
 }
 
 haptics_capture_build_tools() {
-  local name path digest_record
+  local name command_path digest_record
 
   HAPTICS_BUILD_TOOL_PATHS=()
+  HAPTICS_BUILD_TOOL_COMMAND_PATHS=()
   HAPTICS_BUILD_TOOL_SHA256=()
   HAPTICS_BUILD_TOOL_VERSIONS=()
+  HAPTICS_BUILD_TOOL_STATES=()
+  HAPTICS_BUILD_TOOL_COMMAND_STATES=()
   HAPTICS_BUILD_TOOL_RECORDS=()
   for name in "${HAPTICS_REQUIRED_BUILD_TOOLS[@]}"; do
-    path=$(haptics_resolve_build_tool "$name")
-    haptics_record_build_tool "$name" "$path"
+    command_path=$(haptics_resolve_build_tool_command "$name")
+    haptics_record_build_tool "$name" "$command_path"
   done
   hash -r
   for name in "${HAPTICS_REQUIRED_BUILD_TOOLS[@]}"; do
-    hash -p "${HAPTICS_BUILD_TOOL_PATHS[$name]}" "$name"
+    hash -p "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[$name]}" "$name"
   done
   read -r HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256 _ < <(
     haptics_build_environment_policy | /usr/bin/sha256sum
@@ -350,11 +381,11 @@ haptics_capture_build_tools() {
   [[ $HAPTICS_BUILD_TOOLSET_SHA256 =~ ^[0-9a-f]{64}$ ]] ||
     ci_die "cannot hash the build-tool set"
 
-  CI_ENV_BIN=${HAPTICS_BUILD_TOOL_PATHS[env]}
-  CI_GIT_BIN=${HAPTICS_BUILD_TOOL_PATHS[git]}
-  CI_CURL_BIN=${HAPTICS_BUILD_TOOL_PATHS[curl]}
-  CI_PYTHON3_BIN=${HAPTICS_BUILD_TOOL_PATHS[python3]}
-  CI_SHA256SUM_BIN=${HAPTICS_BUILD_TOOL_PATHS[sha256sum]}
+  CI_ENV_BIN=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[env]}
+  CI_GIT_BIN=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[git]}
+  CI_CURL_BIN=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[curl]}
+  CI_PYTHON3_BIN=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[python3]}
+  CI_SHA256SUM_BIN=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[sha256sum]}
   export CI_ENV_BIN CI_GIT_BIN CI_CURL_BIN CI_PYTHON3_BIN CI_SHA256SUM_BIN
 
   ci_log "build environment policy: $HAPTICS_BUILD_ENVIRONMENT_POLICY ($HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256)"
@@ -379,13 +410,30 @@ haptics_verify_expected_build_environment() {
 }
 
 haptics_verify_recorded_build_tool() {
-  local name=$1 actual_path=$2 phase=$3 expected_path actual_digest
+  local name=$1 actual_command_path=$2 phase=$3
+  local expected_command_path expected_path actual_path actual_digest
+  local command_state target_state
 
+  expected_command_path=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[$name]}
   expected_path=${HAPTICS_BUILD_TOOL_PATHS[$name]}
+  [ "$actual_command_path" = "$expected_command_path" ] ||
+    ci_die "build-tool command path changed $phase: $name"
+  [ -e "$expected_command_path" ] && [ -x "$expected_command_path" ] ||
+    ci_die "build-tool command is no longer executable $phase: $name"
+  command_state=$(/usr/bin/stat -c '%d:%i:%s:%Y:%F' -- "$expected_command_path") ||
+    ci_die "cannot restat build-tool command $phase: $name"
+  [ "$command_state" = "${HAPTICS_BUILD_TOOL_COMMAND_STATES[$name]}" ] ||
+    ci_die "build-tool command path changed $phase: $name"
+  actual_path=$(/usr/bin/readlink -f -- "$expected_command_path") ||
+    ci_die "cannot resolve build-tool command $phase: $name"
   [ "$actual_path" = "$expected_path" ] ||
-    ci_die "build tool path changed $phase: $name"
+    ci_die "build-tool command target changed $phase: $name"
   [ -f "$expected_path" ] && [ -x "$expected_path" ] && [ ! -L "$expected_path" ] ||
     ci_die "build tool is no longer a regular executable $phase: $name"
+  target_state=$(/usr/bin/stat -Lc '%d:%i:%s:%Y' -- "$expected_path") ||
+    ci_die "cannot restat build-tool target $phase: $name"
+  [ "$target_state" = "${HAPTICS_BUILD_TOOL_STATES[$name]}" ] ||
+    ci_die "build-tool target state changed $phase: $name"
   actual_digest=$(/usr/bin/sha256sum -- "$expected_path") ||
     ci_die "cannot rehash build tool $phase: $name"
   actual_digest=${actual_digest%% *}
@@ -394,11 +442,11 @@ haptics_verify_recorded_build_tool() {
 }
 
 haptics_verify_build_tools_unchanged() {
-  local phase=$1 name actual_path
+  local phase=$1 name actual_command_path
 
   for name in "${HAPTICS_REQUIRED_BUILD_TOOLS[@]}"; do
-    actual_path=$(haptics_resolve_build_tool "$name")
-    haptics_verify_recorded_build_tool "$name" "$actual_path" "$phase"
+    actual_command_path=$(haptics_resolve_build_tool_command "$name")
+    haptics_verify_recorded_build_tool "$name" "$actual_command_path" "$phase"
   done
   ci_log "build tools unchanged $phase"
 }
@@ -408,11 +456,11 @@ haptics_prepare_kbuild_tool_path() {
 
   [ ! -e "$destination" ] && [ ! -L "$destination" ] ||
     ci_die "private haptics Kbuild tool path already exists: $destination"
-  "${HAPTICS_BUILD_TOOL_PATHS[mkdir]}" -m 0700 -- "$destination"
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[mkdir]}" -m 0700 -- "$destination"
   for name in "${HAPTICS_REQUIRED_BUILD_TOOLS[@]}"; do
     target=${HAPTICS_BUILD_TOOL_PATHS[$name]}
     link="$destination/$name"
-    "${HAPTICS_BUILD_TOOL_PATHS[ln]}" -s -- "$target" "$link"
+    "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[ln]}" -s -- "$target" "$link"
   done
   haptics_verify_kbuild_tool_path "$destination"
 }
@@ -421,24 +469,24 @@ haptics_verify_kbuild_tool_path() {
   local destination=$1 name link target resolved actual_count
 
   [ -d "$destination" ] && [ ! -L "$destination" ] &&
-    [ "$("${HAPTICS_BUILD_TOOL_PATHS[stat]}" -c '%a' -- "$destination")" = 700 ] ||
+    [ "$("${HAPTICS_BUILD_TOOL_COMMAND_PATHS[stat]}" -c '%a' -- "$destination")" = 700 ] ||
     ci_die "private haptics Kbuild tool path is not a real mode-0700 directory"
   for name in "${HAPTICS_REQUIRED_BUILD_TOOLS[@]}"; do
     target=${HAPTICS_BUILD_TOOL_PATHS[$name]}
     link="$destination/$name"
     [ -L "$link" ] || ci_die "private haptics Kbuild tool link disappeared: $name"
-    [ "$("${HAPTICS_BUILD_TOOL_PATHS[readlink]}" -- "$link")" = "$target" ] ||
+    [ "$("${HAPTICS_BUILD_TOOL_COMMAND_PATHS[readlink]}" -- "$link")" = "$target" ] ||
       ci_die "private haptics Kbuild tool link target changed: $name"
-    resolved=$("${HAPTICS_BUILD_TOOL_PATHS[realpath]}" -e -- "$link") ||
+    resolved=$("${HAPTICS_BUILD_TOOL_COMMAND_PATHS[realpath]}" -e -- "$link") ||
       ci_die "private haptics Kbuild tool link became dangling: $name"
     [ "$resolved" = "$target" ] ||
       ci_die "private haptics Kbuild tool link resolves to unexpected bytes: $name"
   done
-  [ -z "$("${HAPTICS_BUILD_TOOL_PATHS[find]}" "$destination" \
+  [ -z "$("${HAPTICS_BUILD_TOOL_COMMAND_PATHS[find]}" "$destination" \
     -mindepth 1 -maxdepth 1 ! -type l -print -quit)" ] ||
     ci_die "private haptics Kbuild tool path contains a non-symlink entry"
-  actual_count=$("${HAPTICS_BUILD_TOOL_PATHS[find]}" "$destination" \
-    -mindepth 1 -maxdepth 1 -type l -printf '.\n' | "${HAPTICS_BUILD_TOOL_PATHS[wc]}" -l)
+  actual_count=$("${HAPTICS_BUILD_TOOL_COMMAND_PATHS[find]}" "$destination" \
+    -mindepth 1 -maxdepth 1 -type l -printf '.\n' | "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[wc]}" -l)
   [ "$actual_count" -eq "${#HAPTICS_REQUIRED_BUILD_TOOLS[@]}" ] ||
     ci_die "private haptics Kbuild tool path contains an unexpected entry"
 }
@@ -464,7 +512,7 @@ haptics_promote_directory_no_clobber() {
     ci_die "haptics promotion source is not a real directory: $source"
   [ ! -e "$destination" ] && [ ! -L "$destination" ] ||
     ci_die "refusing existing haptics output target: $destination"
-  "${HAPTICS_BUILD_TOOL_PATHS[mv]}" --no-clobber -T -- "$source" "$destination" ||
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[mv]}" --no-clobber -T -- "$source" "$destination" ||
     ci_die "haptics no-clobber promotion failed: $destination"
   [ ! -e "$source" ] && [ ! -L "$source" ] &&
     [ -d "$destination" ] && [ ! -L "$destination" ] ||
@@ -498,19 +546,19 @@ haptics_run_isolated_tool() {
   local epoch=${SOURCE_DATE_EPOCH:-0}
 
   [[ $epoch =~ ^[0-9]{1,10}$ ]] || ci_die "invalid SOURCE_DATE_EPOCH for isolated tool"
-  "${HAPTICS_BUILD_TOOL_PATHS[env]}" -i \
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[env]}" -i \
     "PATH=$HAPTICS_BUILD_PATH" \
     LANG=C LC_ALL=C TZ=UTC \
     "HOME=$HAPTICS_BUILD_HOME" \
     "TMPDIR=$HAPTICS_BUILD_TMPDIR" \
     "SOURCE_DATE_EPOCH=$epoch" \
-    "${HAPTICS_BUILD_TOOL_PATHS[$name]}" "$@"
+    "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[$name]}" "$@"
 }
 
 haptics_sha256_file() {
   local digest
 
-  digest=$("${HAPTICS_BUILD_TOOL_PATHS[sha256sum]}" -- "$1") ||
+  digest=$("${HAPTICS_BUILD_TOOL_COMMAND_PATHS[sha256sum]}" -- "$1") ||
     ci_die "cannot hash file: $1"
   digest=${digest%% *}
   [[ $digest =~ ^[0-9a-f]{64}$ ]] || ci_die "invalid SHA-256 output for $1"
