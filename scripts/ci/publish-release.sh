@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set +x
 
 release_tag=${1:?usage: publish-release.sh RELEASE_TAG RELEASE_DIR NOTES_FILE}
 release_dir=${2:?usage: publish-release.sh RELEASE_TAG RELEASE_DIR NOTES_FILE}
@@ -8,6 +9,16 @@ notes_file=${3:?usage: publish-release.sh RELEASE_TAG RELEASE_DIR NOTES_FILE}
 : "${GH_TOKEN:?RELEASE_TOKEN must be exposed as GH_TOKEN only for this step}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
+[ "${#GH_TOKEN}" -le 4096 ] || {
+  printf 'GH_TOKEN exceeds the supported length\n' >&2
+  exit 1
+}
+case $GH_TOKEN in
+  *$'\r'*|*$'\n'*)
+    printf 'GH_TOKEN contains a forbidden line break\n' >&2
+    exit 1
+    ;;
+esac
 
 [ "${PRERELEASE:-}" = 1 ] || {
   printf 'PRERELEASE must be exactly 1 for immutable remediation publication\n' >&2
@@ -32,7 +43,7 @@ release_kind='prerelease draft'
 [ -f "$notes_file" ] || { printf 'release notes not found: %s\n' "$notes_file" >&2; exit 1; }
 notes_asset="$release_dir/BUILD-PARAMETERS.md"
 
-for command_name in gh curl sha256sum stat find sort awk grep uniq wc seq sleep base64 cmp; do
+for command_name in gh curl sha256sum stat find sort awk grep uniq wc seq sleep base64 cmp env; do
   command -v "$command_name" >/dev/null || {
     printf 'required command not found: %s\n' "$command_name" >&2
     exit 1
@@ -271,9 +282,11 @@ verify_release_snapshot "$initial_snapshot" "$release_id" true \
 
 for asset in "${assets[@]}"; do
   asset_name=${asset##*/}
-  curl --fail-with-body --silent --show-error --request POST \
+  printf 'Authorization: Bearer %s\n' "$GH_TOKEN" |
+    env -u GH_TOKEN -u GITHUB_TOKEN -u CURL_HOME -u HOME \
+    curl --disable --fail-with-body --silent --show-error --request POST \
     --header 'Accept: application/vnd.github+json' \
-    --header "Authorization: Bearer $GH_TOKEN" \
+    --header '@-' \
     --header 'X-GitHub-Api-Version: 2022-11-28' \
     --header 'Content-Type: application/octet-stream' \
     --data-binary "@$asset" \
