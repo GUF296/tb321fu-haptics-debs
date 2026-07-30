@@ -333,9 +333,20 @@ fi
 grep -Fq 'private KERNEL_BUILD_DIR contains an external symlink' \
   "$tmp/kernel-build-hostile.out" ||
   fail "private build-copy function rejected an external symlink at the wrong boundary"
-grep -Fq -- '-fdebug-prefix-map=$src=$module_prefix -ffile-prefix-map=$src=$module_prefix -fmacro-prefix-map=$src=$module_prefix' \
-  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
-  fail "builder omits stable external-module debug path mapping"
+for token in \
+  '-fdebug-prefix-map=$src=$module_prefix' \
+  '-ffile-prefix-map=$src=$module_prefix' \
+  '-fmacro-prefix-map=$src=$module_prefix' \
+  '-fdebug-prefix-map=$kernel_source_root=$kernel_source_prefix' \
+  '-ffile-prefix-map=$kernel_source_root=$kernel_source_prefix' \
+  '-fmacro-prefix-map=$kernel_source_root=$kernel_source_prefix' \
+  '-fdebug-prefix-map=$kernel_build_root=$kernel_build_prefix' \
+  '-ffile-prefix-map=$kernel_build_root=$kernel_build_prefix' \
+  '-fmacro-prefix-map=$kernel_build_root=$kernel_build_prefix' \
+  'KCFLAGS="$module_path_maps"'; do
+  grep -Fq -- "$token" "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+    fail "builder omits stable external-module path mapping: $token"
+done
 grep -Fq 'HAPTICS-SOURCE-SNAPSHOT' \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb-from-kernel-sdk.sh" ||
   fail "outer haptics archive omits the source snapshot"

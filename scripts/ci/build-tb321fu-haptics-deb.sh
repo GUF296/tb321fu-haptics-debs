@@ -1038,6 +1038,9 @@ build_haptics_package() {
   local pkg="$work_dir/pkg/tb321fu-haptics"
   local module="$src/aw86937-haptics.ko"
   local module_prefix=/usr/src/tb321fu-haptics
+  local kernel_source_prefix=/usr/src/linux
+  local kernel_build_prefix=/usr/lib/linux-kbuild
+  local module_path_maps
   local helper_src="$haptics_snapshot_helper"
   local driver_src="$haptics_snapshot_driver"
   local ram_firmware="$haptics_snapshot_ram_firmware"
@@ -1067,9 +1070,22 @@ build_haptics_package() {
 obj-m := aw86937-haptics.o
 EOF_MAKE
 
+  module_path_maps=$(
+    printf '%s' \
+      "-fdebug-prefix-map=$src=$module_prefix " \
+      "-ffile-prefix-map=$src=$module_prefix " \
+      "-fmacro-prefix-map=$src=$module_prefix " \
+      "-fdebug-prefix-map=$kernel_source_root=$kernel_source_prefix " \
+      "-ffile-prefix-map=$kernel_source_root=$kernel_source_prefix " \
+      "-fmacro-prefix-map=$kernel_source_root=$kernel_source_prefix " \
+      "-fdebug-prefix-map=$kernel_build_root=$kernel_build_prefix " \
+      "-ffile-prefix-map=$kernel_build_root=$kernel_build_prefix " \
+      "-fmacro-prefix-map=$kernel_build_root=$kernel_build_prefix"
+  )
+
   verify_kernel_host_tools_unchanged "before external module build"
   kernel_make O="$kernel_build_root" \
-    KCFLAGS="-fdebug-prefix-map=$src=$module_prefix -ffile-prefix-map=$src=$module_prefix -fmacro-prefix-map=$src=$module_prefix" \
+    KCFLAGS="$module_path_maps" \
     M="$src" modules
   verify_kernel_host_tools_unchanged "after external module build"
   verify_kernel_build_state "after external module build"

@@ -514,6 +514,59 @@ require_failure 'refusing existing haptics output target' \
   [ "$(cat "$blocked_target/payload")" = foreign ] ||
   fail "blocked haptics promotion modified the candidate or foreign target"
 
+build_module_path_fixture() {
+  local root=$1 mapped=$2
+  local module_src="$root/module-src"
+  local kernel_source="$root/kernel-source"
+  local kernel_build="$root/kernel-build"
+  local -a path_maps=()
+
+  mkdir -p "$module_src" "$kernel_source" "$kernel_build"
+  printf '#define SOURCE_VALUE 17\n' > "$kernel_source/source-value.h"
+  printf '#define BUILD_VALUE 25\n' > "$kernel_build/build-value.h"
+  cat > "$module_src/module.c" <<EOF_MODULE_PATH_FIXTURE
+#include "$kernel_source/source-value.h"
+#include "$kernel_build/build-value.h"
+int fixture_value(void) { return SOURCE_VALUE + BUILD_VALUE; }
+EOF_MODULE_PATH_FIXTURE
+  if [ "$mapped" = 1 ]; then
+    path_maps=(
+      "-fdebug-prefix-map=$module_src=/usr/src/tb321fu-haptics"
+      "-ffile-prefix-map=$module_src=/usr/src/tb321fu-haptics"
+      "-fmacro-prefix-map=$module_src=/usr/src/tb321fu-haptics"
+      "-fdebug-prefix-map=$kernel_source=/usr/src/linux"
+      "-ffile-prefix-map=$kernel_source=/usr/src/linux"
+      "-fmacro-prefix-map=$kernel_source=/usr/src/linux"
+      "-fdebug-prefix-map=$kernel_build=/usr/lib/linux-kbuild"
+      "-ffile-prefix-map=$kernel_build=/usr/lib/linux-kbuild"
+      "-fmacro-prefix-map=$kernel_build=/usr/lib/linux-kbuild"
+    )
+  fi
+  (
+    cd "$module_src"
+    "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[aarch64-linux-gnu-gcc]}" \
+      -g -O0 "${path_maps[@]}" -c module.c -o module.o
+  )
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[aarch64-linux-gnu-ld]}" \
+    -r --build-id=sha1 -o "$module_src/module.ko" "$module_src/module.o"
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[aarch64-linux-gnu-strip]}" \
+    --strip-unneeded "$module_src/module.ko"
+}
+
+build_module_path_fixture "$tmp/build-id-unmapped-a" 0
+build_module_path_fixture "$tmp/build-id-unmapped-b" 0
+if cmp -s \
+    "$tmp/build-id-unmapped-a/module-src/module.ko" \
+    "$tmp/build-id-unmapped-b/module-src/module.ko"; then
+  fail "external-module build-id fixture is insensitive to distinct build roots"
+fi
+build_module_path_fixture "$tmp/build-id-mapped-a" 1
+build_module_path_fixture "$tmp/build-id-mapped-b" 1
+cmp -s \
+  "$tmp/build-id-mapped-a/module-src/module.ko" \
+  "$tmp/build-id-mapped-b/module-src/module.ko" ||
+  fail "external-module path maps do not produce a stable stripped build-id"
+
 for source in \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb-from-kernel-sdk.sh"; do
@@ -547,6 +600,9 @@ grep -Fq 'debian-compression=xz,level=6,threads=1,uniform=yes' \
 grep -Fq 'kbuild-tool-invocation=private-canonical-command-symlink-v1' \
   "$SCRIPT_DIR/haptics-build-environment.sh" ||
   fail "environment policy does not bind canonical Kbuild command names"
+grep -Fq 'external-module-path-mapping=module-source,kernel-source,kernel-build-to-fixed-prefixes-v1' \
+  "$SCRIPT_DIR/haptics-build-environment.sh" ||
+  fail "environment policy does not bind all external-module path mappings"
 grep -Fq 'command-invocation=locked-command-path-resolved-target-v1' \
   "$SCRIPT_DIR/haptics-build-environment.sh" ||
   fail "environment policy does not bind command paths separately from tool targets"
@@ -556,6 +612,20 @@ grep -Fq 'HAPTICS_BUILD_TOOLS_SCHEMA=tb321fu.haptics-build-tools/v2' \
 grep -Fq 'haptics_run_isolated_tool modinfo "$module"' \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
   fail "module verification does not invoke the locked modinfo command"
+for token in \
+  '-fdebug-prefix-map=$src=$module_prefix' \
+  '-ffile-prefix-map=$src=$module_prefix' \
+  '-fmacro-prefix-map=$src=$module_prefix' \
+  '-fdebug-prefix-map=$kernel_source_root=$kernel_source_prefix' \
+  '-ffile-prefix-map=$kernel_source_root=$kernel_source_prefix' \
+  '-fmacro-prefix-map=$kernel_source_root=$kernel_source_prefix' \
+  '-fdebug-prefix-map=$kernel_build_root=$kernel_build_prefix' \
+  '-ffile-prefix-map=$kernel_build_root=$kernel_build_prefix' \
+  '-fmacro-prefix-map=$kernel_build_root=$kernel_build_prefix' \
+  'KCFLAGS="$module_path_maps"'; do
+  grep -Fq -- "$token" "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+    fail "external-module path mapping omits: $token"
+done
 for token in \
   record_kernel_host_tools \
   'verify_kernel_host_tools_unchanged "before external module build"' \

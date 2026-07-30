@@ -109,6 +109,7 @@ haptics_build_environment_policy() {
     'kbuild-tool-invocation=private-canonical-command-symlink-v1' \
     'kbuild-kernelrelease=verified-sdk-command-line-v1' \
     'kbuild-compile-identity=verified-bundle-or-epoch-command-line-v1' \
+    'external-module-path-mapping=module-source,kernel-source,kernel-build-to-fixed-prefixes-v1' \
     'command-invocation=locked-command-path-resolved-target-v1' \
     'generated-kernel-host-tools=absolute-private-path,sha256,pre-and-post-use-verification' \
     'tool-identity=absolute-command-path,absolute-realpath,sha256,version,pre-and-post-use-verification'
