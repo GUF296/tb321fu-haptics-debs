@@ -366,29 +366,53 @@ assert_curl_auth_hygiene() {
 }
 
 state_token_newline=$scratch/state-token-newline
-if run_publish "$state_token_newline" env PRERELEASE=1 \
-    GH_TOKEN=$'test-release-token\nInjected: value' >/dev/null 2>&1; then
+set +e
+token_error=$(run_publish "$state_token_newline" env PRERELEASE=1 \
+  GH_TOKEN=$'test-release-token\nInjected: value' 2>&1)
+token_status=$?
+set -e
+if [ "$token_status" -eq 0 ]; then
   printf 'publisher accepted a release token containing a line break\n' >&2
   exit 1
 fi
+grep -Fxq 'GH_TOKEN contains a forbidden line break' <<< "$token_error" || {
+  printf 'newline token failed outside the publisher framing boundary: %s\n' "$token_error" >&2
+  exit 1
+}
 [ ! -e "$state_token_newline" ]
 
 state_token_carriage_return=$scratch/state-token-carriage-return
-if run_publish "$state_token_carriage_return" env PRERELEASE=1 \
-    GH_TOKEN=$'test-release-token\rInjected: value' >/dev/null 2>&1; then
+set +e
+token_error=$(run_publish "$state_token_carriage_return" env PRERELEASE=1 \
+  GH_TOKEN=$'test-release-token\rInjected: value' 2>&1)
+token_status=$?
+set -e
+if [ "$token_status" -eq 0 ]; then
   printf 'publisher accepted a release token containing a carriage return\n' >&2
   exit 1
 fi
+grep -Fxq 'GH_TOKEN contains a forbidden line break' <<< "$token_error" || {
+  printf 'carriage-return token failed outside the publisher framing boundary: %s\n' "$token_error" >&2
+  exit 1
+}
 [ ! -e "$state_token_carriage_return" ]
 
 printf -v overlong_token '%4097s' ''
 overlong_token=${overlong_token// /x}
 state_token_overlong=$scratch/state-token-overlong
-if run_publish "$state_token_overlong" env PRERELEASE=1 \
-    GH_TOKEN="$overlong_token" >/dev/null 2>&1; then
+set +e
+token_error=$(run_publish "$state_token_overlong" env PRERELEASE=1 \
+  GH_TOKEN="$overlong_token" 2>&1)
+token_status=$?
+set -e
+if [ "$token_status" -eq 0 ]; then
   printf 'publisher accepted an overlong release token\n' >&2
   exit 1
 fi
+grep -Fxq 'GH_TOKEN exceeds the supported length' <<< "$token_error" || {
+  printf 'overlong token failed outside the publisher framing boundary: %s\n' "$token_error" >&2
+  exit 1
+}
 [ ! -e "$state_token_overlong" ]
 printf 'PASS unsafe release token framing is rejected before remote access\n'
 

@@ -39,7 +39,8 @@ The SDK wrapper fetches the exact kernel commit with at most four HTTP/1.1
 attempts, discards the complete private repository after each failed attempt,
 applies bounded 1/2/3-second retry delays, limits each network attempt to ten
 minutes plus a 30-second forced-termination window, and rechecks the detached
-`HEAD` before any SDK or build step.
+`HEAD` before any SDK or build step. Redirects, automatic tag following, and
+submodule recursion are disabled for this exact-commit fetch.
 Every external build/packaging tool is resolved to an absolute regular
 executable before use; its path, SHA-256, and version line are recorded in
 `HAPTICS-BUILD-TOOLS.tsv`, then rechecked before atomic promotion. The v3 lock

@@ -170,9 +170,10 @@ ci_fetch_exact_git_commit() (
     ci_log "Git fetch attempt $attempt/$max_attempts: $commit"
     if ci_git_with_timeout "$timeout_bin" 600 -C "$destination" \
         -c http.version=HTTP/1.1 \
+        -c http.followRedirects=false \
         -c http.lowSpeedLimit=1024 \
         -c http.lowSpeedTime=300 \
-        fetch --depth 1 origin "$commit"; then
+        fetch --depth 1 --no-tags --recurse-submodules=no origin "$commit"; then
       if ! ci_git -C "$destination" checkout -q --detach FETCH_HEAD; then
         rm -rf -- "$destination"
         ci_die "cannot check out fetched Git commit"

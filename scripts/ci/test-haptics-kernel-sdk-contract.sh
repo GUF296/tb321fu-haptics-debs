@@ -80,9 +80,10 @@ case "$command" in
       "${common[@]}"
       -C "$FAKE_GIT_DEST"
       -c http.version=HTTP/1.1
+      -c http.followRedirects=false
       -c http.lowSpeedLimit=1024
       -c http.lowSpeedTime=300
-      fetch --depth 1 origin "$FAKE_GIT_COMMIT"
+      fetch --depth 1 --no-tags --recurse-submodules=no origin "$FAKE_GIT_COMMIT"
     )
     ;;
   checkout)
@@ -136,8 +137,9 @@ case "$command" in
     ;;
   fetch)
     [ -d "$repo/.git" ] || exit 95
-    [ "$#" -eq 4 ] && [ "$1" = --depth ] && [ "$2" = 1 ] &&
-      [ "$3" = origin ] && [ "$4" = "$FAKE_GIT_COMMIT" ] || exit 97
+    [ "$#" -eq 6 ] && [ "$1" = --depth ] && [ "$2" = 1 ] &&
+      [ "$3" = --no-tags ] && [ "$4" = --recurse-submodules=no ] &&
+      [ "$5" = origin ] && [ "$6" = "$FAKE_GIT_COMMIT" ] || exit 97
     [ "$(cat "$repo/.git/origin-url")" = "$FAKE_GIT_REPOSITORY_URL" ] || exit 97
     [ ! -e "$repo/.git/partial-object" ] || exit 98
     count=0
@@ -725,6 +727,15 @@ preflight = source.index('ci_verify_clean_git_commit "$REPO_ROOT" "$HAPTICS_PROD
 fetch = source.index('ci_fetch_exact_git_commit')
 producer = source.index('build-tb321fu-haptics-deb.sh', fetch)
 assert preflight < fetch < producer
+assert 'readonly KERNEL_SOURCE_FETCH_ATTEMPTS=4' in source
+expected_call = '''ci_fetch_exact_git_commit \\
+  "$KERNEL_SOURCE_REPO" \\
+  "$KERNEL_SOURCE_COMMIT" \\
+  "$kernel_source" \\
+  "$KERNEL_SOURCE_FETCH_ATTEMPTS" \\
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[timeout]}" \\
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[sleep]}"'''
+assert source.count(expected_call) == 1
 PY
 workflow=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)/.github/workflows/build.yml
 readme=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)/README.md
@@ -738,6 +749,8 @@ grep -Fq 'at most four HTTP/1.1' "$readme" ||
   fail 'README does not document bounded fresh-repository kernel fetches'
 grep -Fq 'minutes plus a 30-second forced-termination window' "$readme" ||
   fail 'README does not document the per-fetch wall-clock limit'
+grep -Fq 'Redirects, automatic tag following' "$readme" ||
+  fail 'README does not document the closed Git metadata fetch'
 python3 - "$workflow" <<'PY'
 from pathlib import Path
 import sys
