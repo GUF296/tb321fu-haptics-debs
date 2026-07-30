@@ -288,7 +288,28 @@ kernel_make \
   "PROBE_OUTPUT=$tmp/kernel-make.environment" \
   "PROBE_ARGS=$tmp/kernel-make.arguments" \
   KERNELRELEASE=hostile-caller-release \
-  KBUILD_BUILD_USER=hostile-caller-user
+  KBUILD_BUILD_TIMESTAMP='hostile caller timestamp' \
+  KBUILD_BUILD_USER=hostile-caller-user \
+  KBUILD_BUILD_HOST=hostile-caller-host \
+  KBUILD_BUILD_VERSION=998 \
+  ARCH=x86_64 \
+  CROSS_COMPILE=/tmp/hostile-caller- \
+  CONFIG_SHELL=/tmp/hostile-caller-config-shell \
+  SHELL=/tmp/hostile-caller-shell \
+  HOSTCC=/tmp/hostile-caller-hostcc \
+  HOSTAS=/tmp/hostile-caller-hostas \
+  HOSTLD=/tmp/hostile-caller-hostld \
+  HOSTAR=/tmp/hostile-caller-hostar \
+  CC=/tmp/hostile-caller-cc \
+  CPP=/tmp/hostile-caller-cpp \
+  AS=/tmp/hostile-caller-as \
+  LD=/tmp/hostile-caller-ld \
+  AR=/tmp/hostile-caller-ar \
+  NM=/tmp/hostile-caller-nm \
+  OBJCOPY=/tmp/hostile-caller-objcopy \
+  OBJDUMP=/tmp/hostile-caller-objdump \
+  READELF=/tmp/hostile-caller-readelf \
+  STRIP=/tmp/hostile-caller-strip
 set +e
 kernel_make \
   "PROBE_OUTPUT=$tmp/kernel-make-failure.environment" \
@@ -341,7 +362,7 @@ for expected in \
   grep -Fxq -- "$expected" "$tmp/kernel-make.environment" ||
     fail "isolated kernel_make omitted environment contract: $expected"
 done
-for expected in \
+expected_make_arguments=(
   "KERNELRELEASE=$kernel_release" \
   "KBUILD_BUILD_TIMESTAMP=$kernel_kbuild_timestamp" \
   "KBUILD_BUILD_USER=$kernel_kbuild_user" \
@@ -351,20 +372,36 @@ for expected in \
   CROSS_COMPILE= \
   "CONFIG_SHELL=$locked_dash" \
   "SHELL=$locked_dash" \
-  "CC=${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-gcc]}" \
-  "LD=${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-ld]}" \
-  "STRIP=${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-strip]}"; do
+  "HOSTCC=$haptics_kbuild_path/gcc" \
+  "HOSTAS=$haptics_kbuild_path/as" \
+  "HOSTLD=$haptics_kbuild_path/ld" \
+  "HOSTAR=$haptics_kbuild_path/ar" \
+  "CC=$haptics_kbuild_path/aarch64-linux-gnu-gcc" \
+  "CPP=$haptics_kbuild_path/aarch64-linux-gnu-cpp" \
+  "AS=$haptics_kbuild_path/aarch64-linux-gnu-as" \
+  "LD=$haptics_kbuild_path/aarch64-linux-gnu-ld" \
+  "AR=$haptics_kbuild_path/aarch64-linux-gnu-ar" \
+  "NM=$haptics_kbuild_path/aarch64-linux-gnu-nm" \
+  "OBJCOPY=$haptics_kbuild_path/aarch64-linux-gnu-objcopy" \
+  "OBJDUMP=$haptics_kbuild_path/aarch64-linux-gnu-objdump" \
+  "READELF=$haptics_kbuild_path/aarch64-linux-gnu-readelf" \
+  "STRIP=$haptics_kbuild_path/aarch64-linux-gnu-strip"
+)
+for expected in "${expected_make_arguments[@]}"; do
   grep -Fxq -- "$expected" "$tmp/kernel-make.arguments" ||
     fail "isolated kernel_make omitted fixed command argument: $expected"
 done
-for expected in \
-  "KERNELRELEASE=$kernel_release" \
-  "KBUILD_BUILD_USER=$kernel_kbuild_user"; do
+for expected in "${expected_make_arguments[@]}"; do
   key=${expected%%=*}
-  actual=$(awk -F= -v key="$key" '$1 == key { value = $0 } END { print value }' \
-    "$tmp/kernel-make.arguments")
+  read -r count actual < <(
+    awk -F= -v key="$key" \
+      '$1 == key { count++; value = $0 } END { print count + 0, value }' \
+      "$tmp/kernel-make.arguments"
+  )
+  [ "$count" -eq 2 ] ||
+    fail "fixed make assignment does not have exactly one caller and one canonical value: $key"
   [ "$actual" = "$expected" ] ||
-    fail "caller-controlled make assignment overrode verified identity: $key"
+    fail "caller-controlled make assignment overrode verified value: $key"
 done
 HAPTICS_BUILD_TOOL_PATHS[make]=$(haptics_resolve_build_tool make)
 
@@ -436,9 +473,10 @@ for token in \
   '"SHELL=${HAPTICS_BUILD_TOOL_PATHS[dash]}"' \
   'GIT_CONFIG_NOSYSTEM=1' \
   'CROSS_COMPILE=' \
-  'CC="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-gcc]}"' \
-  'LD="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-ld]}"' \
-  'OBJCOPY="${HAPTICS_BUILD_TOOL_PATHS[aarch64-linux-gnu-objcopy]}"'; do
+  'HOSTCC="$haptics_kbuild_path/gcc"' \
+  'CC="$haptics_kbuild_path/aarch64-linux-gnu-gcc"' \
+  'LD="$haptics_kbuild_path/aarch64-linux-gnu-ld"' \
+  'OBJCOPY="$haptics_kbuild_path/aarch64-linux-gnu-objcopy"'; do
   grep -Fq -- "$token" "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
     fail "isolated Kbuild contract omits: $token"
 done
@@ -450,6 +488,9 @@ grep -Fq -- '-Zxz -z6' "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
 grep -Fq 'debian-compression=xz,level=6,threads=1,uniform=yes' \
   "$SCRIPT_DIR/haptics-build-environment.sh" ||
   fail "environment policy does not bind the effective DEB compression policy"
+grep -Fq 'kbuild-tool-invocation=private-canonical-command-symlink-v1' \
+  "$SCRIPT_DIR/haptics-build-environment.sh" ||
+  fail "environment policy does not bind canonical Kbuild command names"
 for token in \
   record_kernel_host_tools \
   'verify_kernel_host_tools_unchanged "before external module build"' \
