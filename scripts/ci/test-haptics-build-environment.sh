@@ -515,28 +515,45 @@ require_failure 'refusing existing haptics output target' \
   fail "blocked haptics promotion modified the candidate or foreign target"
 
 build_module_path_fixture() {
-  local root=$1 mapped=$2
+  local root=$1
+  local map_module=$2
+  local map_kernel_source=$3
+  local map_kernel_build=$4
   local module_src="$root/module-src"
   local kernel_source="$root/kernel-source"
   local kernel_build="$root/kernel-build"
   local -a path_maps=()
 
   mkdir -p "$module_src" "$kernel_source" "$kernel_build"
-  printf '#define SOURCE_VALUE 17\n' > "$kernel_source/source-value.h"
-  printf '#define BUILD_VALUE 25\n' > "$kernel_build/build-value.h"
+  printf '%s\n' \
+    '#define SOURCE_VALUE 17' \
+    'static const char fixture_source_path[] __attribute__((used)) = __FILE__;' \
+    > "$kernel_source/source-value.h"
+  printf '%s\n' \
+    '#define BUILD_VALUE 25' \
+    'static const char fixture_build_path[] __attribute__((used)) = __FILE__;' \
+    > "$kernel_build/build-value.h"
   cat > "$module_src/module.c" <<EOF_MODULE_PATH_FIXTURE
 #include "$kernel_source/source-value.h"
 #include "$kernel_build/build-value.h"
 int fixture_value(void) { return SOURCE_VALUE + BUILD_VALUE; }
 EOF_MODULE_PATH_FIXTURE
-  if [ "$mapped" = 1 ]; then
-    path_maps=(
+  if [ "$map_module" = 1 ]; then
+    path_maps+=(
       "-fdebug-prefix-map=$module_src=/usr/src/tb321fu-haptics"
       "-ffile-prefix-map=$module_src=/usr/src/tb321fu-haptics"
       "-fmacro-prefix-map=$module_src=/usr/src/tb321fu-haptics"
+    )
+  fi
+  if [ "$map_kernel_source" = 1 ]; then
+    path_maps+=(
       "-fdebug-prefix-map=$kernel_source=/usr/src/linux"
       "-ffile-prefix-map=$kernel_source=/usr/src/linux"
       "-fmacro-prefix-map=$kernel_source=/usr/src/linux"
+    )
+  fi
+  if [ "$map_kernel_build" = 1 ]; then
+    path_maps+=(
       "-fdebug-prefix-map=$kernel_build=/usr/lib/linux-kbuild"
       "-ffile-prefix-map=$kernel_build=/usr/lib/linux-kbuild"
       "-fmacro-prefix-map=$kernel_build=/usr/lib/linux-kbuild"
@@ -553,19 +570,62 @@ EOF_MODULE_PATH_FIXTURE
     --strip-unneeded "$module_src/module.ko"
 }
 
-build_module_path_fixture "$tmp/build-id-unmapped-a" 0
-build_module_path_fixture "$tmp/build-id-unmapped-b" 0
-if cmp -s \
-    "$tmp/build-id-unmapped-a/module-src/module.ko" \
-    "$tmp/build-id-unmapped-b/module-src/module.ko"; then
-  fail "external-module build-id fixture is insensitive to distinct build roots"
-fi
-build_module_path_fixture "$tmp/build-id-mapped-a" 1
-build_module_path_fixture "$tmp/build-id-mapped-b" 1
+require_distinct_module_path_fixtures() {
+  local label=$1 left=$2 right=$3
+
+  if cmp -s "$left/module-src/module.ko" "$right/module-src/module.ko"; then
+    fail "external-module build-id fixture is insensitive to $label"
+  fi
+}
+
+build_module_path_fixture "$tmp/build-id-unmapped-a" 0 0 0
+build_module_path_fixture "$tmp/build-id-unmapped-b" 0 0 0
+require_distinct_module_path_fixtures \
+  'distinct unmapped roots' \
+  "$tmp/build-id-unmapped-a" "$tmp/build-id-unmapped-b"
+
+build_module_path_fixture "$tmp/build-id-mapped-a" 1 1 1
+build_module_path_fixture "$tmp/build-id-mapped-b" 1 1 1
 cmp -s \
   "$tmp/build-id-mapped-a/module-src/module.ko" \
   "$tmp/build-id-mapped-b/module-src/module.ko" ||
   fail "external-module path maps do not produce a stable stripped build-id"
+for fixture_root in "$tmp/build-id-mapped-a" "$tmp/build-id-mapped-b"; do
+  for random_root in \
+    "$fixture_root/module-src" \
+    "$fixture_root/kernel-source" \
+    "$fixture_root/kernel-build"; do
+    if grep -aFq -- "$random_root" "$fixture_root/module-src/module.o" ||
+        grep -aFq -- "$random_root" "$fixture_root/module-src/module.ko"; then
+      fail "mapped external-module fixture retains a random root: $random_root"
+    fi
+  done
+  for fixed_root in \
+    /usr/src/tb321fu-haptics \
+    /usr/src/linux/source-value.h \
+    /usr/lib/linux-kbuild/build-value.h; do
+    grep -aFq -- "$fixed_root" "$fixture_root/module-src/module.o" ||
+      fail "mapped external-module fixture omits fixed path evidence: $fixed_root"
+  done
+done
+
+build_module_path_fixture "$tmp/build-id-missing-module-a" 0 1 1
+build_module_path_fixture "$tmp/build-id-missing-module-b" 0 1 1
+require_distinct_module_path_fixtures \
+  'a missing module-source mapping group' \
+  "$tmp/build-id-missing-module-a" "$tmp/build-id-missing-module-b"
+
+build_module_path_fixture "$tmp/build-id-missing-kernel-source-a" 1 0 1
+build_module_path_fixture "$tmp/build-id-missing-kernel-source-b" 1 0 1
+require_distinct_module_path_fixtures \
+  'a missing kernel-source mapping group' \
+  "$tmp/build-id-missing-kernel-source-a" "$tmp/build-id-missing-kernel-source-b"
+
+build_module_path_fixture "$tmp/build-id-missing-kernel-build-a" 1 1 0
+build_module_path_fixture "$tmp/build-id-missing-kernel-build-b" 1 1 0
+require_distinct_module_path_fixtures \
+  'a missing kernel-build mapping group' \
+  "$tmp/build-id-missing-kernel-build-a" "$tmp/build-id-missing-kernel-build-b"
 
 for source in \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" \
