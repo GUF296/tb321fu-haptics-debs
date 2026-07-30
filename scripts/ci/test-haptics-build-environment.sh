@@ -156,8 +156,8 @@ haptics_capture_build_tools
 [[ $HAPTICS_BUILD_TOOLSET_SHA256 =~ ^[0-9a-f]{64}$ ]] ||
   fail "build-toolset digest is not SHA-256"
 expected_build_tool_count=${#HAPTICS_REQUIRED_BUILD_TOOLS[@]}
-[ "$expected_build_tool_count" -eq 67 ] ||
-  fail "build-tool inventory does not contain the exact 67-tool contract"
+[ "$expected_build_tool_count" -eq 69 ] ||
+  fail "build-tool inventory does not contain the exact 69-tool contract"
 [ "${#HAPTICS_BUILD_TOOL_RECORDS[@]}" -eq "${#HAPTICS_REQUIRED_BUILD_TOOLS[@]}" ] ||
   fail "build-tool inventory is incomplete"
 for name in "${HAPTICS_REQUIRED_BUILD_TOOLS[@]}"; do

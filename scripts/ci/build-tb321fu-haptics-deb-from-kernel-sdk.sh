@@ -70,6 +70,7 @@ KERNEL_BUNDLE_METADATA=${KERNEL_BUNDLE_METADATA:-}
 KERNEL_BUNDLE_METADATA_SHA256=${KERNEL_BUNDLE_METADATA_SHA256:-}
 KERNEL_SDK_MANIFEST=${KERNEL_SDK_MANIFEST:-}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
+readonly KERNEL_SOURCE_FETCH_ATTEMPTS=4
 
 [[ $HAPTICS_PRODUCER_COMMIT =~ ^[0-9a-f]{40}$ ]] || ci_die "invalid HAPTICS_PRODUCER_COMMIT"
 [[ $KERNEL_SOURCE_COMMIT =~ ^[0-9a-f]{40}$ ]] || ci_die "invalid KERNEL_SOURCE_COMMIT"
@@ -120,13 +121,13 @@ producer_output="$delivery_stage/producer-output"
 
 kernel_source="$work_dir/linux"
 ci_log "fetching exact kernel source: $KERNEL_SOURCE_REPO $KERNEL_SOURCE_COMMIT"
-ci_git init -q "$kernel_source"
-ci_git -C "$kernel_source" remote add origin "$KERNEL_SOURCE_REPO"
-ci_git -C "$kernel_source" fetch --depth 1 origin "$KERNEL_SOURCE_COMMIT"
-ci_git -C "$kernel_source" checkout -q --detach FETCH_HEAD
-actual_kernel_commit=$(ci_git -C "$kernel_source" rev-parse HEAD)
-[ "$actual_kernel_commit" = "$KERNEL_SOURCE_COMMIT" ] ||
-  ci_die "kernel fetch returned $actual_kernel_commit instead of $KERNEL_SOURCE_COMMIT"
+ci_fetch_exact_git_commit \
+  "$KERNEL_SOURCE_REPO" \
+  "$KERNEL_SOURCE_COMMIT" \
+  "$kernel_source" \
+  "$KERNEL_SOURCE_FETCH_ATTEMPTS" \
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[timeout]}" \
+  "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[sleep]}"
 
 producer_env=(
   "PATH=$HAPTICS_BUILD_PATH"

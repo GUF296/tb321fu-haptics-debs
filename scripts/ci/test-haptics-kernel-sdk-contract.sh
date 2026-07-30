@@ -31,6 +31,317 @@ cleanup_download_fixture() {
 }
 trap cleanup_download_fixture EXIT
 
+cat > "$download_fixture/git" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${FAKE_GIT_COMMIT:?}"
+: "${FAKE_GIT_COUNT:?}"
+: "${FAKE_GIT_FAILURES:?}"
+: "${FAKE_GIT_LOG:?}"
+: "${FAKE_GIT_MODE:?}"
+: "${FAKE_GIT_DEST:?}"
+: "${FAKE_GIT_REPOSITORY_URL:?}"
+: "${FAKE_HTTP_PROXY:?}"
+: "${FAKE_HTTPS_PROXY:?}"
+
+[ -z "${GIT_SSL_NO_VERIFY+x}" ] || exit 89
+[ -z "${GIT_HTTP_LOW_SPEED_LIMIT+x}" ] || exit 89
+[ -z "${GIT_HTTP_LOW_SPEED_TIME+x}" ] || exit 89
+[ "${http_proxy-}" = "$FAKE_HTTP_PROXY" ] || exit 89
+[ "${https_proxy-}" = "$FAKE_HTTPS_PROXY" ] || exit 89
+
+raw=("$@")
+command=
+for argument in "${raw[@]}"; do
+  case "$argument" in
+    init|remote|fetch|checkout|rev-parse)
+      [ -z "$command" ] || exit 90
+      command=$argument
+      ;;
+  esac
+done
+[ -n "$command" ] || exit 90
+
+common=(
+  --no-replace-objects
+  -c core.fsmonitor=false
+  -c core.untrackedCache=false
+  -c core.excludesFile=/dev/null
+)
+case "$command" in
+  init)
+    expected=("${common[@]}" init -q "$FAKE_GIT_DEST")
+    ;;
+  remote)
+    expected=("${common[@]}" -C "$FAKE_GIT_DEST" remote add origin "$FAKE_GIT_REPOSITORY_URL")
+    ;;
+  fetch)
+    expected=(
+      "${common[@]}"
+      -C "$FAKE_GIT_DEST"
+      -c http.version=HTTP/1.1
+      -c http.lowSpeedLimit=1024
+      -c http.lowSpeedTime=300
+      fetch --depth 1 origin "$FAKE_GIT_COMMIT"
+    )
+    ;;
+  checkout)
+    expected=("${common[@]}" -C "$FAKE_GIT_DEST" checkout -q --detach FETCH_HEAD)
+    ;;
+  rev-parse)
+    expected=("${common[@]}" -C "$FAKE_GIT_DEST" rev-parse HEAD)
+    ;;
+esac
+[ "${#raw[@]}" -eq "${#expected[@]}" ] || exit 90
+for index in "${!expected[@]}"; do
+  [ "${raw[$index]}" = "${expected[$index]}" ] || exit 90
+done
+printf '%s\t%s\n' "$command" "$FAKE_GIT_DEST" >> "$FAKE_GIT_LOG"
+
+repo=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --no-replace-objects)
+      shift
+      ;;
+    -C)
+      repo=$2
+      shift 2
+      ;;
+    -c)
+      shift 2
+      ;;
+    init|remote|fetch|checkout|rev-parse)
+      command=$1
+      shift
+      break
+      ;;
+    *) exit 90 ;;
+  esac
+done
+
+case "$command" in
+  init)
+    [ "$#" -eq 2 ] && [ "$1" = -q ] || exit 91
+    repo=$2
+    [ ! -e "$repo" ] || exit 92
+    mkdir -p "$repo/.git"
+    [ "$FAKE_GIT_MODE" != init-fail ] || exit 101
+    ;;
+  remote)
+    [ -d "$repo/.git" ] || exit 93
+    [ "$#" -eq 3 ] && [ "$1" = add ] && [ "$2" = origin ] || exit 94
+    printf '%s\n' "$3" > "$repo/.git/origin-url"
+    [ "$FAKE_GIT_MODE" != remote-fail ] || exit 102
+    ;;
+  fetch)
+    [ -d "$repo/.git" ] || exit 95
+    [ "$#" -eq 4 ] && [ "$1" = --depth ] && [ "$2" = 1 ] &&
+      [ "$3" = origin ] && [ "$4" = "$FAKE_GIT_COMMIT" ] || exit 97
+    [ "$(cat "$repo/.git/origin-url")" = "$FAKE_GIT_REPOSITORY_URL" ] || exit 97
+    [ ! -e "$repo/.git/partial-object" ] || exit 98
+    count=0
+    [ ! -f "$FAKE_GIT_COUNT" ] || read -r count < "$FAKE_GIT_COUNT"
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$FAKE_GIT_COUNT"
+    if [ "$count" -le "$FAKE_GIT_FAILURES" ]; then
+      printf 'incomplete\n' > "$repo/.git/partial-object"
+      exit 56
+    fi
+    printf '%s\n' "$FAKE_GIT_COMMIT" > "$repo/.git/fetched-commit"
+    ;;
+  checkout)
+    [ "$#" -eq 3 ] && [ "$1" = -q ] && [ "$2" = --detach ] && [ "$3" = FETCH_HEAD ] || exit 99
+    [ "$FAKE_GIT_MODE" != checkout-fail ] || exit 103
+    cp -- "$repo/.git/fetched-commit" "$repo/.git/head-commit"
+    ;;
+  rev-parse)
+    [ "$#" -eq 1 ] && [ "$1" = HEAD ] || exit 100
+    [ "$FAKE_GIT_MODE" != rev-parse-fail ] || exit 104
+    if [ "$FAKE_GIT_MODE" = mismatch ]; then
+      printf '0000000000000000000000000000000000000000\n'
+    else
+      cat -- "$repo/.git/head-commit"
+    fi
+    ;;
+esac
+SH
+cat > "$download_fixture/timeout" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${FAKE_TIMEOUT_LOG:?}"
+[ "$#" -ge 5 ] || exit 110
+[ "$1" = --signal=TERM ] || exit 111
+[ "$2" = --kill-after=30s ] || exit 112
+[ "$3" = 600s ] || exit 113
+printf '%s\n' "$1" "$2" "$3" >> "$FAKE_TIMEOUT_LOG"
+shift 3
+exec "$@"
+SH
+cat > "$download_fixture/sleep" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${FAKE_SLEEP_LOG:?}"
+[ "$#" -eq 1 ] || exit 120
+case "$1" in
+  1|2|3) ;;
+  *) exit 121 ;;
+esac
+printf '%s\n' "$1" >> "$FAKE_SLEEP_LOG"
+SH
+chmod 0700 "$download_fixture/git" "$download_fixture/timeout" "$download_fixture/sleep"
+
+fake_git_commit=570b90203d97f67321fa0fb2d0af73c31d7111af
+run_fake_git_fetch() {
+  local destination=$1 failures=$2 mode=$3
+
+  CI_GIT_BIN="$download_fixture/git" \
+    FAKE_GIT_COMMIT="$fake_git_commit" \
+    FAKE_GIT_COUNT="$download_fixture/git.count" \
+    FAKE_GIT_DEST="$destination" \
+    FAKE_GIT_FAILURES="$failures" \
+    FAKE_GIT_LOG="$download_fixture/git.log" \
+    FAKE_GIT_MODE="$mode" \
+    FAKE_GIT_REPOSITORY_URL=https://example.invalid/kernel.git \
+    FAKE_HTTP_PROXY=http://proxy.example.invalid:8080 \
+    FAKE_HTTPS_PROXY=http://proxy.example.invalid:8443 \
+    FAKE_SLEEP_LOG="$download_fixture/sleep.log" \
+    FAKE_TIMEOUT_LOG="$download_fixture/timeout.log" \
+    GIT_SSL_NO_VERIFY=1 \
+    GIT_HTTP_LOW_SPEED_LIMIT=999999 \
+    GIT_HTTP_LOW_SPEED_TIME=0 \
+    http_proxy=http://proxy.example.invalid:8080 \
+    https_proxy=http://proxy.example.invalid:8443 \
+    ci_fetch_exact_git_commit \
+      https://example.invalid/kernel.git \
+      "$fake_git_commit" \
+      "$destination" \
+      4 \
+      "$download_fixture/timeout" \
+      "$download_fixture/sleep"
+}
+
+rm -f -- "$download_fixture/git.count" "$download_fixture/git.log" \
+  "$download_fixture/sleep.log" "$download_fixture/timeout.log"
+run_fake_git_fetch "$download_fixture/kernel-retry" 2 success
+[ "$(cat "$download_fixture/git.count")" = 3 ] ||
+  fail 'Git fetch retry did not stop after the first successful clean attempt'
+[ -d "$download_fixture/kernel-retry/.git" ] &&
+  [ ! -e "$download_fixture/kernel-retry/.git/partial-object" ] ||
+  fail 'Git fetch retry retained a partial object from a failed repository'
+cat > "$download_fixture/git.expected" <<EOF
+init	$download_fixture/kernel-retry
+remote	$download_fixture/kernel-retry
+fetch	$download_fixture/kernel-retry
+init	$download_fixture/kernel-retry
+remote	$download_fixture/kernel-retry
+fetch	$download_fixture/kernel-retry
+init	$download_fixture/kernel-retry
+remote	$download_fixture/kernel-retry
+fetch	$download_fixture/kernel-retry
+checkout	$download_fixture/kernel-retry
+rev-parse	$download_fixture/kernel-retry
+EOF
+cmp -- "$download_fixture/git.expected" "$download_fixture/git.log" ||
+  fail 'Git fetch retry did not use the exact fresh-repository command sequence'
+mapfile -t retry_paths < <(
+  find "$download_fixture" -mindepth 1 -maxdepth 1 -name 'kernel-retry*' -print | sort
+)
+[ "${#retry_paths[@]}" -eq 1 ] &&
+  [ "${retry_paths[0]}" = "$download_fixture/kernel-retry" ] ||
+  fail 'Git fetch retry left an unexpected sibling repository'
+[ "$(cat "$download_fixture/sleep.log")" = $'1\n2' ] ||
+  fail 'Git fetch retry did not apply the exact bounded backoff'
+[ "$(wc -l < "$download_fixture/timeout.log")" -eq 9 ] ||
+  fail 'Git fetch retry did not wrap every fetch in the exact timeout contract'
+
+rm -rf -- "$download_fixture/kernel-retry"
+rm -f -- "$download_fixture/git.count" "$download_fixture/git.log" \
+  "$download_fixture/sleep.log" "$download_fixture/timeout.log"
+require_failure 'Git fetch failed after 4 attempts' \
+  run_fake_git_fetch "$download_fixture/kernel-exhausted" 9 success
+[ "$(cat "$download_fixture/git.count")" = 4 ] ||
+  fail 'Git fetch exhaustion did not stop at the fixed attempt bound'
+if find "$download_fixture" -mindepth 1 -maxdepth 1 \
+    -name 'kernel-exhausted*' -print -quit | grep -q .; then
+  fail 'Git fetch exhaustion retained a failed or sibling repository'
+fi
+cat > "$download_fixture/git.expected" <<EOF
+init	$download_fixture/kernel-exhausted
+remote	$download_fixture/kernel-exhausted
+fetch	$download_fixture/kernel-exhausted
+init	$download_fixture/kernel-exhausted
+remote	$download_fixture/kernel-exhausted
+fetch	$download_fixture/kernel-exhausted
+init	$download_fixture/kernel-exhausted
+remote	$download_fixture/kernel-exhausted
+fetch	$download_fixture/kernel-exhausted
+init	$download_fixture/kernel-exhausted
+remote	$download_fixture/kernel-exhausted
+fetch	$download_fixture/kernel-exhausted
+EOF
+cmp -- "$download_fixture/git.expected" "$download_fixture/git.log" ||
+  fail 'Git fetch exhaustion did not use the exact bounded command sequence'
+[ "$(cat "$download_fixture/sleep.log")" = $'1\n2\n3' ] ||
+  fail 'Git fetch exhaustion did not stop backoff before terminal failure'
+[ "$(wc -l < "$download_fixture/timeout.log")" -eq 12 ] ||
+  fail 'Git fetch exhaustion did not wrap exactly four fetches in timeouts'
+
+rm -f -- "$download_fixture/git.count" "$download_fixture/git.log" \
+  "$download_fixture/sleep.log" "$download_fixture/timeout.log"
+require_failure 'Git fetch returned 0000000000000000000000000000000000000000' \
+  run_fake_git_fetch "$download_fixture/kernel-mismatch" 0 mismatch
+[ "$(cat "$download_fixture/git.count")" = 1 ] ||
+  fail 'Git commit mismatch triggered a network retry'
+if find "$download_fixture" -mindepth 1 -maxdepth 1 \
+    -name 'kernel-mismatch*' -print -quit | grep -q .; then
+  fail 'Git commit mismatch retained the rejected or sibling repository'
+fi
+cat > "$download_fixture/git.expected" <<EOF
+init	$download_fixture/kernel-mismatch
+remote	$download_fixture/kernel-mismatch
+fetch	$download_fixture/kernel-mismatch
+checkout	$download_fixture/kernel-mismatch
+rev-parse	$download_fixture/kernel-mismatch
+EOF
+cmp -- "$download_fixture/git.expected" "$download_fixture/git.log" ||
+  fail 'Git commit mismatch did not stop after the exact identity sequence'
+[ ! -e "$download_fixture/sleep.log" ] ||
+  fail 'Git commit mismatch triggered a retry delay'
+[ "$(wc -l < "$download_fixture/timeout.log")" -eq 3 ] ||
+  fail 'Git commit mismatch did not use exactly one fetch timeout'
+
+for failure_mode in init-fail remote-fail checkout-fail rev-parse-fail; do
+  failure_destination="$download_fixture/kernel-$failure_mode"
+  rm -f -- "$download_fixture/git.count" "$download_fixture/git.log" \
+    "$download_fixture/sleep.log" "$download_fixture/timeout.log"
+  case "$failure_mode" in
+    init-fail) expected_failure='cannot initialize Git fetch destination' ;;
+    remote-fail) expected_failure='cannot configure Git fetch origin' ;;
+    checkout-fail) expected_failure='cannot check out fetched Git commit' ;;
+    rev-parse-fail) expected_failure='cannot resolve fetched Git commit' ;;
+  esac
+  require_failure "$expected_failure" \
+    run_fake_git_fetch "$failure_destination" 0 "$failure_mode"
+  if find "$download_fixture" -mindepth 1 -maxdepth 1 \
+      -name "kernel-$failure_mode*" -print -quit | grep -q .; then
+    fail "Git $failure_mode retained a failed or sibling repository"
+  fi
+  [ ! -e "$download_fixture/sleep.log" ] ||
+    fail "Git $failure_mode triggered a retry delay"
+done
+
+mkdir "$download_fixture/real-parent"
+ln -s "$download_fixture/real-parent" "$download_fixture/symlink-parent"
+rm -f -- "$download_fixture/git.count" "$download_fixture/git.log" \
+  "$download_fixture/sleep.log" "$download_fixture/timeout.log"
+require_failure 'Git fetch destination parent must be a real directory' \
+  run_fake_git_fetch "$download_fixture/symlink-parent/kernel" 0 success
+[ ! -e "$download_fixture/real-parent/kernel" ] &&
+  [ ! -e "$download_fixture/git.log" ] ||
+  fail 'Git fetch accepted or invoked tools through a symlink parent'
+printf 'PASS bounded exact Git fetch retries use fresh repositories\n'
+
 printf 'complete pinned SDK bytes\n' > "$download_fixture/payload"
 printf 'wrong bytes\n' > "$download_fixture/wrong-payload"
 download_sha256=$(sha256sum "$download_fixture/payload" | awk '{print $1}')
@@ -411,7 +722,7 @@ import sys
 
 source = Path(sys.argv[1]).read_text()
 preflight = source.index('ci_verify_clean_git_commit "$REPO_ROOT" "$HAPTICS_PRODUCER_COMMIT"')
-fetch = source.index('ci_git -C "$kernel_source" fetch')
+fetch = source.index('ci_fetch_exact_git_commit')
 producer = source.index('build-tb321fu-haptics-deb.sh', fetch)
 assert preflight < fetch < producer
 PY
@@ -423,6 +734,10 @@ grep -Fq 'all six locked inputs' "$readme" ||
   fail 'README does not describe the complete release input set'
 grep -Fq 'kernel_sdk_manifest' "$readme" ||
   fail 'README does not document the kernel SDK manifest input'
+grep -Fq 'at most four HTTP/1.1' "$readme" ||
+  fail 'README does not document bounded fresh-repository kernel fetches'
+grep -Fq 'minutes plus a 30-second forced-termination window' "$readme" ||
+  fail 'README does not document the per-fetch wall-clock limit'
 python3 - "$workflow" <<'PY'
 from pathlib import Path
 import sys

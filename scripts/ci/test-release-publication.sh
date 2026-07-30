@@ -373,6 +373,14 @@ if run_publish "$state_token_newline" env PRERELEASE=1 \
 fi
 [ ! -e "$state_token_newline" ]
 
+state_token_carriage_return=$scratch/state-token-carriage-return
+if run_publish "$state_token_carriage_return" env PRERELEASE=1 \
+    GH_TOKEN=$'test-release-token\rInjected: value' >/dev/null 2>&1; then
+  printf 'publisher accepted a release token containing a carriage return\n' >&2
+  exit 1
+fi
+[ ! -e "$state_token_carriage_return" ]
+
 printf -v overlong_token '%4097s' ''
 overlong_token=${overlong_token// /x}
 state_token_overlong=$scratch/state-token-overlong

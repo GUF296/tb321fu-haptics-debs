@@ -60,6 +60,9 @@ ci_sanitized_git_env() {
     -u GIT_ALLOW_PROTOCOL \
     -u GIT_PROTOCOL_FROM_USER \
     -u GIT_NO_REPLACE_OBJECTS \
+    -u GIT_SSL_NO_VERIFY \
+    -u GIT_HTTP_LOW_SPEED_LIMIT \
+    -u GIT_HTTP_LOW_SPEED_TIME \
     GIT_CONFIG_NOSYSTEM=1 \
     GIT_CONFIG_GLOBAL=/dev/null \
     GIT_ATTR_NOSYSTEM=1 \
@@ -86,6 +89,116 @@ ci_git() {
     -c core.excludesFile=/dev/null \
     "$@"
 }
+
+ci_git_with_timeout() {
+  local timeout_bin=$1
+  local timeout_seconds=$2
+  local git_bin=${CI_GIT_BIN:-git}
+  shift 2
+
+  case "$timeout_bin" in
+    /*) ;;
+    *) ci_die "Git timeout command must be absolute" ;;
+  esac
+  [ -x "$timeout_bin" ] || ci_die "Git timeout command is not executable"
+  [[ $timeout_seconds =~ ^[1-9][0-9]{0,3}$ ]] ||
+    ci_die "Git timeout must be between 1 and 9999 seconds"
+
+  ci_sanitized_git_env \
+    "$timeout_bin" --signal=TERM --kill-after=30s "${timeout_seconds}s" \
+    "$git_bin" --no-replace-objects \
+    -c core.fsmonitor=false \
+    -c core.untrackedCache=false \
+    -c core.excludesFile=/dev/null \
+    "$@"
+}
+
+ci_fetch_exact_git_commit() (
+  set -euo pipefail
+
+  local repository_url=$1
+  local commit=$2
+  local destination=$3
+  local max_attempts=${4:-4}
+  local timeout_bin=$5
+  local retry_sleep_bin=$6
+  local destination_parent_input destination_parent destination_name
+  local attempt actual_commit owns_destination=0 keep_destination=0
+
+  cleanup_git_fetch_destination() {
+    if [ "$owns_destination" = 1 ] && [ "$keep_destination" != 1 ]; then
+      rm -rf -- "$destination"
+    fi
+  }
+  trap cleanup_git_fetch_destination EXIT
+
+  [[ $repository_url =~ ^https://[^[:space:]]{1,2048}$ ]] ||
+    ci_die "Git repository must be a bounded HTTPS URL"
+  [[ $commit =~ ^[0-9a-f]{40}$ ]] ||
+    ci_die "Git fetch commit must be 40 lowercase hex characters"
+  [[ $max_attempts =~ ^[1-9][0-9]?$ ]] ||
+    ci_die "Git fetch attempt count must be between 1 and 99"
+  case "$retry_sleep_bin" in
+    /*) ;;
+    *) ci_die "Git retry sleep command must be absolute" ;;
+  esac
+  [ -x "$retry_sleep_bin" ] || ci_die "Git retry sleep command is not executable"
+
+  destination_parent_input=$(dirname -- "$destination")
+  [ -d "$destination_parent_input" ] && [ ! -L "$destination_parent_input" ] ||
+    ci_die "Git fetch destination parent must be a real directory"
+  destination_parent=$(realpath -e -- "$destination_parent_input") ||
+    ci_die "Git fetch destination parent does not exist"
+  destination_name=$(basename -- "$destination")
+  case "$destination_name" in
+    ''|.|..|/|*/*|*\\*) ci_die "unsafe Git fetch destination basename" ;;
+  esac
+  destination="$destination_parent/$destination_name"
+  [ ! -e "$destination" ] && [ ! -L "$destination" ] ||
+    ci_die "refusing stale Git fetch destination: $destination"
+
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    [ ! -e "$destination" ] && [ ! -L "$destination" ] ||
+      ci_die "Git fetch attempt found a stale destination: $destination"
+    owns_destination=1
+    if ! ci_git init -q "$destination"; then
+      ci_die "cannot initialize Git fetch destination"
+    fi
+    if ! ci_git -C "$destination" remote add origin "$repository_url"; then
+      ci_die "cannot configure Git fetch origin"
+    fi
+    ci_log "Git fetch attempt $attempt/$max_attempts: $commit"
+    if ci_git_with_timeout "$timeout_bin" 600 -C "$destination" \
+        -c http.version=HTTP/1.1 \
+        -c http.lowSpeedLimit=1024 \
+        -c http.lowSpeedTime=300 \
+        fetch --depth 1 origin "$commit"; then
+      if ! ci_git -C "$destination" checkout -q --detach FETCH_HEAD; then
+        rm -rf -- "$destination"
+        ci_die "cannot check out fetched Git commit"
+      fi
+      if ! actual_commit=$(ci_git -C "$destination" rev-parse HEAD); then
+        rm -rf -- "$destination"
+        ci_die "cannot resolve fetched Git commit"
+      fi
+      if [ "$actual_commit" != "$commit" ]; then
+        ci_die "Git fetch returned $actual_commit instead of $commit"
+      fi
+      keep_destination=1
+      return 0
+    fi
+    ci_log "Git fetch attempt $attempt/$max_attempts failed; discarding the temporary repository"
+    if ! rm -rf -- "$destination"; then
+      ci_die "cannot discard failed Git fetch destination"
+    fi
+    owns_destination=0
+    if [ "$attempt" -lt "$max_attempts" ] && ! "$retry_sleep_bin" "$attempt"; then
+      ci_die "Git fetch retry delay failed"
+    fi
+  done
+
+  ci_die "Git fetch failed after $max_attempts attempts"
+)
 
 ci_verify_clean_git_commit() {
   local root=$1

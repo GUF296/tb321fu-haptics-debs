@@ -17,6 +17,8 @@ HAPTICS_REQUIRED_BUILD_TOOLS=(
   basename
   dirname
   date
+  sleep
+  timeout
   mktemp
   mkdir
   rm
