@@ -28,7 +28,7 @@ jobs:
           checksum=HAPTICS-DPKG-HOST-REFERENCE.sha256
           [ ! -e "$reference" ] && [ ! -L "$reference" ] &&
             [ ! -e "$checksum" ] && [ ! -L "$checksum" ]
-          python3 -I -B scripts/ci/verify-haptics-dpkg-state.py \
+          sudo python3 -I -B scripts/ci/verify-haptics-dpkg-state.py \
             --capture-host-reference /var/lib/dpkg 0 0 > "$reference"
           chmod 0600 "$reference"
           sudo chown 0:0 "$reference"
