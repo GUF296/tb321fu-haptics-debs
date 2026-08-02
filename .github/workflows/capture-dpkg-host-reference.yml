@@ -1,0 +1,50 @@
+name: Capture Haptics Dpkg Host Reference
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Capture and verify host reference
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          reference=HAPTICS-DPKG-HOST-REFERENCE.tsv
+          checksum=HAPTICS-DPKG-HOST-REFERENCE.sha256
+          [ ! -e "$reference" ] && [ ! -L "$reference" ] &&
+            [ ! -e "$checksum" ] && [ ! -L "$checksum" ]
+          python3 -I -B scripts/ci/verify-haptics-dpkg-state.py \
+            --capture-host-reference /var/lib/dpkg 0 0 > "$reference"
+          chmod 0600 "$reference"
+          sudo chown 0:0 "$reference"
+          sudo python3 -I -B scripts/ci/verify-haptics-dpkg-state.py \
+            --verify-host-reference /var/lib/dpkg 0 0 "$PWD/$reference"
+          sudo chown "$(id -u):$(id -g)" "$reference"
+          sha256sum -- "$reference" | \
+            sed 's#  .*#  HAPTICS-DPKG-HOST-REFERENCE.tsv#' > "$checksum"
+          chmod 0600 "$checksum"
+          sha256sum -c -- "$checksum"
+
+      - name: Upload diagnostic reference
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: haptics-dpkg-host-reference
+          path: HAPTICS-DPKG-HOST-REFERENCE.*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
