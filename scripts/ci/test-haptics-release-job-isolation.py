@@ -387,6 +387,7 @@ DEPENDENCY_RUN = "\n".join((
     "/usr/bin/sudo /usr/bin/sha256sum -- \"$reference\" > \"$checksum\"",
     "/usr/bin/sudo /usr/bin/chmod 0600 \"$checksum\"",
     "/usr/bin/sudo /usr/bin/sha256sum -c -- \"$checksum\"",
+    "/usr/bin/sudo /usr/bin/chmod 0644 \"$reference\"",
     "/usr/bin/sudo /bin/bash -p scripts/ci/install-haptics-build-dependencies.sh \\",
     "  scripts/ci/HAPTICS-BUILD-PACKAGES.tsv \\",
     "  scripts/ci/HAPTICS-BUILD-TOOLS-REFERENCE.tsv \\",
