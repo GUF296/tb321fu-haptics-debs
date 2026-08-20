@@ -1720,15 +1720,10 @@ def prepare_expected_transaction(
     # a strict superset of the transaction closure. Keep validating every
     # fetched DEB against the lock, but bind only actual plan changes to the
     # EIPP manifest and subsequent hook checks.
-    archive_map = {
-        (archive.package, archive.architecture): archive
-        for archive in all_archives
-    }
-    if len(archive_map) != len(all_archives):
-        raise AptTransactionError("APT archive closure contains duplicate identities")
     changed_identities = {
         (change.package, change.architecture) for change in changes
     }
+    archive_map: dict[tuple[str, str], ArchiveRecord] = {}
     for archive in all_archives:
         identity = (archive.package, archive.architecture)
         locked_version = expected_versions.get(identity)
@@ -1740,19 +1735,43 @@ def prepare_expected_transaction(
             raise AptTransactionError(
                 "APT archive closure contains an unexpected no-op repository package"
             )
+        previous = archive_map.get(identity)
+        if previous is None:
+            archive_map[identity] = archive
+        elif identity not in allowed_noop_archives:
+            raise AptTransactionError(
+                "APT archive closure contains a duplicate repository identity"
+            )
+        elif (
+            previous.version,
+            previous.architecture,
+            previous.multiarch,
+            previous.size,
+            previous.sha256,
+        ) != (
+            archive.version,
+            archive.architecture,
+            archive.multiarch,
+            archive.size,
+            archive.sha256,
+        ):
+            raise AptTransactionError(
+                "duplicate compatibility archives do not contain identical bytes"
+            )
     if set(archive_map) & changed_identities != changed_identities:
         raise AptTransactionError("APT archive closure is missing a planned package")
+    canonical_archives = tuple(archive_map.values())
     actions = build_expected_actions(
         changes,
         installed,
-        all_archives,
+        canonical_archives,
         allowed_noop_archives=allowed_noop_archives,
         deadline=deadline,
     )
     action_identities = {(change.package, change.architecture) for change in changes}
     manifest_archives = tuple(
         record
-        for record in all_archives
+        for record in canonical_archives
         if (record.package, record.architecture) in action_identities
     )
     if len(manifest_archives) * 2 != len(actions):

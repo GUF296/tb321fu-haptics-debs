@@ -70,7 +70,7 @@ class FakePolicy:
         return {("example", "amd64"): "1.0-1"}
 
     def compatibility_identities(self):
-        return frozenset()
+        return frozenset({("example", "amd64")})
 
 
 class FakePackageVerifier:
@@ -1766,6 +1766,57 @@ def main() -> None:
         raise SystemExit("APT preparation changed the host-reference digest")
     if len(transaction.actions) != 2 or transaction.archives != (archive,):
         raise SystemExit("APT preparation changed action/archive closure")
+    duplicate_archive = verifier.ArchiveRecord(
+        "/tmp/compat/example_1.0-1_amd64.deb",
+        1,
+        3,
+        0o644,
+        0,
+        0,
+        1,
+        archive.size,
+        archive.sha256,
+        archive.package,
+        archive.version,
+        archive.architecture,
+        archive.multiarch,
+    )
+    package = FakePackageVerifier()
+    dpkg = FakeDpkgVerifier()
+    archive_by_path = {
+        pathlib.Path(record.path): record
+        for record in (archive, duplicate_archive)
+    }
+    verifier.load_package_verifier = lambda: package
+    verifier.load_dpkg_state_verifier = lambda: dpkg
+    verifier.capture_deb_archive = lambda path, uid, gid, **kwargs: (
+        archive_by_path[path]
+        if path in archive_by_path and (uid, gid) == (0, 0)
+        else (_ for _ in ()).throw(ValueError("wrong duplicate archive capture inputs"))
+    )
+    try:
+        duplicate_transaction = verifier.prepare_expected_transaction(
+            "/usr/bin/python3 -I -B /tmp/private/verify-haptics-apt-transaction.py "
+            "--verify-hook /tmp/private/expected.tsv /tmp/private/hook.ok",
+            b"lock\n",
+            b"package-state\n",
+            b"plan\n",
+            b"dpkg-state\n",
+            b"host-reference\n",
+            b"status\n",
+            tuple(sorted(archive_by_path)),
+            pathlib.Path("/tmp/dpkg-admin"),
+            0,
+            0,
+        )
+    finally:
+        verifier.capture_deb_archive = original_archive_capture
+        verifier.load_dpkg_state_verifier = original_dpkg_loader
+        verifier.load_package_verifier = original_package_loader
+    if duplicate_transaction.archives != (archive,):
+        raise SystemExit(
+            "APT preparation did not prefer the cache archive for identical compat bytes"
+        )
     deadline_clock = [0.0]
     original_monotonic = verifier.time.monotonic
     verifier.load_package_verifier = lambda: package
