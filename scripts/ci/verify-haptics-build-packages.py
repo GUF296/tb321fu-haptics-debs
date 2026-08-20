@@ -194,6 +194,18 @@ class LockPolicy:
             if record.source == "compat"
         )
 
+    def compatibility_digests(self) -> dict[tuple[str, str], str]:
+        digests: dict[tuple[str, str], str] = {}
+        for identity, record in self.packages.items():
+            if record.source != "compat":
+                continue
+            if record.digest is None or not HEX64.fullmatch(record.digest):
+                raise PackageLockError(
+                    f"compatibility package has no canonical digest: {identity[0]}"
+                )
+            digests[identity] = record.digest
+        return digests
+
 
 def parse_lock_bytes(raw: bytes) -> LockPolicy:
     if not raw or len(raw) > MAX_LOCK_BYTES:

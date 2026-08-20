@@ -574,6 +574,7 @@ def expected_hook_configuration(command: str) -> tuple[tuple[str, str], ...]:
     script = canonical_hook_path(fields[3])
     if fields[4] != "--verify-hook":
         raise AptTransactionError("APT hook command is not canonical")
+    tool = canonical_hook_path(fields[0])
     manifest = canonical_hook_path(fields[5])
     marker = canonical_hook_path(fields[6])
     if (
@@ -592,8 +593,8 @@ def expected_hook_configuration(command: str) -> tuple[tuple[str, str], ...]:
                 ("DPkg::Path", "/usr/sbin:/usr/bin:/sbin:/bin"),
                 ("DPkg::Pre-Install-Pkgs::", command),
                 ("DPkg::Run-Directory", "/"),
-                (f"DPkg::Tools::options::{command}::InfoFD", "21"),
-                (f"DPkg::Tools::options::{command}::Version", "3"),
+                (f"DPkg::Tools::options::{tool}::InfoFD", "21"),
+                (f"DPkg::Tools::options::{tool}::Version", "3"),
             )
         )
     )
@@ -1638,7 +1639,8 @@ def prepare_expected_transaction(
         package.verify_host_plan(expected_versions, expected_package_state, plan)
         expected_dpkg_state = dpkg.parse_dpkg_state_bytes(dpkg_state_raw)
         expected_host_reference = dpkg.parse_host_reference_bytes(host_reference_raw)
-        allowed_noop_archives = policy.compatibility_identities()
+        compatibility_digests = policy.compatibility_digests()
+        allowed_noop_archives = frozenset(compatibility_digests)
         installed_identities = dpkg.parse_status_identities(status_raw)
     except ValueError as exc:
         raise AptTransactionError(
@@ -1730,6 +1732,13 @@ def prepare_expected_transaction(
         if locked_version is None or locked_version != archive.version:
             raise AptTransactionError(
                 "APT archive closure contains an identity outside the package lock"
+            )
+        locked_digest = compatibility_digests.get(identity)
+        if locked_digest is not None and not hmac.compare_digest(
+            locked_digest, archive.sha256
+        ):
+            raise AptTransactionError(
+                "compatibility archive digest differs from the package lock"
             )
         if identity not in allowed_noop_archives and identity not in changed_identities:
             raise AptTransactionError(
@@ -4124,6 +4133,37 @@ def verify_hook_marker(
     try:
         expected_digest = hashlib.sha256(manifest_raw).hexdigest()
         expected_raw = (expected_digest + "\n").encode("ascii")
+        transaction = parse_expected_transaction_bytes(manifest_raw)
+        if not transaction.actions and not transaction.archives:
+            # APT does not invoke Pre-Install-Pkgs when its plan is empty. The
+            # manifest, unchanged dpkg state, and successful apt command are
+            # the proof for this legitimate no-op transaction. An existing
+            # marker is still rejected so a stale hook result cannot be reused.
+            try:
+                os.stat(
+                    marker_path.name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise AptTransactionError(
+                    f"cannot inspect empty APT hook marker: {exc}"
+                ) from exc
+            else:
+                raise AptTransactionError(
+                    "APT hook marker exists for an empty transaction"
+                )
+            recheck_private_manifest(
+                parent_descriptor,
+                manifest_descriptor,
+                manifest_path,
+                manifest_raw,
+                manifest_identity,
+                parent_identity,
+            )
+            return expected_digest
         flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW

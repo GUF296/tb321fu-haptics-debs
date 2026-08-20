@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import contextlib
 import errno
 import hashlib
@@ -71,6 +71,9 @@ class FakePolicy:
 
     def compatibility_identities(self):
         return frozenset({("example", "amd64")})
+
+    def compatibility_digests(self):
+        return {("example", "amd64"): "4" * 64}
 
 
 class FakePackageVerifier:
@@ -213,6 +216,76 @@ class FakeDpkgVerifier:
         ):
             raise ValueError("unsafe private evidence")
         return raw
+
+
+class MixedPolicy:
+    REQUIRED = ("required", "amd64")
+    COMPAT_NOOP = ("compat-noop", "amd64")
+    REPOSITORY_NOOP = ("repository-noop", "amd64")
+
+    def expected_versions(self):
+        return {
+            self.REQUIRED: "1.0-1",
+            self.COMPAT_NOOP: "2.0-1",
+            self.REPOSITORY_NOOP: "3.0-1",
+        }
+
+    def compatibility_identities(self):
+        return frozenset({self.COMPAT_NOOP})
+
+    def compatibility_digests(self):
+        return {self.COMPAT_NOOP: "7" * 64}
+
+
+class MixedPackageVerifier(FakePackageVerifier):
+    def parse_lock_bytes(self, raw: bytes):
+        if raw != b"mixed-lock\n":
+            raise ValueError("wrong mixed package lock")
+        return MixedPolicy()
+
+    def parse_apt_plan_bytes(self, raw: bytes):
+        if raw != b"mixed-plan\n":
+            raise ValueError("wrong mixed APT plan")
+        planned = FakePlannedPackage("1.0-1", "amd64", "2.0-1")
+        return FakePlan({MixedPolicy.REQUIRED: planned}, {MixedPolicy.REQUIRED: planned})
+
+    def verify_host_plan(self, expected, before, plan) -> None:
+        if expected != MixedPolicy().expected_versions() or before is not self.state:
+            raise ValueError("mixed host plan inputs differ")
+        if set(plan.installs) != {MixedPolicy.REQUIRED}:
+            raise ValueError("mixed host plan identity differs")
+        self.verified_plan = True
+
+
+class MixedDpkgVerifier(FakeDpkgVerifier):
+    def parse_status_identities(self, raw: bytes):
+        if raw != b"mixed-status\n":
+            raise ValueError("wrong mixed status bytes")
+        return {
+            MixedPolicy.REQUIRED: ("2.0-1", "install ok installed", "no"),
+            MixedPolicy.COMPAT_NOOP: ("2.0-1", "install ok installed", "same"),
+            MixedPolicy.REPOSITORY_NOOP: ("3.0-1", "install ok installed", "no"),
+        }
+
+    def read_regular(
+        self,
+        path: pathlib.Path,
+        mode: int,
+        uid: int,
+        gid: int,
+        maximum: int,
+        label: str,
+    ) -> bytes:
+        if path == pathlib.Path("/tmp/dpkg-admin/status"):
+            return b"mixed-status\n"
+        return super().read_regular(path, mode, uid, gid, maximum, label)
+
+    def verify_post_dpkg_state(self, before, after, approved) -> None:
+        if before is not self.state or after is not self.state:
+            raise ValueError("wrong mixed post-state objects")
+        if approved != (MixedPolicy.REQUIRED,):
+            raise ValueError("mixed post-state allowlist includes a no-op package")
+        self.verified_post = True
 
 
 def verify_whole_preparation_deadline(
@@ -1817,6 +1890,143 @@ def main() -> None:
         raise SystemExit(
             "APT preparation did not prefer the cache archive for identical compat bytes"
         )
+    required_archive = verifier.ArchiveRecord(
+        "/tmp/cache/required_1.0-1_amd64.deb",
+        1,
+        4,
+        0o644,
+        0,
+        0,
+        1,
+        120,
+        "6" * 64,
+        "required",
+        "1.0-1",
+        "amd64",
+        "no",
+    )
+    compat_noop_archive = verifier.ArchiveRecord(
+        "/tmp/compat/compat-noop_2.0-1_amd64.deb",
+        1,
+        5,
+        0o644,
+        0,
+        0,
+        1,
+        121,
+        "7" * 64,
+        "compat-noop",
+        "2.0-1",
+        "amd64",
+        "same",
+    )
+    mixed_archives = {
+        pathlib.Path(record.path): record
+        for record in (required_archive, compat_noop_archive)
+    }
+    mixed_package = MixedPackageVerifier()
+    mixed_dpkg = MixedDpkgVerifier()
+    verifier.load_package_verifier = lambda: mixed_package
+    verifier.load_dpkg_state_verifier = lambda: mixed_dpkg
+    verifier.capture_deb_archive = lambda path, uid, gid, **kwargs: (
+        mixed_archives[path]
+        if path in mixed_archives and (uid, gid) == (0, 0)
+        else (_ for _ in ()).throw(ValueError("wrong mixed archive capture inputs"))
+    )
+
+    def prepare_mixed(records):
+        return verifier.prepare_expected_transaction(
+            "/usr/bin/python3 -I -B /tmp/private/verify-haptics-apt-transaction.py "
+            "--verify-hook /tmp/private/expected.tsv /tmp/private/hook.ok",
+            b"mixed-lock\n",
+            b"package-state\n",
+            b"mixed-plan\n",
+            b"dpkg-state\n",
+            b"host-reference\n",
+            b"mixed-status\n",
+            tuple(sorted(pathlib.Path(record.path) for record in records)),
+            pathlib.Path("/tmp/dpkg-admin"),
+            0,
+            0,
+        )
+
+    try:
+        mixed_transaction = prepare_mixed((required_archive, compat_noop_archive))
+        if (
+            len(mixed_transaction.actions) != 2
+            or mixed_transaction.archives != (required_archive,)
+            or any(
+                action.package != "required"
+                or action.old_version != "2.0-1"
+                or action.new_version != "1.0-1"
+                or action.direction != ">"
+                for action in mixed_transaction.actions
+            )
+        ):
+            raise SystemExit(
+                "APT preparation did not isolate the required downgrade from compat no-op"
+            )
+        mixed_manifest = verifier.serialize_expected_transaction(mixed_transaction)
+        if b"compat-noop" in mixed_manifest or mixed_manifest.count(b"\naction\trequired\t") != 2:
+            raise SystemExit("APT manifest serialized a compatibility no-op archive")
+
+        hostile_cases = []
+        hostile_cases.append(
+            (
+                "compat digest drift",
+                replace(compat_noop_archive, sha256="8" * 64),
+                "compatibility archive digest differs from the package lock",
+            )
+        )
+        hostile_cases.append(
+            (
+                "compat Multi-Arch drift",
+                replace(compat_noop_archive, multiarch="no"),
+                "no-op compatibility archive differs from installed status",
+            )
+        )
+        repository_noop = verifier.ArchiveRecord(
+            "/tmp/cache/repository-noop_3.0-1_amd64.deb",
+            1,
+            6,
+            0o644,
+            0,
+            0,
+            1,
+            122,
+            "9" * 64,
+            "repository-noop",
+            "3.0-1",
+            "amd64",
+            "no",
+        )
+        for label, hostile, expected in (*hostile_cases, (
+            "repository no-op archive",
+            repository_noop,
+            "APT archive closure contains an unexpected no-op repository package",
+        )):
+            hostile_map = dict(mixed_archives)
+            hostile_map[pathlib.Path(hostile.path)] = hostile
+            verifier.capture_deb_archive = lambda path, uid, gid, **kwargs: (
+                hostile_map[path]
+                if path in hostile_map and (uid, gid) == (0, 0)
+                else (_ for _ in ()).throw(ValueError("wrong hostile archive capture inputs"))
+            )
+            selected = (
+                required_archive,
+                hostile,
+            )
+            require_rejected(
+                verifier,
+                lambda selected=selected: prepare_mixed(selected),
+                label,
+                expected,
+                exact=True,
+            )
+    finally:
+        verifier.capture_deb_archive = original_archive_capture
+        verifier.load_dpkg_state_verifier = original_dpkg_loader
+        verifier.load_package_verifier = original_package_loader
     deadline_clock = [0.0]
     original_monotonic = verifier.time.monotonic
     verifier.load_package_verifier = lambda: package

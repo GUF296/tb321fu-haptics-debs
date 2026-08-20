@@ -18,6 +18,7 @@ HOOK_COMMAND = (
     "--verify-hook /tmp/private/expected.tsv /tmp/private/hook.ok"
 )
 ENCODED_HOOK_COMMAND = HOOK_COMMAND.replace(" ", "%20")
+HOOK_TOOL = "/usr/bin/python3"
 VALID_EIPP_V3 = (
     "VERSION 3\n"
     "APT::Architecture=amd64\n"
@@ -27,8 +28,8 @@ VALID_EIPP_V3 = (
     "DPkg::Path=/usr/sbin:/usr/bin:/sbin:/bin\n"
     f"DPkg::Pre-Install-Pkgs::={ENCODED_HOOK_COMMAND}\n"
     "DPkg::Run-Directory=/\n"
-    f"DPkg::Tools::options::{ENCODED_HOOK_COMMAND}::InfoFD=21\n"
-    f"DPkg::Tools::options::{ENCODED_HOOK_COMMAND}::Version=3\n"
+    f"DPkg::Tools::options::{HOOK_TOOL}::InfoFD=21\n"
+    f"DPkg::Tools::options::{HOOK_TOOL}::Version=3\n"
     "\n"
     "example - - none < 1.0-1 amd64 none /tmp/private/example_1.0-1_amd64.deb\n"
     "example - - none < 1.0-1 amd64 none **CONFIGURE**\n"
@@ -40,8 +41,8 @@ EXPECTED_CONFIGURATION = (
     ("DPkg::Path", "/usr/sbin:/usr/bin:/sbin:/bin"),
     ("DPkg::Pre-Install-Pkgs::", HOOK_COMMAND),
     ("DPkg::Run-Directory", "/"),
-    (f"DPkg::Tools::options::{HOOK_COMMAND}::InfoFD", "21"),
-    (f"DPkg::Tools::options::{HOOK_COMMAND}::Version", "3"),
+    (f"DPkg::Tools::options::{HOOK_TOOL}::InfoFD", "21"),
+    (f"DPkg::Tools::options::{HOOK_TOOL}::Version", "3"),
     ("Dir::Bin::dpkg", "/usr/bin/dpkg"),
 )
 

@@ -126,6 +126,7 @@ verify_no_apt_sandbox_fallback() {
 
 configure_private_apt_hook() {
   local hook_command=$1
+  local hook_tool
 
   [ -n "$hook_command" ] &&
     [ "${#hook_command}" -le 12288 ] &&
@@ -134,6 +135,11 @@ configure_private_apt_hook() {
       echo 'private APT hook command is not canonical' >&2
       return 1
     }
+  hook_tool=${hook_command%% *}
+  [ -n "$hook_tool" ] || {
+    echo 'private APT hook executable is missing' >&2
+    return 1
+  }
   [ -f "$apt_config" ] && [ ! -L "$apt_config" ] &&
     [ "$(/usr/bin/stat -c '%a' -- "$apt_config")" = 600 ] || {
       echo 'private apt configuration is not a mode-0600 regular file' >&2
@@ -146,7 +152,7 @@ configure_private_apt_hook() {
   {
     printf 'DPkg::Pre-Install-Pkgs { "%s"; };\n' "$hook_command"
     printf 'DPkg::Tools::options { "%s" { InfoFD "21"; Version "3"; }; };\n' \
-      "$hook_command"
+      "$hook_tool"
   } >> "$apt_config"
   /usr/bin/chmod 0600 "$apt_config"
 }
@@ -193,7 +199,7 @@ verify_private_apt_configuration() {
     'DPkg::Run-Directory "/";'
   )
   if [ -n "$hook_command" ]; then
-    hook_key=${hook_command// /%20}
+    hook_key=${hook_command%% *}
     expected_lines+=(
       'DPkg::Pre-Install-Pkgs "";'
       "DPkg::Pre-Install-Pkgs:: \"$hook_command\";"
@@ -471,7 +477,7 @@ if [ "${1:-}" = --self-test-apt-config ]; then
   configure_private_apt_hook "$hook_command"
   verify_private_apt_configuration "$hook_command"
   printf 'DPkg::Tools::options { "%s" { InfoFD "22"; }; };\n' \
-    "$hook_command" >> "$apt_config"
+    "${hook_command%% *}" >> "$apt_config"
   if verify_private_apt_configuration "$hook_command" >/dev/null 2>&1; then
     echo 'private apt configuration verifier accepted the wrong hook InfoFD' >&2
     exit 1
@@ -479,7 +485,7 @@ if [ "${1:-}" = --self-test-apt-config ]; then
   prepare_private_apt_state 0
   configure_private_apt_hook "$hook_command"
   printf 'DPkg::Tools::options { "%s" { Version "2"; }; };\n' \
-    "$hook_command" >> "$apt_config"
+    "${hook_command%% *}" >> "$apt_config"
   if verify_private_apt_configuration "$hook_command" >/dev/null 2>&1; then
     echo 'private apt configuration verifier accepted the wrong hook version' >&2
     exit 1
@@ -494,7 +500,7 @@ if [ "${1:-}" = --self-test-apt-config ]; then
   prepare_private_apt_state 0
   configure_private_apt_hook "$hook_command"
   printf 'DPkg::Tools::options { "%s" { Unknown "1"; }; };\n' \
-    "$hook_command" >> "$apt_config"
+    "${hook_command%% *}" >> "$apt_config"
   if verify_private_apt_configuration "$hook_command" >/dev/null 2>&1; then
     echo 'private apt configuration verifier accepted an unknown hook option' >&2
     exit 1

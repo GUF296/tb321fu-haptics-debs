@@ -2072,8 +2072,8 @@ def main() -> None:
             "DPkg::Path=/usr/sbin:/usr/bin:/sbin:/bin\n"
             f"DPkg::Pre-Install-Pkgs::={encoded_hook}\n"
             "DPkg::Run-Directory=/\n"
-            f"DPkg::Tools::options::{encoded_hook}::InfoFD=21\n"
-            f"DPkg::Tools::options::{encoded_hook}::Version=3\n"
+            "DPkg::Tools::options::/usr/bin/python3::InfoFD=21\n"
+            "DPkg::Tools::options::/usr/bin/python3::Version=3\n"
             "\n"
             f"example - - none < 1.0-1 amd64 none {archive}\n"
             "example - - none < 1.0-1 amd64 none **CONFIGURE**\n"
@@ -2342,8 +2342,8 @@ def main() -> None:
             "DPkg::Path=/usr/sbin:/usr/bin:/sbin:/bin\n"
             f"DPkg::Pre-Install-Pkgs::={encoded_cli_hook}\n"
             "DPkg::Run-Directory=/\n"
-            f"DPkg::Tools::options::{encoded_cli_hook}::InfoFD=21\n"
-            f"DPkg::Tools::options::{encoded_cli_hook}::Version=3\n"
+            "DPkg::Tools::options::/usr/bin/python3::InfoFD=21\n"
+            "DPkg::Tools::options::/usr/bin/python3::Version=3\n"
             "\n"
             f"example - - none < 1.0-1 amd64 none {archive}\n"
             "example - - none < 1.0-1 amd64 none **CONFIGURE**\n"
@@ -3707,8 +3707,8 @@ def main() -> None:
             "DPkg::Path=/usr/sbin:/usr/bin:/sbin:/bin\n"
             f"DPkg::Pre-Install-Pkgs::={encoded_native_hook}\n"
             "DPkg::Run-Directory=/\n"
-            f"DPkg::Tools::options::{encoded_native_hook}::InfoFD=21\n"
-            f"DPkg::Tools::options::{encoded_native_hook}::Version=3\n"
+            "DPkg::Tools::options::/usr/bin/python3::InfoFD=21\n"
+            "DPkg::Tools::options::/usr/bin/python3::Version=3\n"
             "\n"
             f"example - - none < 1.0-1 amd64 none {archive}\n"
             "example - - none < 1.0-1 amd64 none **CONFIGURE**\n"
@@ -3810,6 +3810,70 @@ def main() -> None:
             )
         finally:
             native_marker_path.chmod(0o600)
+
+        empty_manifest_path = private / "empty-expected.tsv"
+        empty_marker_path = private / "empty-hook.ok"
+        empty_transaction = apt.ExpectedTransaction(
+            native_transaction.package_state_sha256,
+            native_transaction.dpkg_state_sha256,
+            native_transaction.host_reference_sha256,
+            native_transaction.configuration,
+            (),
+            (),
+        )
+        empty_manifest_raw = apt.serialize_expected_transaction(empty_transaction)
+        empty_manifest_digest = hashlib.sha256(empty_manifest_raw).hexdigest()
+        write_file(empty_manifest_path, empty_manifest_raw, 0o600)
+        if apt.verify_hook_marker(empty_manifest_path, empty_marker_path) != (
+            empty_manifest_digest
+        ):
+            raise SystemExit("empty APT transaction returned the wrong manifest digest")
+        empty_marker_cli = subprocess.run(
+            [
+                "/usr/bin/python3",
+                "-I",
+                "-B",
+                str(APT_MODULE_PATH),
+                "--verify-marker",
+                str(empty_manifest_path),
+                str(empty_marker_path),
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            env={
+                "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                "LANG": "C",
+                "LC_ALL": "C",
+                "TZ": "UTC",
+                "HOME": "/nonexistent",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+        )
+        if (
+            empty_marker_cli.returncode
+            or empty_marker_cli.stdout != b"HAPTICS_APT_MARKER=PASS\n"
+            or empty_marker_cli.stderr
+            or empty_marker_path.exists()
+        ):
+            raise SystemExit(
+                "empty APT transaction marker CLI failed: "
+                + empty_marker_cli.stderr[:8192].decode(
+                    "utf-8", errors="replace"
+                )
+            )
+        write_file(
+            empty_marker_path,
+            (empty_manifest_digest + "\n").encode("ascii"),
+            0o600,
+        )
+        require_rejected(
+            apt,
+            lambda: apt.verify_hook_marker(empty_manifest_path, empty_marker_path),
+            "stale marker for empty transaction",
+            "APT hook marker exists for an empty transaction",
+        )
     native_after = hashlib.sha256(native_status.read_bytes()).hexdigest()
     if native_after != native_before:
         raise SystemExit("APT hook fixture changed native dpkg status")

@@ -19,9 +19,12 @@ VERIFIER_PATH = SCRIPT_DIR / "verify-haptics-apt-transaction.py"
 HOOK_SOURCE = """#!/usr/bin/python3 -I
 import os
 import pathlib
+import sys
 fd_text = os.environ.get("APT_HOOK_INFO_FD", "")
 if fd_text != "21":
     raise SystemExit("unexpected APT hook descriptor")
+if len(sys.argv) != 3 or sys.argv[1] != "--capture":
+    raise SystemExit("unexpected APT hook arguments")
 remaining = 4 * 1024 * 1024 + 1
 chunks = []
 while remaining:
@@ -33,7 +36,7 @@ while remaining:
 raw = b"".join(chunks)
 if not raw or len(raw) > 4 * 1024 * 1024:
     raise SystemExit("invalid EIPP hook stream size")
-path = pathlib.Path(__EIPP_LOG__)
+path = pathlib.Path(sys.argv[2])
 descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
 try:
     os.write(descriptor, raw)
@@ -243,11 +246,13 @@ def run_disposable_canary(verifier, apt_account) -> None:
         eipp_log = work / "eipp-v3.log"
         hook = work / "capture-eipp.py"
         hook.write_text(
-            HOOK_SOURCE.replace("__EIPP_LOG__", repr(str(eipp_log))),
+            HOOK_SOURCE,
             encoding="ascii",
         )
         hook.chmod(0o755)
-        hook_command = str(hook)
+        hook_command = (
+            f"/usr/bin/python3 -I -B {hook} --capture {eipp_log}"
+        )
         apt_config.write_text(
             f'Dir::State::lists "{lists}";\n'
             f'Dir::State::status "{admin / "status"}";\n'
@@ -270,8 +275,8 @@ def run_disposable_canary(verifier, apt_account) -> None:
             f'DPkg::Options:: "--root={rootfs}";\n'
             f'DPkg::Options:: "--admindir={admin}";\n'
             f'DPkg::Pre-Install-Pkgs:: "{hook_command}";\n'
-            f'DPkg::Tools::options::{hook_command}::Version "3";\n'
-            f'DPkg::Tools::options::{hook_command}::InfoFD "21";\n',
+            'DPkg::Tools::options::/usr/bin/python3::Version "3";\n'
+            'DPkg::Tools::options::/usr/bin/python3::InfoFD "21";\n',
             encoding="ascii",
         )
         apt_config.chmod(0o600)
