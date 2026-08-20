@@ -69,9 +69,9 @@ state is removed after the transaction. Native dpkg must itself match the locked
 bootstrap version before package mutation. `/etc/dpkg/dpkg.cfg` is bound to the
 reviewed Ubuntu digest and ownership/mode/link contract, `dpkg.cfg.d` must be
 empty, and `/root/.dpkg.cfg` must not exist; appended native dpkg hooks or path
-filters therefore fail before apt update. The glibc 2.39 `.7` and
-OpenLDAP 2.6.7 packages that had
-already left that index are eight explicit compatibility records, each bound
+filters therefore fail before apt update. The glibc 2.39 `.8`,
+OpenLDAP 2.6.7, and systemd 255.4 `.17` packages that are absent from the
+primary snapshot are ten explicit compatibility records, each bound
 to one immutable Ubuntu snapshot URL, SHA-256, Package, Version and
 Architecture. Downloads remain private through verification, then the same
 verified inode is atomically exposed root-owned and read-only through an

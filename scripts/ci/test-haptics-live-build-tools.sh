@@ -40,20 +40,24 @@ trap 'exit 143' TERM
 /bin/bash -p "$INSTALLER" --self-test-apt-sandbox-log >/dev/null
 for transaction_gate in \
   --capture-system-state --verify-closure-plan --verify-host-plan \
-  --verify-state-transition --download-only --prepare-manifest \
+  --verify-state-transition --download-only --prepare-manifest-runtime-reference \
   --verify-marker --verify-post configure_private_apt_hook; do
   /usr/bin/grep -Fq -- "$transaction_gate" "$INSTALLER" || {
     echo "dependency installer omits transaction gate: $transaction_gate" >&2
     exit 1
   }
 done
+if /usr/bin/grep -Fq -- '  --prepare-manifest "$hook_command"' "$INSTALLER"; then
+  echo 'dependency installer still uses the cross-runner host-reference mode' >&2
+  exit 1
+fi
 install_count=$(/usr/bin/grep -Fc -- '"${apt_command[@]}" install -y' "$INSTALLER")
 [ "$install_count" -eq 1 ] || {
   echo "dependency installer must execute exactly one apt install transaction" >&2
   exit 1
 }
 download_line=$(/usr/bin/grep -nF -- '--download-only' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
-prepare_line=$(/usr/bin/grep -nF -- '--prepare-manifest' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
+prepare_line=$(/usr/bin/grep -nF -- '--prepare-manifest-runtime-reference' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
 configure_line=$(/usr/bin/grep -nF -- 'configure_private_apt_hook "$hook_command"' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
 install_line=$(/usr/bin/grep -nF -- '"${apt_command[@]}" install -y' "$INSTALLER" | /usr/bin/cut -d: -f1)
 marker_line=$(/usr/bin/grep -nF -- '--verify-marker' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)

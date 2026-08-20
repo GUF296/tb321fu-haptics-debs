@@ -4122,6 +4122,21 @@ def main() -> None:
         ),
     )
     modes.add_argument(
+        "--prepare-manifest-runtime-reference",
+        nargs=9,
+        metavar=(
+            "COMMAND",
+            "LOCK",
+            "PACKAGE_STATE",
+            "PLAN",
+            "DPKG_STATE",
+            "HOST_REFERENCE",
+            "APT_ARCHIVES",
+            "COMPAT_ARCHIVES",
+            "MANIFEST",
+        ),
+    )
+    modes.add_argument(
         "--prepare-manifest-disposable",
         nargs=12,
         metavar=(
@@ -4232,9 +4247,14 @@ def main() -> None:
             ) from exc
         print("HAPTICS_APT_POST_STATE=PASS")
         return
-    preparation = (
+    production_preparation = (
         arguments.prepare_manifest
         if arguments.prepare_manifest is not None
+        else arguments.prepare_manifest_runtime_reference
+    )
+    preparation = (
+        production_preparation
+        if production_preparation is not None
         else arguments.prepare_manifest_disposable
     )
     if preparation is not None:
@@ -4243,7 +4263,7 @@ def main() -> None:
             require_operation_deadline(
                 preparation_deadline, "APT transaction preparation"
             )
-            if arguments.prepare_manifest is not None:
+            if production_preparation is not None:
                 dpkg_admin = pathlib.Path("/var/lib/dpkg")
                 expected_uid = 0
                 expected_gid = 0

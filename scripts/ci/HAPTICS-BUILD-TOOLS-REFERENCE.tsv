@@ -1,7 +1,7 @@
 schema	tb321fu.haptics-build-tools/v2
 environment-policy	isolated-allowlist-v1
-environment-policy-sha256	75081abd54528aaa186c18cf8169c19bfc4e80cc1a67cc7859c585dfe8f9c850
-build-toolset-sha256	5ae27f2d873bfbe82afa7c15fd5fad7603205064a074470954f63c3e02ac5b3e
+environment-policy-sha256	4ff7d79a3d0f3513ccb2a58ee6ba68a066c5c75079b17235721be911cf7fcfb5
+build-toolset-sha256	07e29557d5e024451060ab9b1a16f7692fe7d57e5a0fbb868276aeb7cd7448cb
 tool	bash	/usr/bin/bash	/usr/bin/bash	bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1	GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)
 tool	dash	/usr/bin/dash	/usr/bin/dash	86d31f6fb799e91fa21bad341484564510ca287703a16e9e46c53338776f4f42	/usr/bin/dash: 0: Illegal option --
 tool	env	/usr/bin/env	/usr/bin/env	1490a663e7312c4347987b2e12d7d73950ed1e9a322449daf8e4836660396e31	env (GNU coreutils) 9.4
@@ -64,7 +64,7 @@ tool	gzip	/usr/bin/gzip	/usr/bin/gzip	afea077ce127d4fa9ad410d3066ba2b54dea19c0b4
 tool	xz	/usr/bin/xz	/usr/bin/xz	b5b163eb273291934556377ab883b4b2a5d4da50bd0dc0a91774ecc234ccd8d0	xz (XZ Utils) 5.4.5
 tool	sh	/usr/bin/sh	/usr/bin/dash	86d31f6fb799e91fa21bad341484564510ca287703a16e9e46c53338776f4f42	/usr/bin/sh: 0: Illegal option --
 tool	bc	/usr/bin/bc	/usr/bin/bc	d055e35065d469bdf17910df03250573b84497e03f8658e3828fd07b9607e313	bc 1.07.1
-tool	getconf	/usr/bin/getconf	/usr/bin/getconf	7b1b4ea8fe0165e85d040c5f700735e15a05fadadde3666f1d88fff74563f87d	getconf (Ubuntu GLIBC 2.39-0ubuntu8.7) 2.39
+tool	getconf	/usr/bin/getconf	/usr/bin/getconf	eb67cc617bc544d1b0149babb88a49cb6acebdf71c729825503c4289765f2297	getconf (Ubuntu GLIBC 2.39-0ubuntu8.8) 2.39
 tool	sha1sum	/usr/bin/sha1sum	/usr/bin/sha1sum	df669bd8d75ade53579fa20c5eef007c8ba43f898efbd8f74993810679d11dc0	sha1sum (GNU coreutils) 9.4
 tool	uname	/usr/bin/uname	/usr/bin/uname	ca548e23cdccdf65e6d15b9f181f94a51d817edb60e83cd7013fab0e2a18568f	uname (GNU coreutils) 9.4
 tool	head	/usr/bin/head	/usr/bin/head	f3e0bed1ad6f878e8f5518d4ed757357c6856f33bd553cb443003dc2f496723c	head (GNU coreutils) 9.4

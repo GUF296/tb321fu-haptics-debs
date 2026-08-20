@@ -28,7 +28,7 @@ PACKAGE_NAME = re.compile(r"[a-z0-9][a-z0-9+.-]{0,79}")
 PACKAGE_VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+:~\-]{0,159}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 MAX_LOCK_BYTES = 32768
-EXPECTED_LOCK_SHA256 = "a6acdcd26063bae02edd930e1d2ec46f23c9e072cfc842ea7ccfe5812352cc75"
+EXPECTED_LOCK_SHA256 = "7be88d7dcd9d7dc247fcad934b1723fb54157b3569577a999ffc7557dd5360ef"
 EXPECTED_PACKAGE_COUNT = 209
 EXPECTED_CLOSURE_COUNT = 100
 EXPECTED_ALTERNATIVES = {"awk": ("manual", "/usr/bin/gawk")}
@@ -77,44 +77,54 @@ ubuntu-keyring xz-utils zlib1g zstd
 """.split()))
 COMPAT_PACKAGES = (
     (
-        "libc-bin", "amd64", "2.39-0ubuntu8.7",
-        "https://snapshot.ubuntu.com/ubuntu/20260727T000000Z/pool/main/g/glibc/libc-bin_2.39-0ubuntu8.7_amd64.deb",
-        "38e3e603aeca8cbbaefce34eec6b8190f53939425bf2eb2c8a3956d0a947a630",
+        "libc-bin", "amd64", "2.39-0ubuntu8.8", "requested",
+        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc-bin_2.39-0ubuntu8.8_amd64.deb",
+        "64625a2e1b51e736c71f4916268c496278bbc789b1b189d1621607a33f455473",
     ),
     (
-        "libc-dev-bin", "amd64", "2.39-0ubuntu8.7",
-        "https://snapshot.ubuntu.com/ubuntu/20260727T000000Z/pool/main/g/glibc/libc-dev-bin_2.39-0ubuntu8.7_amd64.deb",
-        "83291a1d9b26262ac8f44a3bb188ce2cb796a0543134aae00e19db066c84dfdd",
+        "libc-dev-bin", "amd64", "2.39-0ubuntu8.8", "requested",
+        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc-dev-bin_2.39-0ubuntu8.8_amd64.deb",
+        "c894e5a5f137429657d09e853fbbb19d53fc164c60804c396cd43873b0b4f734",
     ),
     (
-        "libc-devtools", "amd64", "2.39-0ubuntu8.7",
-        "https://snapshot.ubuntu.com/ubuntu/20260727T000000Z/pool/main/g/glibc/libc-devtools_2.39-0ubuntu8.7_amd64.deb",
-        "24a808559d1505b99cb197cb16bc198a9afb595a9b412c772efaba5b1d061f2f",
+        "libc-devtools", "amd64", "2.39-0ubuntu8.8", "requested",
+        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc-devtools_2.39-0ubuntu8.8_amd64.deb",
+        "c0a2294cac9b422bdf38af709c0cce2b75b3ab09c7f48c6b880ed0d7870958a2",
     ),
     (
-        "libc6", "amd64", "2.39-0ubuntu8.7",
-        "https://snapshot.ubuntu.com/ubuntu/20260727T000000Z/pool/main/g/glibc/libc6_2.39-0ubuntu8.7_amd64.deb",
-        "955644e8bc2930a9bf8eea5e4c2237c8a118c1e2ac2845b993b6f7f35eefd293",
+        "libc6", "amd64", "2.39-0ubuntu8.8", "requested",
+        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc6_2.39-0ubuntu8.8_amd64.deb",
+        "3b8d5391b6b484a4c81fd000b6064885ad967ec3cb966bc57603f3fb3ebf0ed5",
     ),
     (
-        "libc6-dev", "amd64", "2.39-0ubuntu8.7",
-        "https://snapshot.ubuntu.com/ubuntu/20260727T000000Z/pool/main/g/glibc/libc6-dev_2.39-0ubuntu8.7_amd64.deb",
-        "bbf5a155039042634961a61276650631ee47b9e721f91f8dbb731b0bbe046df3",
+        "libc6-dev", "amd64", "2.39-0ubuntu8.8", "requested",
+        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc6-dev_2.39-0ubuntu8.8_amd64.deb",
+        "bb8741966e7c1d2e2c0b84bb311717a0908fb563d9b2247b7212710e3cd88b94",
     ),
     (
-        "libldap-common", "all", "2.6.7+dfsg-1~exp1ubuntu8.2",
+        "libldap-common", "all", "2.6.7+dfsg-1~exp1ubuntu8.2", "requested",
         "https://snapshot.ubuntu.com/ubuntu/20260201T000000Z/pool/main/o/openldap/libldap-common_2.6.7+dfsg-1~exp1ubuntu8.2_all.deb",
         "f1da79d8033ba0fe5e6167f27361c4619eb8822143ca65c0ac983565f57520bd",
     ),
     (
-        "libldap2", "amd64", "2.6.7+dfsg-1~exp1ubuntu8.2",
+        "libldap2", "amd64", "2.6.7+dfsg-1~exp1ubuntu8.2", "requested",
         "https://snapshot.ubuntu.com/ubuntu/20260201T000000Z/pool/main/o/openldap/libldap2_2.6.7+dfsg-1~exp1ubuntu8.2_amd64.deb",
         "17000967a1fae30c8dbb92b2183ec6e245c6d802aacf2c2945a20ee89298b8e9",
     ),
     (
-        "locales", "all", "2.39-0ubuntu8.7",
-        "https://snapshot.ubuntu.com/ubuntu/20260727T000000Z/pool/main/g/glibc/locales_2.39-0ubuntu8.7_all.deb",
-        "27e74084e2b33a05754e10a4c304ed0a559b3325098fa65b2930fc46e914aaaf",
+        "libsystemd0", "amd64", "255.4-1ubuntu8.17", "closure",
+        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/s/systemd/libsystemd0_255.4-1ubuntu8.17_amd64.deb",
+        "4776d2ac7e21efe2ae31f3f7955a7ccd97277225eecf36910a26faf4544979ae",
+    ),
+    (
+        "libudev1", "amd64", "255.4-1ubuntu8.17", "closure",
+        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/s/systemd/libudev1_255.4-1ubuntu8.17_amd64.deb",
+        "6efea3770f738db2fd43ebdaed3d91ef0cde8aa8387b4803080af473326ebdb0",
+    ),
+    (
+        "locales", "all", "2.39-0ubuntu8.8", "requested",
+        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/locales_2.39-0ubuntu8.8_all.deb",
+        "cdd2d347a357da6b9b1f2bd9e08c10a2a3a4686fad050791d30915d0ce0bb506",
     ),
 )
 BOOTSTRAP_PACKAGES = ("apt", "ca-certificates", "dpkg", "ubuntu-keyring")
@@ -2005,13 +2015,13 @@ def parse_lock(
     } != set(BOOTSTRAP_PACKAGES):
         raise PackageLockError("bootstrap package set differs from policy")
     expected_compat = {
-        (name, architecture): (version, url, digest)
-        for name, architecture, version, url, digest in COMPAT_PACKAGES
+        (name, architecture): (version, role, url, digest)
+        for name, architecture, version, role, url, digest in COMPAT_PACKAGES
     }
     actual_compat = {
-        identity: (record.version, record.url, record.digest)
+        identity: (record.version, record.role, record.url, record.digest)
         for identity, record in policy.packages.items()
-        if record.source == "compat" and record.role == "requested"
+        if record.source == "compat"
     }
     if actual_compat != expected_compat:
         raise PackageLockError("compatibility package set differs from policy")

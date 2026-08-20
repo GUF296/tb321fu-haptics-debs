@@ -648,7 +648,7 @@ mapfile -d '' -t package_arguments < <(
 mapfile -d '' -t compat_records < <(
   /usr/bin/python3 -I -B "$PACKAGE_VERIFIER" --emit-compat-records "$runtime_package_lock"
 )
-[ "${#compat_records[@]}" -eq 8 ] || {
+[ "${#compat_records[@]}" -eq 10 ] || {
   echo 'package lock emitted an unexpected compatibility-package count' >&2
   exit 1
 }
@@ -720,7 +720,7 @@ hook_command="/usr/bin/python3 -I -B $APT_TRANSACTION_VERIFIER --verify-hook $ho
     exit 1
   }
 /usr/bin/python3 -I -B "$APT_TRANSACTION_VERIFIER" \
-  --prepare-manifest "$hook_command" \
+  --prepare-manifest-runtime-reference "$hook_command" \
   "$private_package_lock" "$before_state" "$host_plan" \
   "$before_dpkg_state" "$private_host_reference" \
   "$archives" "$compat_dir" "$hook_manifest"

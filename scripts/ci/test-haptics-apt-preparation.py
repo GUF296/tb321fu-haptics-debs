@@ -121,6 +121,9 @@ class FakeDpkgVerifier:
         self.state = object()
         self.host = object()
         self.capture_count = 0
+        self.parsed_host_reference_count = 0
+        self.serialized_host_reference_count = 0
+        self.verified_host_count = 0
         self.verified_host = False
         self.verified_post = False
 
@@ -135,11 +138,13 @@ class FakeDpkgVerifier:
         return b"dpkg-state\n"
 
     def parse_host_reference_bytes(self, raw: bytes):
+        self.parsed_host_reference_count += 1
         if raw != b"host-reference\n":
             raise ValueError("wrong host reference")
         return self.host
 
     def verify_host_reference(self, state, reference) -> None:
+        self.verified_host_count += 1
         if state is not self.state or reference is not self.host:
             raise ValueError("host reference inputs differ")
         self.verified_host = True
@@ -150,6 +155,7 @@ class FakeDpkgVerifier:
         return self.host
 
     def serialize_host_reference(self, reference) -> bytes:
+        self.serialized_host_reference_count += 1
         if reference is not self.host:
             raise ValueError("wrong host reference object")
         return b"host-reference\n"
@@ -160,7 +166,10 @@ class FakeDpkgVerifier:
         return {}
 
     def capture_dpkg_state(self, admin, uid: int, gid: int):
-        if admin != pathlib.Path("/tmp/dpkg-admin") or (uid, gid) not in {
+        if admin not in {
+            pathlib.Path("/tmp/dpkg-admin"),
+            pathlib.Path("/var/lib/dpkg"),
+        } or (uid, gid) not in {
             (0, 0),
             (os.getuid(), os.getgid()),
         }:
@@ -1410,6 +1419,262 @@ def verify_whole_preparation_deadline(
         verifier.load_package_verifier = original_package_loader
 
 
+def verify_runtime_reference_mode(
+    verifier,
+    archive_path: pathlib.Path,
+    archives: pathlib.Path,
+    compat: pathlib.Path,
+    private: pathlib.Path,
+    hook_command: str,
+    cli_archive,
+) -> None:
+    host_reference_path = private / "runtime-host-reference.tsv"
+    manifest_path = private / "runtime-manifest.tsv"
+    publication_sentinel = "runtime reference fixture reached manifest publication"
+
+    def run_case(mode: str, host_reference_raw: bytes, configure=None):
+        package = FakePackageVerifier()
+        dpkg = FakeDpkgVerifier()
+        if configure is not None:
+            configure(dpkg)
+        evidence = {
+            private / "lock.tsv": b"lock\n",
+            private / "package-state.tsv": b"package-state\n",
+            private / "host.plan": b"plan\n",
+            private / "dpkg-state.tsv": b"dpkg-state\n",
+            host_reference_path: host_reference_raw,
+            pathlib.Path("/var/lib/dpkg/status"): b"status\n",
+        }
+        archive_capture_count = 0
+        enumeration_count = 0
+        original_argv = sys.argv
+        original_package_loader = verifier.load_package_verifier
+        original_dpkg_loader = verifier.load_dpkg_state_verifier
+        original_enumerate = verifier.enumerate_archive_paths
+        original_archive_capture = verifier.capture_deb_archive
+        original_manifest_writer = verifier.write_private_manifest
+        original_read_regular = dpkg.read_regular
+
+        def read_regular(path, mode_bits, uid, gid, maximum, label):
+            raw = evidence.get(path)
+            expected_mode = (
+                0o644
+                if path == pathlib.Path("/var/lib/dpkg/status")
+                else 0o600
+            )
+            if (
+                raw is None
+                or mode_bits != expected_mode
+                or (uid, gid) != (0, 0)
+                or len(raw) > maximum
+                or not label
+            ):
+                raise ValueError("wrong runtime-reference evidence read")
+            return raw
+
+        def enumerate_archives(directories, uid, gid, **kwargs):
+            nonlocal enumeration_count
+            if (
+                directories != (archives, compat)
+                or (uid, gid) != (0, 0)
+                or not isinstance(kwargs.get("deadline"), float)
+            ):
+                raise ValueError("wrong runtime-reference archive enumeration")
+            enumeration_count += 1
+            return (archive_path,)
+
+        def capture_archive(path, uid, gid, **kwargs):
+            nonlocal archive_capture_count
+            if (
+                path != archive_path
+                or (uid, gid) != (0, 0)
+                or not isinstance(kwargs.get("deadline"), float)
+            ):
+                raise ValueError("wrong runtime-reference archive capture")
+            archive_capture_count += 1
+            return cli_archive
+
+        def refuse_manifest_publication(path, raw, uid, gid, **kwargs):
+            if (
+                path != manifest_path
+                or not raw
+                or (uid, gid) != (0, 0)
+                or not kwargs.get("retain_ownership")
+                or kwargs.get("ownership_slot") is None
+                or not isinstance(kwargs.get("deadline"), float)
+            ):
+                raise verifier.AptTransactionError(
+                    "runtime reference fixture received invalid publication inputs"
+                )
+            raise verifier.AptTransactionError(publication_sentinel)
+
+        dpkg.read_regular = read_regular
+        verifier.load_package_verifier = lambda: package
+        verifier.load_dpkg_state_verifier = lambda: dpkg
+        verifier.enumerate_archive_paths = enumerate_archives
+        verifier.capture_deb_archive = capture_archive
+        verifier.write_private_manifest = refuse_manifest_publication
+        sys.argv = [
+            str(MODULE_PATH),
+            mode,
+            hook_command,
+            str(private / "lock.tsv"),
+            str(private / "package-state.tsv"),
+            str(private / "host.plan"),
+            str(private / "dpkg-state.tsv"),
+            str(host_reference_path),
+            str(archives),
+            str(compat),
+            str(manifest_path),
+        ]
+        output = io.StringIO()
+        caught = None
+        try:
+            with contextlib.redirect_stdout(output):
+                verifier.main()
+        except SystemExit as exc:
+            caught = exc
+        finally:
+            sys.argv = original_argv
+            dpkg.read_regular = original_read_regular
+            verifier.write_private_manifest = original_manifest_writer
+            verifier.capture_deb_archive = original_archive_capture
+            verifier.enumerate_archive_paths = original_enumerate
+            verifier.load_dpkg_state_verifier = original_dpkg_loader
+            verifier.load_package_verifier = original_package_loader
+        if caught is None or output.getvalue():
+            raise SystemExit(
+                f"APT runtime-reference fixture did not fail closed: mode={mode}"
+            )
+        return (
+            str(caught),
+            package,
+            dpkg,
+            archive_capture_count,
+            enumeration_count,
+        )
+
+    runtime_reference = b"host-reference\n"
+    if (
+        hashlib.sha256(runtime_reference).hexdigest()
+        == verifier.EXPECTED_HOST_REFERENCE_SHA256
+    ):
+        raise SystemExit("APT runtime-reference fixture accidentally uses the trust anchor")
+    message, package, dpkg, archive_count, enumeration_count = run_case(
+        "--prepare-manifest", runtime_reference
+    )
+    if (
+        "dpkg host reference differs from the committed trust anchor" not in message
+        or package.capture_count
+        or dpkg.parsed_host_reference_count
+        or dpkg.capture_count
+        or archive_count
+        or enumeration_count
+    ):
+        raise SystemExit("APT committed-reference mode no longer enforces its trust anchor")
+
+    message, package, dpkg, archive_count, enumeration_count = run_case(
+        "--prepare-manifest-runtime-reference", runtime_reference
+    )
+    if (
+        publication_sentinel not in message
+        or not package.verified_plan
+        or package.capture_count != 2
+        or dpkg.parsed_host_reference_count != 1
+        or dpkg.verified_host_count != 2
+        or dpkg.serialized_host_reference_count != 2
+        or dpkg.capture_count != 2
+        or archive_count != 1
+        or enumeration_count != 2
+    ):
+        raise SystemExit(
+            "APT runtime-reference mode skipped parsing, live comparison, or race checks"
+        )
+
+    message, package, dpkg, archive_count, _ = run_case(
+        "--prepare-manifest-runtime-reference", b"host-reference \n"
+    )
+    if (
+        "cannot parse APT transaction preparation evidence: wrong host reference"
+        not in message
+        or dpkg.parsed_host_reference_count != 1
+        or dpkg.capture_count
+        or package.capture_count
+        or archive_count
+    ):
+        raise SystemExit("APT runtime-reference mode accepted noncanonical reference bytes")
+
+    def reject_live_reference(dpkg) -> None:
+        def reject(state, reference):
+            dpkg.verified_host_count += 1
+            if state is not dpkg.state or reference is not dpkg.host:
+                raise ValueError("runtime host comparison received different objects")
+            raise ValueError("injected live host-reference mismatch")
+
+        dpkg.verify_host_reference = reject
+
+    message, _, dpkg, archive_count, _ = run_case(
+        "--prepare-manifest-runtime-reference",
+        runtime_reference,
+        reject_live_reference,
+    )
+    if (
+        "cannot verify dpkg preparation state: injected live host-reference mismatch"
+        not in message
+        or dpkg.verified_host_count != 1
+        or dpkg.capture_count != 1
+        or archive_count
+    ):
+        raise SystemExit("APT runtime-reference mode accepted live host-state drift")
+
+    def drift_live_reference_bytes(dpkg) -> None:
+        def serialize(reference):
+            dpkg.serialized_host_reference_count += 1
+            if reference is not dpkg.host:
+                raise ValueError("wrong runtime host-reference object")
+            return b"host-reference-drift\n"
+
+        dpkg.serialize_host_reference = serialize
+
+    message, _, dpkg, archive_count, _ = run_case(
+        "--prepare-manifest-runtime-reference",
+        runtime_reference,
+        drift_live_reference_bytes,
+    )
+    if (
+        "dpkg host reference bytes differ from the reviewed reference" not in message
+        or dpkg.verified_host_count != 1
+        or dpkg.serialized_host_reference_count != 1
+        or dpkg.capture_count != 1
+        or archive_count
+    ):
+        raise SystemExit("APT runtime-reference mode accepted non-exact live bytes")
+
+    def drift_second_live_capture(dpkg) -> None:
+        original_capture = dpkg.capture_dpkg_state
+
+        def capture(admin, uid, gid):
+            state = original_capture(admin, uid, gid)
+            return state if dpkg.capture_count == 1 else object()
+
+        dpkg.capture_dpkg_state = capture
+
+    message, package, dpkg, archive_count, enumeration_count = run_case(
+        "--prepare-manifest-runtime-reference",
+        runtime_reference,
+        drift_second_live_capture,
+    )
+    if (
+        "cannot verify dpkg preparation state: dpkg state drift" not in message
+        or package.capture_count != 2
+        or dpkg.capture_count != 2
+        or dpkg.verified_host_count != 1
+        or archive_count != 1
+        or enumeration_count != 1
+    ):
+        raise SystemExit("APT runtime-reference mode accepted a preparation race")
+
+
 def main() -> None:
     verifier = load_module()
     committed_host_reference = SCRIPT_DIR / "HAPTICS-DPKG-HOST-REFERENCE.tsv"
@@ -1790,6 +2055,15 @@ def main() -> None:
         hook_command = (
             f"/usr/bin/python3 -I -B {MODULE_PATH} --verify-hook "
             f"{prepared_path} {marker_path}"
+        )
+        verify_runtime_reference_mode(
+            verifier,
+            first,
+            archives,
+            compat,
+            private,
+            hook_command,
+            cli_archive,
         )
         verify_whole_preparation_deadline(
             verifier,

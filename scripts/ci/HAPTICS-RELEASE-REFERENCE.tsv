@@ -9,8 +9,8 @@ kernel-bundle-metadata-url	https://github.com/GUF296/ubuntu-y700-build-ci/releas
 kernel-bundle-metadata-sha256	9b11d12fab79eb4f10acb7eddf9c5e11e3f4242f2877658627ff3b11dd231998
 kernel-sdk-manifest-url	https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-570b90203d97-20260729.4/KERNEL-SDK-MANIFEST.tsv
 kernel-toolchain-manifest-url	https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-570b90203d97-20260729.4/KERNEL-TOOLCHAIN.tsv
-build-toolset-sha256	5ae27f2d873bfbe82afa7c15fd5fad7603205064a074470954f63c3e02ac5b3e
-build-tools-manifest-sha256	b8777a6695127eca3b946795acacc5b4b2ece4f72172dbdf9adaed1860ab16c1
+build-toolset-sha256	07e29557d5e024451060ab9b1a16f7692fe7d57e5a0fbb868276aeb7cd7448cb
+build-tools-manifest-sha256	dd1b2e5fdcd7d469e3fff91a0b89347c88de3619164f1f09498ba2f4830c6d8c
 aw86937-driver-sha256	31342e17cb20c73755623542fdac4fa1e185cb2b123d798f2f7b8024a630d457
 aw86937-build-source-sha256	576e57df19122db040a60b3ae4a4bd03b452b6835e2c16cebf9823a2ac0f69c7
 haptic-ram-firmware-sha256	64e86edba26029de2954e6ea23315b44ad6d5f53c1782be7eeef5d58f97d6ff1
