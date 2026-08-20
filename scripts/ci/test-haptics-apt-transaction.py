@@ -445,6 +445,49 @@ def main() -> None:
         raise SystemExit(
             f"expected action builder changed version directions: {unpack_changes!r}"
         )
+    noop_archive = verifier.ArchiveRecord(
+        "/tmp/private/compat-noop_1.0-1_amd64.deb",
+        1,
+        5,
+        0o644,
+        0,
+        0,
+        1,
+        126,
+        "6" * 64,
+        "compat-noop",
+        "1.0-1",
+        "amd64",
+        "no",
+    )
+    noop_actions = verifier.build_expected_actions(
+        (verifier.PlannedChange("example", "amd64", None, "1.0-1"),),
+        {
+            ("compat-noop", "amd64"): (
+                "1.0-1",
+                "install ok installed",
+                "no",
+            )
+        },
+        (archive_record, noop_archive),
+        allowed_noop_archives=frozenset({("compat-noop", "amd64")}),
+    )
+    if noop_actions != document.actions:
+        raise SystemExit(
+            "action builder failed to exclude an already-installed compat archive"
+        )
+    require_rejected(
+        verifier,
+        lambda: verifier.build_expected_actions(
+            (verifier.PlannedChange("example", "amd64", None, "1.0-1"),),
+            {},
+            (archive_record, noop_archive),
+            allowed_noop_archives=frozenset({("compat-noop", "amd64")}),
+        ),
+        "compat archive without matching installed package",
+        "no-op compatibility archive differs from installed status",
+        exact=True,
+    )
     expected_transaction = verifier.ExpectedTransaction(
         "1" * 64,
         "2" * 64,

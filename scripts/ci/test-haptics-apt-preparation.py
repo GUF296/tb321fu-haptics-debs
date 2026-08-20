@@ -69,6 +69,9 @@ class FakePolicy:
     def expected_versions(self):
         return {("example", "amd64"): "1.0-1"}
 
+    def compatibility_identities(self):
+        return frozenset()
+
 
 class FakePackageVerifier:
     def __init__(self) -> None:

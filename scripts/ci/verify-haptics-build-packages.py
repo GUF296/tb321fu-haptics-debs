@@ -187,6 +187,13 @@ class LockPolicy:
     def expected_versions(self) -> dict[tuple[str, str], str]:
         return {identity: record.version for identity, record in self.packages.items()}
 
+    def compatibility_identities(self) -> frozenset[tuple[str, str]]:
+        return frozenset(
+            identity
+            for identity, record in self.packages.items()
+            if record.source == "compat"
+        )
+
 
 def parse_lock_bytes(raw: bytes) -> LockPolicy:
     if not raw or len(raw) > MAX_LOCK_BYTES:

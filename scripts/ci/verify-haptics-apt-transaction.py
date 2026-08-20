@@ -1454,14 +1454,24 @@ def build_expected_actions(
     installed: dict[tuple[str, str], tuple[str, str, str]],
     archives: tuple[ArchiveRecord, ...],
     *,
+    allowed_noop_archives: frozenset[tuple[str, str]] = frozenset(),
     deadline: float | None = None,
 ) -> tuple[PackageAction, ...]:
     if (
         type(changes) is not tuple
         or type(installed) is not dict
         or type(archives) is not tuple
+        or type(allowed_noop_archives) is not frozenset
         or any(type(change) is not PlannedChange for change in changes)
         or any(type(record) is not ArchiveRecord for record in archives)
+        or any(
+            type(identity) is not tuple
+            or len(identity) != 2
+            or any(type(field) is not str for field in identity)
+            or not PACKAGE_NAME.fullmatch(identity[0])
+            or not ARCHITECTURE.fullmatch(identity[1])
+            for identity in allowed_noop_archives
+        )
         or any(
             type(identity) is not tuple
             or len(identity) != 2
@@ -1487,10 +1497,31 @@ def build_expected_actions(
     archive_map = {
         (record.package, record.architecture): record for record in archives
     }
-    if len(archive_map) != len(archives) or set(archive_map) != {
-        change_key(change) for change in changes
-    }:
+    if len(archive_map) != len(archives):
         raise AptTransactionError("planned package changes differ from archive closure")
+    change_identities = {change_key(change) for change in changes}
+    archive_identities = set(archive_map)
+    if not change_identities <= archive_identities:
+        raise AptTransactionError("planned package changes differ from archive closure")
+    noop_identities = archive_identities - change_identities
+    if not noop_identities <= allowed_noop_archives:
+        raise AptTransactionError("planned package changes differ from archive closure")
+    for identity in sorted(noop_identities):
+        installed_record = installed.get(identity)
+        archive = archive_map[identity]
+        if (
+            installed_record is None
+            or installed_record[0] != archive.version
+            or installed_record[2] != archive.multiarch
+        ):
+            raise AptTransactionError(
+                "no-op compatibility archive differs from installed status"
+            )
+    action_archives = tuple(
+        record
+        for record in archives
+        if (record.package, record.architecture) in change_identities
+    )
     actions: list[PackageAction] = []
     for change in changes:
         identity = change_key(change)
@@ -1548,7 +1579,7 @@ def build_expected_actions(
         actions.append(PackageAction(*base, "**CONFIGURE**"))
     result = tuple(actions)
     verify_eipp_actions(result, result)
-    verify_archive_actions(archives, result)
+    verify_archive_actions(action_archives, result)
     return result
 
 
@@ -1603,11 +1634,11 @@ def prepare_expected_transaction(
         policy = package.parse_lock_bytes(package_lock_raw)
         expected_package_state = package.parse_system_state_bytes(package_state_raw)
         plan = package.parse_apt_plan_bytes(host_plan_raw)
-        package.verify_host_plan(
-            policy.expected_versions(), expected_package_state, plan
-        )
+        expected_versions = policy.expected_versions()
+        package.verify_host_plan(expected_versions, expected_package_state, plan)
         expected_dpkg_state = dpkg.parse_dpkg_state_bytes(dpkg_state_raw)
         expected_host_reference = dpkg.parse_host_reference_bytes(host_reference_raw)
+        allowed_noop_archives = policy.compatibility_identities()
         installed_identities = dpkg.parse_status_identities(status_raw)
     except ValueError as exc:
         raise AptTransactionError(
@@ -1682,13 +1713,50 @@ def prepare_expected_transaction(
                 "expected transaction archive set exceeds its aggregate size bound"
             )
         archive_records.append(record)
-    archives = tuple(archive_records)
+    all_archives = tuple(archive_records)
+    # Compatibility packages are fetched into a separate directory even when
+    # the runner already has the locked version installed. APT correctly omits
+    # those no-op identities from its host plan, so the downloaded set can be
+    # a strict superset of the transaction closure. Keep validating every
+    # fetched DEB against the lock, but bind only actual plan changes to the
+    # EIPP manifest and subsequent hook checks.
+    archive_map = {
+        (archive.package, archive.architecture): archive
+        for archive in all_archives
+    }
+    if len(archive_map) != len(all_archives):
+        raise AptTransactionError("APT archive closure contains duplicate identities")
+    changed_identities = {
+        (change.package, change.architecture) for change in changes
+    }
+    for archive in all_archives:
+        identity = (archive.package, archive.architecture)
+        locked_version = expected_versions.get(identity)
+        if locked_version is None or locked_version != archive.version:
+            raise AptTransactionError(
+                "APT archive closure contains an identity outside the package lock"
+            )
+        if identity not in allowed_noop_archives and identity not in changed_identities:
+            raise AptTransactionError(
+                "APT archive closure contains an unexpected no-op repository package"
+            )
+    if set(archive_map) & changed_identities != changed_identities:
+        raise AptTransactionError("APT archive closure is missing a planned package")
     actions = build_expected_actions(
         changes,
         installed,
-        archives,
+        all_archives,
+        allowed_noop_archives=allowed_noop_archives,
         deadline=deadline,
     )
+    action_identities = {(change.package, change.architecture) for change in changes}
+    manifest_archives = tuple(
+        record
+        for record in all_archives
+        if (record.package, record.architecture) in action_identities
+    )
+    if len(manifest_archives) * 2 != len(actions):
+        raise AptTransactionError("APT archive/action closure is not canonical")
     require_operation_deadline(deadline, "APT transaction preparation")
     verify_live_package_state()
     verify_live_dpkg_state()
@@ -1698,7 +1766,7 @@ def prepare_expected_transaction(
         hashlib.sha256(host_reference_raw).hexdigest(),
         expected_hook_configuration(hook_command),
         actions,
-        archives,
+        manifest_archives,
     )
 
 
