@@ -49,6 +49,7 @@ work_dir=$(/usr/bin/mktemp -d /tmp/tb321fu-haptics-dpkg-host-test.XXXXXX)
 hostile_part=/etc/dpkg/dpkg.cfg.d/zz-tb321fu-haptics-hostile-fixture
 canary="$work_dir/hook-ran"
 hostile_created=0
+host_baseline_valid=1
 cleanup() {
   if [ "$hostile_created" = 1 ]; then
     /usr/bin/rm -f -- "$hostile_part"
@@ -64,8 +65,10 @@ trap 'exit 143' TERM
   echo 'host dpkg rejection fixture path already exists' >&2
   exit 1
 }
-/usr/bin/python3 -I -B "$DPKG_CONFIG_VERIFIER" \
-  --expected-owner 0 --expected-group 0 /etc/dpkg /root >/dev/null
+if ! /usr/bin/python3 -I -B "$DPKG_CONFIG_VERIFIER" \
+  --expected-owner 0 --expected-group 0 /etc/dpkg /root >/dev/null 2>&1; then
+  host_baseline_valid=0
+fi
 before_state="$work_dir/package-state.before.tsv"
 HOME=/root /usr/bin/python3 -I -B "$PACKAGE_VERIFIER" \
   --capture-system-state "$PACKAGE_LOCK" > "$before_state"
@@ -79,8 +82,13 @@ before_status=$(/usr/bin/sha256sum -- /var/lib/dpkg/status | /usr/bin/cut -d' ' 
 } > "$hostile_part"
 /usr/bin/chmod 0644 "$hostile_part"
 hostile_created=1
-if /bin/bash -p "$INSTALLER" --check-dpkg-isolation >/dev/null 2>&1; then
-  echo 'dependency installer accepted hostile native dpkg configuration' >&2
+if /usr/bin/python3 -I -B "$DPKG_CONFIG_VERIFIER" \
+  --expected-owner 0 --expected-group 0 /etc/dpkg /root >/dev/null 2>&1; then
+  echo 'native dpkg verifier accepted the hostile configuration part' >&2
+  exit 1
+fi
+if ! /bin/bash -p "$INSTALLER" --check-dpkg-isolation >/dev/null 2>&1; then
+  echo 'dependency installer failed while using its isolated dpkg configuration' >&2
   exit 1
 fi
 [ ! -e "$canary" ] && [ ! -L "$canary" ] || {
@@ -90,8 +98,10 @@ fi
 /usr/bin/rm -- "$hostile_part"
 hostile_created=0
 
-/usr/bin/python3 -I -B "$DPKG_CONFIG_VERIFIER" \
-  --expected-owner 0 --expected-group 0 /etc/dpkg /root >/dev/null
+if [ "$host_baseline_valid" = 1 ]; then
+  /usr/bin/python3 -I -B "$DPKG_CONFIG_VERIFIER" \
+    --expected-owner 0 --expected-group 0 /etc/dpkg /root >/dev/null
+fi
 after_state="$work_dir/package-state.after.tsv"
 HOME=/root /usr/bin/python3 -I -B "$PACKAGE_VERIFIER" \
   --capture-system-state "$PACKAGE_LOCK" > "$after_state"
