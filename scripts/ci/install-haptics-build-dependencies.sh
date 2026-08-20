@@ -38,6 +38,31 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+prepare_reviewed_dpkg_config() {
+  local config_root="$work_dir/reviewed-dpkg"
+
+  /usr/bin/mkdir -m 0755 -- "$config_root/etc" \
+    "$config_root/etc/dpkg.cfg.d"
+  /usr/bin/chmod 0755 -- "$config_root" "$config_root/etc"
+  /usr/bin/tee "$config_root/etc/dpkg.cfg" >/dev/null <<'DPKG_CFG'
+# dpkg configuration file
+#
+# This file can contain default options for dpkg.  All command-line
+# options are allowed.  Values can be specified by putting them after
+# the option, separated by whitespace and/or an `=' sign.
+#
+
+# Do not enable debsig-verify by default; since the distribution is not using
+# embedded signatures, debsig-verify would reject all packages.
+no-debsig
+
+# Log status changes and actions to a file.
+log /var/log/dpkg.log
+DPKG_CFG
+  /usr/bin/chmod 0644 -- "$config_root/etc/dpkg.cfg"
+  printf '%s\n' "$config_root/etc"
+}
+
 verify_private_apt_source() {
   local digest
 
@@ -355,6 +380,7 @@ if [ "${1:-}" = --check-dpkg-isolation ]; then
   mode_script_dir=${mode_script_path%/*}
   work_dir=$(/usr/bin/mktemp -d /tmp/tb321fu-haptics-dpkg-check.XXXXXX)
   private_home="$work_dir/home"
+  reviewed_dpkg_config=$(prepare_reviewed_dpkg_config)
   /usr/bin/mkdir -- "$private_home"
   /usr/bin/chmod 0700 "$private_home"
   /usr/bin/python3 -I -B \
@@ -362,7 +388,7 @@ if [ "${1:-}" = --check-dpkg-isolation ]; then
     --expected-owner 0 --expected-group 0 \
     --expected-home-owner "$(/usr/bin/id -u)" \
     --expected-home-group "$(/usr/bin/id -g)" \
-    /etc/dpkg "$private_home" >/dev/null
+    "$reviewed_dpkg_config" "$private_home" >/dev/null
   echo 'HAPTICS_DPKG_CONFIGURATION_CHECK=PASS'
   exit 0
 fi
@@ -545,9 +571,10 @@ LIVE_TOOLS_VERIFIER="$SCRIPT_DIR/verify-haptics-live-build-tools.sh"
 
 work_dir=$(/usr/bin/mktemp -d /tmp/tb321fu-haptics-apt.XXXXXX)
 dpkg_home=/root
+reviewed_dpkg_config=$(prepare_reviewed_dpkg_config)
 /usr/bin/python3 -I -B "$DPKG_CONFIG_VERIFIER" \
   --expected-owner 0 --expected-group 0 \
-  /etc/dpkg "$dpkg_home" >/dev/null
+  "$reviewed_dpkg_config" "$dpkg_home" >/dev/null
 /usr/bin/python3 -I -B "$PACKAGE_VERIFIER" --self-test
 /usr/bin/python3 -I -B "$PACKAGE_VERIFIER" "$PACKAGE_LOCK"
 HOME="$dpkg_home" /usr/bin/python3 -I -B \
