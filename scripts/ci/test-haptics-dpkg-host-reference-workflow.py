@@ -27,8 +27,7 @@ CAPTURE_RUN = "\n".join(
         "sudo python3 -I -B scripts/ci/verify-haptics-dpkg-state.py \\",
         "  --verify-host-reference /var/lib/dpkg 0 0 \"$reference\"",
         "sudo chown \"$(id -u):$(id -g)\" \"$reference\"",
-        "sha256sum -- \"$reference\" | \\",
-        "  sed 's#  .*#  HAPTICS-DPKG-HOST-REFERENCE.tsv#' > \"$checksum\"",
+        "sha256sum -- \"$reference\" > \"$checksum\"",
         "chmod 0600 \"$checksum\"",
         "sha256sum -c -- \"$checksum\"",
     )
