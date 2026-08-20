@@ -419,6 +419,33 @@ case "$FAKE_CURL_MODE" in
   corrupt)
     cp -- "$FAKE_CURL_WRONG_PAYLOAD" "$output"
     ;;
+  success)
+    cp -- "$FAKE_CURL_PAYLOAD" "$output"
+    ;;
+  too-large)
+    cp -- "$FAKE_CURL_PAYLOAD" "$output"
+    exit 63
+    ;;
+  too-large-empty)
+    exit 63
+    ;;
+  too-large-error)
+    cp -- "$FAKE_CURL_PAYLOAD" "$output"
+    exit 92
+    ;;
+  resume-overrun)
+    case "$count" in
+      1)
+        head -c 8 -- "$FAKE_CURL_PAYLOAD" > "$output"
+        exit 92
+        ;;
+      2)
+        tail -c +9 -- "$FAKE_CURL_PAYLOAD" >> "$output"
+        exit 92
+        ;;
+      *) exit 9 ;;
+    esac
+    ;;
   *) exit 8 ;;
 esac
 SH
@@ -511,6 +538,126 @@ if compgen -G "$download_fixture/rejected.part.*" >/dev/null; then
   fail 'wrong-digest HTTPS payload left a partial file behind'
 fi
 
+require_failure 'download exceeds 8 bytes' env \
+  CI_CURL_BIN="$download_fixture/curl" \
+  FAKE_CURL_ARGS="$download_fixture/curl-too-large.args" \
+  FAKE_CURL_COUNT="$download_fixture/curl-too-large.count" \
+  FAKE_CURL_MODE=too-large \
+  FAKE_CURL_PAYLOAD="$download_fixture/payload" \
+  FAKE_CURL_WRONG_PAYLOAD="$download_fixture/wrong-payload" \
+  bash -c '. "$1"; ci_download "$2" "$3" "$4" "$5"' _ \
+  "$SCRIPT_DIR/common.sh" \
+  https://example.invalid/KERNEL-TOOLCHAIN.tsv \
+  "$download_fixture/too-large" \
+  "$download_sha256" \
+  8
+[ "$(cat "$download_fixture/curl-too-large.count")" = 1 ] ||
+  fail 'oversized metadata download was retried'
+grep -Fxq -- '--max-filesize' "$download_fixture/curl-too-large.args.1" ||
+  fail 'bounded metadata curl invocation omitted --max-filesize'
+awk 'previous == "--max-filesize" && $0 == "8" { found = 1 } { previous = $0 } END { exit found ? 0 : 1 }' \
+  "$download_fixture/curl-too-large.args.1" ||
+  fail 'bounded metadata curl invocation used the wrong maximum'
+if compgen -G "$download_fixture/too-large.part.*" >/dev/null; then
+  fail 'oversized metadata download left a partial file behind'
+fi
+
+require_failure 'download exceeds 8 bytes' env \
+  CI_CURL_BIN="$download_fixture/curl" \
+  FAKE_CURL_ARGS="$download_fixture/curl-too-large-error.args" \
+  FAKE_CURL_COUNT="$download_fixture/curl-too-large-error.count" \
+  FAKE_CURL_MODE=too-large-error \
+  FAKE_CURL_PAYLOAD="$download_fixture/payload" \
+  FAKE_CURL_WRONG_PAYLOAD="$download_fixture/wrong-payload" \
+  bash -c '. "$1"; ci_download "$2" "$3" "$4" "$5"' _ \
+  "$SCRIPT_DIR/common.sh" \
+  https://example.invalid/KERNEL-TOOLCHAIN.tsv \
+  "$download_fixture/too-large-error" \
+  "$download_sha256" \
+  8
+[ "$(cat "$download_fixture/curl-too-large-error.count")" = 1 ] ||
+  fail 'oversized metadata with a transport error was retried'
+awk 'previous == "--max-filesize" && $0 == "8" { found = 1 } { previous = $0 } END { exit found ? 0 : 1 }' \
+  "$download_fixture/curl-too-large-error.args.1" ||
+  fail 'errored bounded metadata curl invocation used the wrong maximum'
+if compgen -G "$download_fixture/too-large-error.part.*" >/dev/null; then
+  fail 'oversized errored metadata download left a partial file behind'
+fi
+
+printf '12345678' > "$download_fixture/exact-limit-payload"
+exact_limit_sha256=$(sha256sum "$download_fixture/exact-limit-payload" | awk '{ print $1 }')
+CI_CURL_BIN="$download_fixture/curl" \
+FAKE_CURL_ARGS="$download_fixture/curl-exact-limit.args" \
+FAKE_CURL_COUNT="$download_fixture/curl-exact-limit.count" \
+FAKE_CURL_MODE=success \
+FAKE_CURL_PAYLOAD="$download_fixture/exact-limit-payload" \
+FAKE_CURL_WRONG_PAYLOAD="$download_fixture/wrong-payload" \
+  ci_download https://example.invalid/KERNEL-TOOLCHAIN.tsv \
+    "$download_fixture/exact-limit" "$exact_limit_sha256" 8
+cmp -s "$download_fixture/exact-limit-payload" "$download_fixture/exact-limit" ||
+  fail 'exact-limit metadata download was not promoted'
+awk 'previous == "--max-filesize" && $0 == "8" { found = 1 } { previous = $0 } END { exit found ? 0 : 1 }' \
+  "$download_fixture/curl-exact-limit.args.1" ||
+  fail 'exact-limit curl invocation omitted the streaming size cap'
+
+require_failure 'download exceeds 8 bytes' env \
+  CI_CURL_BIN="$download_fixture/curl" \
+  FAKE_CURL_ARGS="$download_fixture/curl-oversized-success.args" \
+  FAKE_CURL_COUNT="$download_fixture/curl-oversized-success.count" \
+  FAKE_CURL_MODE=success \
+  FAKE_CURL_PAYLOAD="$download_fixture/payload" \
+  FAKE_CURL_WRONG_PAYLOAD="$download_fixture/wrong-payload" \
+  bash -c '. "$1"; ci_download "$2" "$3" "$4" "$5"' _ \
+  "$SCRIPT_DIR/common.sh" \
+  https://example.invalid/KERNEL-TOOLCHAIN.tsv \
+  "$download_fixture/oversized-success" \
+  "$download_sha256" \
+  8
+[ "$(cat "$download_fixture/curl-oversized-success.count")" = 1 ] ||
+  fail 'successful oversized metadata transfer was retried'
+
+require_failure 'download exceeds 8 bytes' env \
+  CI_CURL_BIN="$download_fixture/curl" \
+  FAKE_CURL_ARGS="$download_fixture/curl-too-large-empty.args" \
+  FAKE_CURL_COUNT="$download_fixture/curl-too-large-empty.count" \
+  FAKE_CURL_MODE=too-large-empty \
+  FAKE_CURL_PAYLOAD="$download_fixture/payload" \
+  FAKE_CURL_WRONG_PAYLOAD="$download_fixture/wrong-payload" \
+  bash -c '. "$1"; ci_download "$2" "$3" "$4" "$5"' _ \
+  "$SCRIPT_DIR/common.sh" \
+  https://example.invalid/KERNEL-TOOLCHAIN.tsv \
+  "$download_fixture/too-large-empty" \
+  "$download_sha256" \
+  8
+[ "$(cat "$download_fixture/curl-too-large-empty.count")" = 1 ] ||
+  fail 'exit-63 metadata download without a partial was retried'
+
+require_failure 'download exceeds 8 bytes' env \
+  CI_CURL_BIN="$download_fixture/curl" \
+  FAKE_CURL_ARGS="$download_fixture/curl-resume-overrun.args" \
+  FAKE_CURL_COUNT="$download_fixture/curl-resume-overrun.count" \
+  FAKE_CURL_MODE=resume-overrun \
+  FAKE_CURL_PAYLOAD="$download_fixture/payload" \
+  FAKE_CURL_WRONG_PAYLOAD="$download_fixture/wrong-payload" \
+  bash -c '. "$1"; ci_download "$2" "$3" "$4" "$5"' _ \
+  "$SCRIPT_DIR/common.sh" \
+  https://example.invalid/KERNEL-TOOLCHAIN.tsv \
+  "$download_fixture/resume-overrun" \
+  "$download_sha256" \
+  8
+[ "$(cat "$download_fixture/curl-resume-overrun.count")" = 2 ] ||
+  fail 'resumed metadata overrun did not stop at the first oversized partial'
+if compgen -G "$download_fixture/resume-overrun.part.*" >/dev/null; then
+  fail 'resumed metadata overrun left a partial file behind'
+fi
+
+printf '0123456789\n' > "$download_fixture/local-too-large"
+require_failure 'download exceeds 8 bytes' \
+  bash -c '. "$1"; ci_download "$2" "$3" "" 8' _ \
+  "$SCRIPT_DIR/common.sh" \
+  "$download_fixture/local-too-large" \
+  "$download_fixture/local-too-large-output"
+
 require_failure 'download failed after 24 attempts' env \
   CI_CURL_BIN="$download_fixture/curl" \
   FAKE_CURL_ARGS="$download_fixture/curl-exhaust.args" \
@@ -546,37 +693,51 @@ bundle_id=3333333333333333333333333333333333333333333333333333333333333333
 archive_url=https://example.invalid/tb321fu-kernel-build-sdk.tar.gz
 metadata_url=https://example.invalid/KERNEL-BUNDLE.tsv
 manifest_url=https://example.invalid/KERNEL-SDK-MANIFEST.tsv
+toolchain_url=https://example.invalid/KERNEL-TOOLCHAIN.tsv
 
 haptics_validate_kernel_build_input_contract \
-  0 "" "" /tmp/private-kernel-build "" "" ""
+  0 "" "" /tmp/private-kernel-build "" "" "" ""
 haptics_validate_kernel_build_input_contract \
-  1 "$archive_url" "$archive_sha256" "" "$metadata_url" "$metadata_sha256" "$manifest_url"
+  1 "$archive_url" "$archive_sha256" "" "$metadata_url" "$metadata_sha256" "$manifest_url" "$toolchain_url"
 require_failure 'HAPTICS_RELEASE_MODE=0 requires KERNEL_BUILD_DIR' \
-  haptics_validate_kernel_build_input_contract 0 "" "" "" "" "" ""
+  haptics_validate_kernel_build_input_contract 0 "" "" "" "" "" "" ""
 require_failure 'HAPTICS_RELEASE_MODE=0 forbids KERNEL_BUILD_ARCHIVE' \
-  haptics_validate_kernel_build_input_contract 0 "$archive_url" "$archive_sha256" "" "" "" ""
+  haptics_validate_kernel_build_input_contract 0 "$archive_url" "$archive_sha256" "" "" "" "" ""
 require_failure 'HAPTICS_RELEASE_MODE=0 forbids KERNEL_SDK_MANIFEST' \
-  haptics_validate_kernel_build_input_contract 0 "" "" /tmp/build "" "" "$manifest_url"
+  haptics_validate_kernel_build_input_contract 0 "" "" /tmp/build "" "" "$manifest_url" ""
+require_failure 'HAPTICS_RELEASE_MODE=0 forbids KERNEL_TOOLCHAIN_MANIFEST' \
+  haptics_validate_kernel_build_input_contract 0 "" "" /tmp/build "" "" "" "$toolchain_url"
 require_failure 'HAPTICS_RELEASE_MODE must be exactly 0 or 1' \
-  haptics_validate_kernel_build_input_contract 2 "" "" /tmp/build "" "" ""
+  haptics_validate_kernel_build_input_contract 2 "" "" /tmp/build "" "" "" ""
 require_failure 'set exactly one of KERNEL_BUILD_ARCHIVE or KERNEL_BUILD_DIR' \
-  haptics_validate_kernel_build_input_contract 0 "$archive_url" "$archive_sha256" /tmp/build "" "" ""
+  haptics_validate_kernel_build_input_contract 0 "$archive_url" "$archive_sha256" /tmp/build "" "" "" ""
 require_failure 'KERNEL_BUNDLE_METADATA and KERNEL_BUNDLE_METADATA_SHA256 must be provided together' \
-  haptics_validate_kernel_build_input_contract 0 "" "" /tmp/build "$metadata_url" "" ""
+  haptics_validate_kernel_build_input_contract 0 "" "" /tmp/build "$metadata_url" "" "" ""
 require_failure 'HAPTICS_RELEASE_MODE=0 forbids KERNEL_SDK_MANIFEST' \
-  haptics_validate_kernel_build_input_contract 0 "" "" /tmp/build "" "" "$manifest_url"
+  haptics_validate_kernel_build_input_contract 0 "" "" /tmp/build "" "" "$manifest_url" ""
 require_failure 'HAPTICS_RELEASE_MODE=1 requires KERNEL_BUILD_ARCHIVE' \
-  haptics_validate_kernel_build_input_contract 1 "" "" "" "$metadata_url" "$metadata_sha256" "$manifest_url"
+  haptics_validate_kernel_build_input_contract 1 "" "" "" "$metadata_url" "$metadata_sha256" "$manifest_url" "$toolchain_url"
 require_failure 'HAPTICS_RELEASE_MODE=1 requires KERNEL_BUNDLE_METADATA' \
-  haptics_validate_kernel_build_input_contract 1 "$archive_url" "$archive_sha256" "" "" "" "$manifest_url"
+  haptics_validate_kernel_build_input_contract 1 "$archive_url" "$archive_sha256" "" "" "" "$manifest_url" "$toolchain_url"
 require_failure 'HAPTICS_RELEASE_MODE=1 requires KERNEL_SDK_MANIFEST' \
-  haptics_validate_kernel_build_input_contract 1 "$archive_url" "$archive_sha256" "" "$metadata_url" "$metadata_sha256" ""
+  haptics_validate_kernel_build_input_contract 1 "$archive_url" "$archive_sha256" "" "$metadata_url" "$metadata_sha256" "" "$toolchain_url"
+require_failure 'HAPTICS_RELEASE_MODE=1 requires KERNEL_TOOLCHAIN_MANIFEST' \
+  haptics_validate_kernel_build_input_contract 1 "$archive_url" "$archive_sha256" "" "$metadata_url" "$metadata_sha256" "$manifest_url" ""
 require_failure 'HAPTICS_RELEASE_MODE=1 requires an HTTPS KERNEL_BUILD_ARCHIVE' \
-  haptics_validate_kernel_build_input_contract 1 /tmp/kernel-sdk "$archive_sha256" "" "$metadata_url" "$metadata_sha256" "$manifest_url"
+  haptics_validate_kernel_build_input_contract 1 /tmp/kernel-sdk "$archive_sha256" "" "$metadata_url" "$metadata_sha256" "$manifest_url" "$toolchain_url"
 require_failure 'HAPTICS_RELEASE_MODE=1 requires HTTPS KERNEL_BUNDLE_METADATA' \
-  haptics_validate_kernel_build_input_contract 1 "$archive_url" "$archive_sha256" "" /tmp/KERNEL-BUNDLE.tsv "$metadata_sha256" "$manifest_url"
+  haptics_validate_kernel_build_input_contract 1 "$archive_url" "$archive_sha256" "" /tmp/KERNEL-BUNDLE.tsv "$metadata_sha256" "$manifest_url" "$toolchain_url"
 require_failure 'HAPTICS_RELEASE_MODE=1 requires HTTPS KERNEL_SDK_MANIFEST' \
-  haptics_validate_kernel_build_input_contract 1 "$archive_url" "$archive_sha256" "" "$metadata_url" "$metadata_sha256" /tmp/KERNEL-SDK-MANIFEST.tsv
+  haptics_validate_kernel_build_input_contract 1 "$archive_url" "$archive_sha256" "" "$metadata_url" "$metadata_sha256" /tmp/KERNEL-SDK-MANIFEST.tsv "$toolchain_url"
+require_failure 'HAPTICS_RELEASE_MODE=1 requires HTTPS KERNEL_TOOLCHAIN_MANIFEST' \
+  haptics_validate_kernel_build_input_contract 1 "$archive_url" "$archive_sha256" "" "$metadata_url" "$metadata_sha256" "$manifest_url" /tmp/KERNEL-TOOLCHAIN.tsv
+require_failure 'HAPTICS_RELEASE_MODE=1 requires an HTTPS KERNEL_BUILD_ARCHIVE' \
+  haptics_validate_kernel_build_input_contract 1 'https://example.invalid/kernel sdk.tar.gz' "$archive_sha256" "" "$metadata_url" "$metadata_sha256" "$manifest_url" "$toolchain_url"
+require_failure 'HAPTICS_RELEASE_MODE=1 requires HTTPS KERNEL_TOOLCHAIN_MANIFEST' \
+  haptics_validate_kernel_build_input_contract 1 "$archive_url" "$archive_sha256" "" "$metadata_url" "$metadata_sha256" "$manifest_url" 'https://example.invalid/tool chain.tsv'
+oversized_url="https://example.invalid/$(printf 'x%.0s' {1..2049})"
+require_failure 'HAPTICS_RELEASE_MODE=1 requires HTTPS KERNEL_TOOLCHAIN_MANIFEST' \
+  haptics_validate_kernel_build_input_contract 1 "$archive_url" "$archive_sha256" "" "$metadata_url" "$metadata_sha256" "$manifest_url" "$oversized_url"
 
 haptics_validate_kernel_sdk_binding \
   1 kernel-sdk-archive "$archive_sha256" "$bundle_id" "$archive_sha256"
@@ -590,6 +751,30 @@ require_failure 'HAPTICS_RELEASE_MODE=1 requires a kernel SDK archive input' \
   haptics_validate_kernel_sdk_binding 1 local-directory local-build-directory "$bundle_id" "$archive_sha256"
 haptics_validate_kernel_sdk_binding \
   0 local-directory local-build-directory unbound unbound
+
+toolchain_loader_fixture="$download_fixture/load-kernel-toolchain-manifest.sh"
+awk '
+  /^load_kernel_toolchain_manifest\(\)/ { emit = 1 }
+  emit { print }
+  emit && /^}$/ { exit }
+' "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" > "$toolchain_loader_fixture"
+[ -s "$toolchain_loader_fixture" ] || fail 'could not extract toolchain-manifest loader'
+. "$toolchain_loader_fixture"
+original_ci_download=$(declare -f ci_download)
+ci_download() { fail 'local bundle path attempted a toolchain download'; }
+verify_kernel_toolchain_identity() { fail 'local bundle path attempted live toolchain verification'; }
+HAPTICS_RELEASE_MODE=0
+kernel_bundle_id="$bundle_id"
+kernel_bundle_toolchain_manifest_sha256="$metadata_sha256"
+kernel_toolchain_manifest_path=/tmp/hostile-toolchain.tsv
+KERNEL_TOOLCHAIN_MANIFEST=
+load_kernel_toolchain_manifest
+[ "$kernel_bundle_toolchain_manifest_sha256" = unbound ] ||
+  fail 'local bundle path retained release-only toolchain evidence'
+[ -z "$kernel_toolchain_manifest_path" ] ||
+  fail 'local bundle path retained a release-only toolchain path'
+eval "$original_ci_download"
+unset -f verify_kernel_toolchain_identity
 
 identity_fixture="$download_fixture/prepare-kernel-kbuild-identity.sh"
 awk '
@@ -637,6 +822,7 @@ source = Path(sys.argv[1]).read_text()
 assert 'cp --reflink=auto -- "$src" "$tmp"' in (Path(sys.argv[1]).parent / "common.sh").read_text()
 prepare = source.index("prepare_inputs()")
 metadata = source.index("load_kernel_bundle_metadata", prepare)
+toolchain = source.index("load_kernel_toolchain_manifest", metadata)
 archive_download = source.index(
     'ci_download "$KERNEL_BUILD_ARCHIVE" "$archive" "$KERNEL_BUILD_ARCHIVE_SHA256"',
     prepare,
@@ -647,7 +833,19 @@ preflight = source.index('verify-kernel-sdk.py" --archive-only', manifest_downlo
 extract = source.index('ci_extract_archive "$archive" "$extract"', preflight)
 verifier = source.index('verify-kernel-sdk.py', extract)
 remove_archive = source.index('rm -f -- "$archive"', verifier)
-assert metadata < archive_download < binding < manifest_download < preflight < extract < verifier < remove_archive
+assert metadata < toolchain < archive_download < binding < manifest_download < preflight < extract < verifier < remove_archive
+toolchain_block = source[
+    source.index("load_kernel_toolchain_manifest()"):
+    source.index("prepare_kernel_kbuild_identity()")
+]
+assert '"$kernel_bundle_toolchain_manifest_sha256"' in toolchain_block
+assert toolchain_block.count("65536") == 1
+metadata_block = source[
+    source.index("load_kernel_bundle_metadata()"):
+    source.index("verify_kernel_toolchain_identity()")
+]
+assert '"$KERNEL_BUNDLE_METADATA_SHA256"' in metadata_block
+assert metadata_block.count("65536") == 1
 assert '--kernel-release "$kernel_bundle_release"' in source[preflight:extract]
 assert '--kernel-release "$kernel_bundle_release"' in source[verifier:remove_archive]
 for field, variable in (
@@ -688,6 +886,7 @@ expected = [
     "aw86937-module-sha256",
     "haptic-test-helper-binary-sha256",
     "kernel-bundle-id",
+    "kernel-toolchain-manifest-sha256",
     "kernel-release",
     "kernel-source-commit",
     "kernel-config-sha256",
@@ -702,12 +901,51 @@ for line in block.splitlines():
     field = line.split("printf '", 1)[1].split("\\t", 1)[0]
     actual.append(field)
 assert actual == expected, (actual, expected)
-assert "tb321fu.haptics-source-lock/v3" in source
-assert "tb321fu.haptics-source-lock/v3-local" in source
+assert "tb321fu.haptics-source-lock/v4" in source
+assert "tb321fu.haptics-source-lock/v4-local" in source
 assert "haptics_output_mode=release-candidate" in source
 assert "haptics_output_mode=local" in source
 assert "kernel_build_input=kernel-sdk-archive" in source
 PY
+
+prepare_inputs_fixture="$download_fixture/prepare-inputs-order.sh"
+awk '
+  /^prepare_inputs\(\)/ { emit = 1 }
+  emit { print }
+  emit && /^}$/ { exit }
+' "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" > "$prepare_inputs_fixture"
+[ -s "$prepare_inputs_fixture" ] || fail 'could not extract prepare_inputs ordering fixture'
+pre_sdk_log="$download_fixture/pre-sdk-order.log"
+if (
+  set -euo pipefail
+  . "$prepare_inputs_fixture"
+  ci_die() { printf 'fixture toolchain mismatch before SDK\n' >&2; exit 1; }
+  find_haptics_source_root() { printf '/fixture/haptics\n'; }
+  find_kernel_source_root() { printf '/fixture/kernel\n'; }
+  load_kernel_bundle_metadata() { printf 'bundle\n' >> "$pre_sdk_log"; }
+  load_kernel_toolchain_manifest() {
+    printf 'toolchain\n' >> "$pre_sdk_log"
+    ci_die
+  }
+  prepare_kernel_kbuild_identity() { printf 'identity\n' >> "$pre_sdk_log"; }
+  ci_download() { printf 'sdk-download\n' >> "$pre_sdk_log"; }
+  HAPTICS_SOURCE_DIR=/fixture/haptics
+  HAPTICS_SOURCE_ARCHIVE=
+  KERNEL_SOURCE_DIR=/fixture/kernel
+  KERNEL_SOURCE_ARCHIVE=
+  KERNEL_BUILD_DIR=
+  KERNEL_BUILD_ARCHIVE=https://example.invalid/kernel-sdk.tar.gz
+  KERNEL_BUILD_ARCHIVE_SHA256="$archive_sha256"
+  work_dir="$download_fixture/pre-sdk-work"
+  mkdir -p "$work_dir"
+  prepare_inputs
+) > "$download_fixture/pre-sdk-order.out" 2>&1; then
+  fail 'toolchain rejection ordering fixture unexpectedly succeeded'
+fi
+grep -Fq 'fixture toolchain mismatch before SDK' "$download_fixture/pre-sdk-order.out" ||
+  fail 'toolchain rejection ordering fixture failed at the wrong boundary'
+[ "$(cat "$pre_sdk_log")" = $'bundle\ntoolchain' ] ||
+  fail 'toolchain rejection did not stop before kernel SDK download'
 
 for token in \
   'HAPTICS_RELEASE_MODE=1' \
@@ -718,6 +956,9 @@ for token in \
   grep -Fq -- "$token" "$SCRIPT_DIR/build-tb321fu-haptics-deb-from-kernel-sdk.sh" ||
     fail "SDK wrapper omits release lock contract token: $token"
 done
+grep -Fq 'KERNEL_TOOLCHAIN_MANIFEST="$KERNEL_TOOLCHAIN_MANIFEST"' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb-from-kernel-sdk.sh" ||
+  fail 'SDK wrapper omits the kernel toolchain manifest input'
 python3 - "$SCRIPT_DIR/build-tb321fu-haptics-deb-from-kernel-sdk.sh" <<'PY'
 from pathlib import Path
 import sys
@@ -741,10 +982,12 @@ workflow=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)/.github/workflows/build.yml
 readme=$(cd -- "$SCRIPT_DIR/../.." && pwd -P)/README.md
 grep -Fq 'HAPTICS_RELEASE_MODE=1' "$workflow" ||
   fail 'workflow does not inject release mode into the SDK wrapper'
-grep -Fq 'all six locked inputs' "$readme" ||
+grep -Fq 'all seven locked inputs' "$readme" ||
   fail 'README does not describe the complete release input set'
 grep -Fq 'kernel_sdk_manifest' "$readme" ||
   fail 'README does not document the kernel SDK manifest input'
+grep -Fq 'kernel_toolchain_manifest' "$readme" ||
+  fail 'README does not document the kernel toolchain manifest input'
 grep -Fq 'at most four HTTP/1.1' "$readme" ||
   fail 'README does not document bounded fresh-repository kernel fetches'
 grep -Fq 'minutes plus a 30-second forced-termination window' "$readme" ||
@@ -757,7 +1000,12 @@ import sys
 
 source = Path(sys.argv[1]).read_text()
 lines = source.splitlines()
-for name in ("kernel_bundle_metadata", "kernel_bundle_metadata_sha256", "kernel_sdk_manifest"):
+for name in (
+    "kernel_bundle_metadata",
+    "kernel_bundle_metadata_sha256",
+    "kernel_sdk_manifest",
+    "kernel_toolchain_manifest",
+):
     start = lines.index(f"      {name}:")
     block = [lines[start]]
     for line in lines[start + 1 :]:
@@ -767,12 +1015,33 @@ for name in ("kernel_bundle_metadata", "kernel_bundle_metadata_sha256", "kernel_
     assert "        required: true" in block, name
 
 declaration = source.index("      kernel_sdk_manifest:")
+toolchain_declaration = source.index("      kernel_toolchain_manifest:", declaration)
 input_env = source.index("          INPUT_KERNEL_SDK_MANIFEST: ${{ inputs.kernel_sdk_manifest }}")
+toolchain_input_env = source.index(
+    "          INPUT_KERNEL_TOOLCHAIN_MANIFEST: ${{ inputs.kernel_toolchain_manifest }}"
+)
 validation = source.index('[[ "$INPUT_KERNEL_SDK_MANIFEST" =~ ^https://[^[:space:]]{1,2048}$ ]]')
+toolchain_validation = source.index(
+    '[[ "$INPUT_KERNEL_TOOLCHAIN_MANIFEST" =~ ^https://[^[:space:]]{1,2048}$ ]]'
+)
 export = source.index("printf 'KERNEL_SDK_MANIFEST=%s\\n' \"$INPUT_KERNEL_SDK_MANIFEST\"")
+toolchain_export = source.index(
+    "printf 'KERNEL_TOOLCHAIN_MANIFEST=%s\\n' \"$INPUT_KERNEL_TOOLCHAIN_MANIFEST\""
+)
 build_env = source.index('KERNEL_SDK_MANIFEST="$KERNEL_SDK_MANIFEST"')
+toolchain_build_env = source.index(
+    'KERNEL_TOOLCHAIN_MANIFEST="$KERNEL_TOOLCHAIN_MANIFEST"', build_env
+)
 wrapper = source.index('bash scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh', build_env)
 assert declaration < input_env < validation < export < build_env < wrapper
+assert (
+    toolchain_declaration
+    < toolchain_input_env
+    < toolchain_validation
+    < toolchain_export
+    < toolchain_build_env
+    < wrapper
+)
 PY
 
 printf 'HAPTICS_KERNEL_SDK_CONTRACT=PASS\n'

@@ -1,0 +1,73 @@
+schema	tb321fu.haptics-build-tools/v2
+environment-policy	isolated-allowlist-v1
+environment-policy-sha256	75081abd54528aaa186c18cf8169c19bfc4e80cc1a67cc7859c585dfe8f9c850
+build-toolset-sha256	5ae27f2d873bfbe82afa7c15fd5fad7603205064a074470954f63c3e02ac5b3e
+tool	bash	/usr/bin/bash	/usr/bin/bash	bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1	GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)
+tool	dash	/usr/bin/dash	/usr/bin/dash	86d31f6fb799e91fa21bad341484564510ca287703a16e9e46c53338776f4f42	/usr/bin/dash: 0: Illegal option --
+tool	env	/usr/bin/env	/usr/bin/env	1490a663e7312c4347987b2e12d7d73950ed1e9a322449daf8e4836660396e31	env (GNU coreutils) 9.4
+tool	readlink	/usr/bin/readlink	/usr/bin/readlink	50ed90349234d4db9575c4945f20467666387695a4abf619f14066d097700891	readlink (GNU coreutils) 9.4
+tool	realpath	/usr/bin/realpath	/usr/bin/realpath	7150f0dbd25ec38d112360119d31a3abb6d60f6c1b4fb3a59f627bc7922aec89	realpath (GNU coreutils) 9.4
+tool	basename	/usr/bin/basename	/usr/bin/basename	13ee3a2036d5ebaf1dcc940f563bd9fbaaf79f8f4a4d94821a52a7191bf22e95	basename (GNU coreutils) 9.4
+tool	dirname	/usr/bin/dirname	/usr/bin/dirname	a4971d130c32ab627ced7aae414fe32304159b31df2c86ace516eef795e91a14	dirname (GNU coreutils) 9.4
+tool	date	/usr/bin/date	/usr/bin/date	570f4d0df87a59cb75490671d7b3eac88671ad72bbc194540c713d2fa2be573b	date (GNU coreutils) 9.4
+tool	sleep	/usr/bin/sleep	/usr/bin/sleep	4a193eb6f25eecf27bad523cb8a53ec4d40775eb498f44760b19bfc421cc90aa	sleep (GNU coreutils) 9.4
+tool	timeout	/usr/bin/timeout	/usr/bin/timeout	2ee918a5358c0388719e710134bc32cffb934f4bd2a8fb9beb86ef4d6ec8bd8a	timeout (GNU coreutils) 9.4
+tool	mktemp	/usr/bin/mktemp	/usr/bin/mktemp	f580f6b40b1c1c8f515fa45ac794ea784fea5370d17888339c1cd9b7213d5589	mktemp (GNU coreutils) 9.4
+tool	mkdir	/usr/bin/mkdir	/usr/bin/mkdir	27f01f0f33fe6cee575f8f4f570b0695ba6f3eb33359b282c5a1152174f31e76	mkdir (GNU coreutils) 9.4
+tool	rm	/usr/bin/rm	/usr/bin/rm	8e3faaa5eb4a2a4d0e2788fe442bcac6d604be5a0c5a9f09d08f06e3a3fcf570	rm (GNU coreutils) 9.4
+tool	chmod	/usr/bin/chmod	/usr/bin/chmod	f162501708c719c786ddceb78c2cc3b48dc2e33683114da199223c978bd62324	chmod (GNU coreutils) 9.4
+tool	cp	/usr/bin/cp	/usr/bin/cp	2e17fe58f9bd77232d9565a503fb43f20bdc2206a3c6bf0d841071a1da6efd35	cp (GNU coreutils) 9.4
+tool	mv	/usr/bin/mv	/usr/bin/mv	cbb3b945526115f913573c5f2bccf3e1b51c51aace3ba95c18fc30128d9b282d	mv (GNU coreutils) 9.4
+tool	ln	/usr/bin/ln	/usr/bin/ln	4a69330163565546dcea5c08c930291ee2576ef532832ddb99df450a385113ad	ln (GNU coreutils) 9.4
+tool	cat	/usr/bin/cat	/usr/bin/cat	dda0961715677dff3cd560e1933379c0eca73c0b6e19fef2737492ebc1de1700	cat (GNU coreutils) 9.4
+tool	find	/usr/bin/find	/usr/bin/find	ac1ea1c5391de921aca1572f1bf25d03707beb3887b27c16a5b4948fd553941b	find (GNU findutils) 4.9.0
+tool	install	/usr/bin/install	/usr/bin/install	b4663b43190ea551f682cfac9500f3f4f6e94890d8ce8822bb81a819f15dab00	install (GNU coreutils) 9.4
+tool	touch	/usr/bin/touch	/usr/bin/touch	8b0047b0de380f0bac3855400263214e33fbc2995b5637e9104a9de3f738ec82	touch (GNU coreutils) 9.4
+tool	stat	/usr/bin/stat	/usr/bin/stat	708bae43fa1b9ca0c507e026566dc151852e935db3fa9e292ac4a5f3e42f76cc	stat (GNU coreutils) 9.4
+tool	awk	/usr/bin/awk	/usr/bin/gawk	9150b42e78b22231bd83131e1db2530a7a7fa0677e189ac7c5cc1520c42c9e88	GNU Awk 5.2.1, API 3.2, PMA Avon 8-g1, (GNU MPFR 4.2.1, GNU MP 6.3.0)
+tool	grep	/usr/bin/grep	/usr/bin/grep	20a35a4c18f2fe9e6305c1cbf866b9c0fcc3f957132ae66028c99ec353bb0a80	grep (GNU grep) 3.11
+tool	sed	/usr/bin/sed	/usr/bin/sed	23f70dd6496d75419823039e1cebf95a2fd0508c6dfec72ac2352f7e08391dd5	/usr/bin/sed (GNU sed) 4.9
+tool	sort	/usr/bin/sort	/usr/bin/sort	ee2d0669d4033ef13a5f0141b77799aec696da3df7f6464dfd0c67601f91f077	sort (GNU coreutils) 9.4
+tool	cut	/usr/bin/cut	/usr/bin/cut	e7b6384461bc020f30bbfa21e932eaaeccc282f73b77b6721f451d442231d202	cut (GNU coreutils) 9.4
+tool	cmp	/usr/bin/cmp	/usr/bin/cmp	e10750ef3db9bd3595d3cbb1e25bcfd6a964dc6aa0ba9561034067913ee1cc04	cmp (GNU diffutils) 3.10
+tool	tee	/usr/bin/tee	/usr/bin/tee	b881898ddde6c9be9ddb2ad315ce7ac78e08889da2326f46e341e06b22fc47e5	tee (GNU coreutils) 9.4
+tool	tr	/usr/bin/tr	/usr/bin/tr	c9922d03a2125b71d4a0dc6045c4a26681006383227c060ef37e6072c45d7aef	tr (GNU coreutils) 9.4
+tool	wc	/usr/bin/wc	/usr/bin/wc	4c90e928fc25f2a67074b79b591b5ad8390be143927c7acd004f1c691ae914ef	wc (GNU coreutils) 9.4
+tool	git	/usr/bin/git	/usr/bin/git	2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668	git version 2.43.0
+tool	curl	/usr/bin/curl	/usr/bin/curl	459c937b69bd76620d6d01100a0793294349c89871f4474d398efdae49fcee09	curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libidn2/2.3.7 libpsl/0.21.2 (+libidn2/2.3.7) libssh/0.10.6/openssl/zlib nghttp2/1.59.0 librtmp/2.3 OpenLDAP/2.6.7
+tool	python3	/usr/bin/python3	/usr/bin/python3.12	1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118	Python 3.12.3
+tool	make	/usr/bin/make	/usr/bin/make	d78b8f1d099fbcfb6f2f49ab87223b9b68fb3956642f92d6ec6de812e8afa965	GNU Make 4.3
+tool	flex	/usr/bin/flex	/usr/bin/flex	6b70611fd650c8216b5c8c1a54a69ed470cd82c63ec0dc095dd4d9782bc3efbb	flex 2.6.4
+tool	bison	/usr/bin/bison	/usr/bin/bison	fa37741dacd93974fb0b21b403a8d8ea50e3bb3a21352ac7aca45f33551a6585	bison (GNU Bison) 3.8.2
+tool	m4	/usr/bin/m4	/usr/bin/m4	426fbab900b6c676038cf71da51c3ae45a6d546c9580fff9372bc5b1bb81d576	m4 (GNU M4) 1.4.19
+tool	gcc	/usr/bin/gcc	/usr/bin/x86_64-linux-gnu-gcc-13	1b99826121ae6682a634e5efe09bd3e3df58ce58e0b28f849114ab5b89139c26	gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+tool	as	/usr/bin/as	/usr/bin/x86_64-linux-gnu-as	21aff249b692b5c31a44007491f922dcb49f41323e362c57d2ada3f52eddb7f0	GNU assembler (GNU Binutils for Ubuntu) 2.42
+tool	ld	/usr/bin/ld	/usr/bin/x86_64-linux-gnu-ld.bfd	e9ceb054c12207970f2726dfc07e9a66b411602748628baf27399f02a9bbb31b	GNU ld (GNU Binutils for Ubuntu) 2.42
+tool	ar	/usr/bin/ar	/usr/bin/x86_64-linux-gnu-ar	6452af2eea333b8c65e1adb92964fc8f97863ab003fa13f9d12bff5345cd7dbe	GNU ar (GNU Binutils for Ubuntu) 2.42
+tool	rsync	/usr/bin/rsync	/usr/bin/rsync	6b4fb867cb49d0332b72b234656311c807ab68b0537905fda7a3e7481a139f16	rsync  version 3.2.7  protocol version 31
+tool	dpkg	/usr/bin/dpkg	/usr/bin/dpkg	567180a568ad6af680314fdcb4d963246985e682b28a9e8fafed8b09abbd50af	Debian 'dpkg' package management program version 1.22.6 (amd64).
+tool	dpkg-deb	/usr/bin/dpkg-deb	/usr/bin/dpkg-deb	fc9dde782ca8309b65ab92e61d13318bf463cd1aa71daa8967b87b81b48b63d2	Debian 'dpkg-deb' package archive backend version 1.22.6 (amd64).
+tool	sha256sum	/usr/bin/sha256sum	/usr/bin/sha256sum	f293048f656688883ee919eb3f4b12926aaa13362de0eb6e3b5716b915b18b35	sha256sum (GNU coreutils) 9.4
+tool	aarch64-linux-gnu-gcc	/usr/bin/aarch64-linux-gnu-gcc	/usr/bin/aarch64-linux-gnu-gcc-13	3717c3f6635b032e577b9ed80ca9f8b5c21cc8ff6726f22e0ca0bc992f9d45a9	aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0
+tool	aarch64-linux-gnu-cpp	/usr/bin/aarch64-linux-gnu-cpp	/usr/bin/aarch64-linux-gnu-cpp-13	21220b4de5bd43f57736abfe28e1050fe38ef1412ebbbc820c02f9e41ba39ae9	aarch64-linux-gnu-cpp (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0
+tool	aarch64-linux-gnu-as	/usr/bin/aarch64-linux-gnu-as	/usr/bin/aarch64-linux-gnu-as	a315904827ba6f80ad0b58ac3a4672f56a76e639cec2d6833f80b475a28445a3	GNU assembler (GNU Binutils for Ubuntu) 2.42
+tool	aarch64-linux-gnu-ld	/usr/bin/aarch64-linux-gnu-ld	/usr/bin/aarch64-linux-gnu-ld.bfd	7c903ac277dd1f5c4397277db865f12d8239fe45782f71afbeb3d42180a4b1ae	GNU ld (GNU Binutils for Ubuntu) 2.42
+tool	aarch64-linux-gnu-ar	/usr/bin/aarch64-linux-gnu-ar	/usr/bin/aarch64-linux-gnu-ar	953d293f275c969e2a9058b66021c12122f166dcb1c8480bc68738f54b8db542	GNU ar (GNU Binutils for Ubuntu) 2.42
+tool	aarch64-linux-gnu-nm	/usr/bin/aarch64-linux-gnu-nm	/usr/bin/aarch64-linux-gnu-nm	96dbed79b11f6cc13b060dd5ca705a277bb5bdecd714df1c470ffaafb2513727	GNU nm (GNU Binutils for Ubuntu) 2.42
+tool	aarch64-linux-gnu-objcopy	/usr/bin/aarch64-linux-gnu-objcopy	/usr/bin/aarch64-linux-gnu-objcopy	560a78c0f5009483135e94ecb6d05f0e02be7cc74d3144bd6caf3f82ebf015db	GNU objcopy (GNU Binutils for Ubuntu) 2.42
+tool	aarch64-linux-gnu-objdump	/usr/bin/aarch64-linux-gnu-objdump	/usr/bin/aarch64-linux-gnu-objdump	d3310c4f50e6c265f691e7b2d55a2fbf4eba5785993ae5c70e9cc3949bf73c28	GNU objdump (GNU Binutils for Ubuntu) 2.42
+tool	aarch64-linux-gnu-readelf	/usr/bin/aarch64-linux-gnu-readelf	/usr/bin/aarch64-linux-gnu-readelf	708bf3b87fcafaa198169fc160c24c80926249c50ff58cd5978facefebf28af7	GNU readelf (GNU Binutils for Ubuntu) 2.42
+tool	aarch64-linux-gnu-strip	/usr/bin/aarch64-linux-gnu-strip	/usr/bin/aarch64-linux-gnu-strip	6e50534a5ce122f368ccbadceebb5450c1b1c3e1db5c70a2d5050edba7636e66	GNU strip (GNU Binutils for Ubuntu) 2.42
+tool	modinfo	/usr/sbin/modinfo	/usr/bin/kmod	5abf732e561c8be9ccd1794940b5d43025b041d4bed1db34782d979e0accc36f	kmod version 31
+tool	tar	/usr/bin/tar	/usr/bin/tar	3ee2c3c0b4dd9aacebfd2f0fbae44bad36348203acff78a44888dd58c05f811c	tar (GNU tar) 1.35
+tool	gzip	/usr/bin/gzip	/usr/bin/gzip	afea077ce127d4fa9ad410d3066ba2b54dea19c0b44f04adf56c72d5f7b7a9bb	gzip 1.12
+tool	xz	/usr/bin/xz	/usr/bin/xz	b5b163eb273291934556377ab883b4b2a5d4da50bd0dc0a91774ecc234ccd8d0	xz (XZ Utils) 5.4.5
+tool	sh	/usr/bin/sh	/usr/bin/dash	86d31f6fb799e91fa21bad341484564510ca287703a16e9e46c53338776f4f42	/usr/bin/sh: 0: Illegal option --
+tool	bc	/usr/bin/bc	/usr/bin/bc	d055e35065d469bdf17910df03250573b84497e03f8658e3828fd07b9607e313	bc 1.07.1
+tool	getconf	/usr/bin/getconf	/usr/bin/getconf	7b1b4ea8fe0165e85d040c5f700735e15a05fadadde3666f1d88fff74563f87d	getconf (Ubuntu GLIBC 2.39-0ubuntu8.7) 2.39
+tool	sha1sum	/usr/bin/sha1sum	/usr/bin/sha1sum	df669bd8d75ade53579fa20c5eef007c8ba43f898efbd8f74993810679d11dc0	sha1sum (GNU coreutils) 9.4
+tool	uname	/usr/bin/uname	/usr/bin/uname	ca548e23cdccdf65e6d15b9f181f94a51d817edb60e83cd7013fab0e2a18568f	uname (GNU coreutils) 9.4
+tool	head	/usr/bin/head	/usr/bin/head	f3e0bed1ad6f878e8f5518d4ed757357c6856f33bd553cb443003dc2f496723c	head (GNU coreutils) 9.4
+tool	expr	/usr/bin/expr	/usr/bin/expr	a872f57f9836f87abf697f26f6e86e574618c143d3a5e9d6383e9c682b7a89b0	expr (GNU coreutils) 9.4
+tool	uniq	/usr/bin/uniq	/usr/bin/uniq	1d8440219175d7cbb52ec537b8085333824dc388dc4d92a98adaddbc0f9e5cbd	uniq (GNU coreutils) 9.4
+tool	xargs	/usr/bin/xargs	/usr/bin/xargs	fa3818410ee7be85ca1484ce44e7c3043fb2d0b8402b42dcd9c3ffca78eb02fa	xargs (GNU findutils) 4.9.0

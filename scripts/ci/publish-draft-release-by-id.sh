@@ -5,11 +5,16 @@ fi
 set -euo pipefail
 set +x
 
-release_tag=${1:?usage: publish-release.sh RELEASE_TAG RELEASE_DIR NOTES_FILE}
-release_dir=${2:?usage: publish-release.sh RELEASE_TAG RELEASE_DIR NOTES_FILE}
-notes_file=${3:?usage: publish-release.sh RELEASE_TAG RELEASE_DIR NOTES_FILE}
+release_id=${1:?usage: publish-draft-release-by-id.sh RELEASE_ID RELEASE_TAG RELEASE_DIR NOTES_FILE}
+release_tag=${2:?usage: publish-draft-release-by-id.sh RELEASE_ID RELEASE_TAG RELEASE_DIR NOTES_FILE}
+release_dir=${3:?usage: publish-draft-release-by-id.sh RELEASE_ID RELEASE_TAG RELEASE_DIR NOTES_FILE}
+notes_file=${4:?usage: publish-draft-release-by-id.sh RELEASE_ID RELEASE_TAG RELEASE_DIR NOTES_FILE}
 
-: "${GH_TOKEN:?RELEASE_TOKEN must be exposed as GH_TOKEN only for this step}"
+[ "${GH_ALLOW_PUBLISH:-}" = 1 ] || {
+  printf 'GH_ALLOW_PUBLISH must be exactly 1 for draft publication\n' >&2
+  exit 1
+}
+: "${GH_TOKEN:?GH_TOKEN is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
 [ "${#GH_TOKEN}" -le 4096 ] || {
@@ -122,16 +127,12 @@ CI_CURL_BIN=/usr/bin/curl
 CI_PYTHON3_BIN=/usr/bin/python3
 CI_SHA256SUM_BIN=/usr/bin/sha256sum
 
-[ "${PRERELEASE:-}" = 1 ] || {
-  printf 'PRERELEASE must be exactly 1 for immutable remediation publication\n' >&2
+[[ $release_id =~ ^[1-9][0-9]{0,19}$ ]] || {
+  printf 'release ID must be a canonical positive decimal integer: %s\n' "$release_id" >&2
   exit 1
 }
-publish_prerelease=true
-release_kind='prerelease draft'
-
 [[ $release_tag =~ ^tb321fu-haptics-debs-([0-9][0-9A-Za-z._-]{0,63})$ ]] || {
-  printf 'release tag must equal tb321fu-haptics-debs-<safe-version>: %s\n' \
-    "$release_tag" >&2
+  printf 'release tag must equal tb321fu-haptics-debs-<safe-version>: %s\n' "$release_tag" >&2
   exit 1
 }
 package_version=${BASH_REMATCH[1]}
@@ -140,28 +141,21 @@ package_version=${BASH_REMATCH[1]}
   exit 1
 }
 [ "$GITHUB_REPOSITORY" = GUF296/tb321fu-haptics-debs ] || {
-  printf 'haptics draft creation is restricted to GUF296/tb321fu-haptics-debs\n' >&2
+  printf 'numeric haptics publication is restricted to GUF296/tb321fu-haptics-debs\n' >&2
   exit 1
 }
 [ -d "$release_dir" ] || { printf 'release directory not found: %s\n' "$release_dir" >&2; exit 1; }
 [ -f "$notes_file" ] || { printf 'release notes not found: %s\n' "$notes_file" >&2; exit 1; }
-for command_name in \
-  gh git curl python3 bash sha256sum stat find sort awk grep uniq wc seq sleep \
-  base64 cmp env mktemp rm realpath; do
+for command_name in gh git python3 bash sha256sum stat find sort awk grep uniq wc base64 cmp seq sleep mktemp rm realpath env; do
   command -v "$command_name" >/dev/null || {
     printf 'required command not found: %s\n' "$command_name" >&2
     exit 1
   }
 done
 gh_path=/usr/bin/gh
-curl_path=/usr/bin/curl
 publisher_shell_pid=$BASHPID
 [ -x "$gh_path" ] && [ -f "$gh_path" ] && [ ! -L "$gh_path" ] || {
   printf 'fixed GitHub CLI is missing or unsafe: %s\n' "$gh_path" >&2
-  exit 1
-}
-[ -x "$curl_path" ] && [ -f "$curl_path" ] && [ ! -L "$curl_path" ] || {
-  printf 'fixed curl is missing or unsafe: %s\n' "$curl_path" >&2
   exit 1
 }
 
@@ -170,9 +164,7 @@ publisher_fixture_environment() {
   local -n output=$output_name
 
   output=()
-  case $tool_path in
-    /usr/bin/gh|/usr/bin/curl) return 0 ;;
-  esac
+  [ "$tool_path" != /usr/bin/gh ] || return 0
   while IFS= read -r variable_name; do
     case $variable_name in
       GH_TOKEN|GH_ENTERPRISE_TOKEN|GH_HOST|GH_DEBUG) continue ;;
@@ -213,18 +205,20 @@ ci_verify_clean_git_commit "$REPO_ROOT" "$GITHUB_SHA" >/dev/null
 source_release_dir=$release_dir
 source_notes_file=$notes_file
 publication_verify_parent=$(mktemp -d \
-  "${TMPDIR:-/tmp}/tb321fu-haptics-draft-verification.XXXXXX")
+  "${TMPDIR:-/tmp}/tb321fu-haptics-publication.XXXXXX")
 cleanup() {
   case $publication_verify_parent in
-    "${TMPDIR:-/tmp}"/tb321fu-haptics-draft-verification.*)
+    "${TMPDIR:-/tmp}"/tb321fu-haptics-publication.*)
       rm -rf -- "$publication_verify_parent"
       ;;
   esac
 }
 cancel_now() {
-  local status=$1
+  local status=$1 signal_name=$2
 
   trap - INT TERM EXIT
+  printf 'publication cancelled by %s outside an active remote write\n' \
+    "$signal_name" >&2
   cleanup
   exit "$status"
 }
@@ -249,7 +243,7 @@ record_cancel() {
     fi
     return 0
   fi
-  cancel_now "$status"
+  cancel_now "$status" "$signal_name"
 }
 
 cancel_int() {
@@ -342,48 +336,6 @@ run_github_remote_write() {
   remote_write_child=$!
   wait_remote_write_child
 }
-
-upload_asset_request() {
-  local asset=$1 asset_name=$2
-
-  printf 'Authorization: Bearer %s\n' "$github_token" |
-    publisher_curl_upload \
-    --disable --fail-with-body --silent --show-error --request POST \
-    --connect-timeout 15 --max-time 300 \
-    --header 'Accept: application/vnd.github+json' \
-    --header '@-' \
-    --header 'X-GitHub-Api-Version: 2022-11-28' \
-    --header 'Content-Type: application/octet-stream' \
-    --data-binary "@$asset" \
-    "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=$asset_name"
-}
-
-publisher_curl_upload() (
-  local -a fixture_environment=()
-
-  set +x
-  publisher_fixture_environment "$curl_path" fixture_environment
-  exec /usr/bin/env -i "${fixture_environment[@]}" \
-    PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C LC_ALL=C TZ=UTC \
-    TB321FU_PUBLICATION_PARENT_PID="$publisher_shell_pid" \
-    /usr/bin/timeout --signal=TERM --kill-after=5s 310s \
-    "$curl_path" "$@"
-)
-
-run_asset_remote_write() {
-  local asset=$1 asset_name=$2
-
-  (
-    set +e
-    upload_asset_request "$asset" "$asset_name" \
-      > "$remote_write_stdout" 2> "$remote_write_stderr"
-    request_status=$?
-    printf '%s\n' "$request_status" > "$remote_write_status_file"
-    exit 0
-  ) &
-  remote_write_child=$!
-  wait_remote_write_child
-}
 trap cleanup EXIT
 trap cancel_int INT
 trap cancel_term TERM
@@ -416,34 +368,45 @@ expected_asset_names=$(printf '%s\n' \
   SHA256SUMS.txt \
   "tb321fu-haptics-debs_${package_version}_arm64.tar.gz" | sort)
 
-entry_count=$(find "$release_dir" -mindepth 1 -maxdepth 1 -printf . | wc -c)
-regular_count=$(find "$release_dir" -mindepth 1 -maxdepth 1 -type f -printf . | wc -c)
-[ "$entry_count" -eq "$regular_count" ] || {
-  printf 'release directory contains a directory, symlink, or special file\n' >&2
-  exit 1
-}
+load_local_assets() {
+  local output_name=$1 entry_count regular_count actual_asset_names asset asset_name
+  local -n output=$output_name
 
-mapfile -d '' -t assets < <(find "$release_dir" -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
-actual_asset_names=$(
-  for asset in "${assets[@]}"; do
-    printf '%s\n' "${asset##*/}"
-  done | sort
-)
-[ "$actual_asset_names" = "$expected_asset_names" ] || {
-  printf 'release directory does not contain the exact five haptics assets\n' >&2
-  printf 'expected:\n%s\nactual:\n%s\n' \
-    "$expected_asset_names" "$actual_asset_names" >&2
-  exit 1
-}
-[ -f "$release_dir/SHA256SUMS.txt" ] || { printf 'SHA256SUMS.txt is required\n' >&2; exit 1; }
-
-for asset in "${assets[@]}"; do
-  asset_name=${asset##*/}
-  [[ $asset_name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
-    printf 'unsafe release asset name: %s\n' "$asset_name" >&2
-    exit 1
+  entry_count=$(find "$release_dir" -mindepth 1 -maxdepth 1 -printf . | wc -c) || return 1
+  regular_count=$(find "$release_dir" -mindepth 1 -maxdepth 1 -type f -printf . | wc -c) || return 1
+  [ "$entry_count" -eq "$regular_count" ] || {
+    printf 'release directory contains a directory, symlink, or special file\n' >&2
+    return 1
   }
-done
+  mapfile -d '' -t output < <(
+    find "$release_dir" -mindepth 1 -maxdepth 1 -type f -print0 | sort -z
+  )
+  actual_asset_names=$(
+    for asset in "${output[@]}"; do
+      printf '%s\n' "${asset##*/}"
+    done | sort
+  )
+  [ "$actual_asset_names" = "$expected_asset_names" ] || {
+    printf 'release directory does not contain the exact five haptics assets\n' >&2
+    printf 'expected:\n%s\nactual:\n%s\n' "$expected_asset_names" "$actual_asset_names" >&2
+    return 1
+  }
+  for asset in "${output[@]}"; do
+    asset_name=${asset##*/}
+    [[ $asset_name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+      printf 'unsafe release asset name: %s\n' "$asset_name" >&2
+      return 1
+    }
+    [ -f "$asset" ] && [ ! -L "$asset" ] || {
+      printf 'release asset is not a regular file: %s\n' "$asset_name" >&2
+      return 1
+    }
+  done
+}
+
+assets=()
+load_local_assets assets
+[ -f "$release_dir/SHA256SUMS.txt" ] || { printf 'SHA256SUMS.txt is required\n' >&2; exit 1; }
 
 manifest_names=$(awk '
   length($1) != 64 || $1 !~ /^[0-9a-fA-F]+$/ { exit 2 }
@@ -476,67 +439,57 @@ for asset in "${assets[@]}"; do
 done
 (cd "$release_dir" && sha256sum --strict -c SHA256SUMS.txt)
 
-local_asset_records=$(
-  for asset in "${assets[@]}"; do
+snapshot_local_assets() {
+  local asset asset_name local_size local_digest
+  local -a current_assets=()
+
+  load_local_assets current_assets || return 1
+  (cd "$release_dir" && sha256sum --strict -c SHA256SUMS.txt >/dev/null) || return 1
+  for asset in "${current_assets[@]}"; do
     asset_name=${asset##*/}
-    local_size=$(stat -c '%s' "$asset")
-    local_digest=sha256:$(sha256sum "$asset" | awk '{print $1}')
+    local_size=$(stat -c '%s' "$asset") || return 1
+    local_digest=sha256:$(sha256sum "$asset" | awk '{print $1}') || return 1
     printf '%s\t%s\t%s\n' "$asset_name" "$local_size" "$local_digest"
   done
-)
+}
+
+local_asset_records=$(snapshot_local_assets) || {
+  printf 'cannot create the local release asset snapshot\n' >&2
+  exit 1
+}
 
 /bin/bash -p "$STAGE_VERIFIER" "$release_dir" "$REFERENCE" "$GITHUB_SHA" \
   "$publication_verify_parent/archive" >/dev/null || {
-  printf 'local haptics draft stage does not match the trusted reference\n' >&2
+  printf 'local haptics publication stage does not match the trusted reference\n' >&2
   exit 1
 }
 
 fetch_release_snapshot() {
-  local release_id=$1
-
   github_api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq \
     '(["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets | sort_by(.name)[] | ["asset", .name, (.size | tostring), (.digest // ""), .state])) | @tsv'
 }
 
-fetch_release_snapshots_by_tag() {
-  local query
-
-  printf -v query \
-    '.[] | select(.tag_name == "%s") | (["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets | sort_by(.name)[] | ["asset", .name, (.size | tostring), (.digest // ""), .state])) | @tsv' \
-    "$release_tag"
-  github_api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-    --paginate --jq "$query"
-}
-
 verify_release_snapshot() {
   local snapshot=$1
-  local expected_release_id=$2
-  local expected_draft=$3
-  local expected_immutable=$4
-  local expected_target=$5
-  local expected_prerelease=$6
-  local expected_title=$7
-  local expected_body_b64=$8
+  local expected_draft=$2
+  local expected_immutable=$3
+  local expected_target=$4
   local metadata actual_kind actual_id actual_draft actual_immutable actual_tag actual_target actual_prerelease actual_title actual_body_b64
+  local remote_assets remote_count expected_count expected_record
+  local expected_name expected_size expected_digest remote_record
 
   metadata=$(printf '%s\n' "$snapshot" | awk -F '\t' \
     '$1 == "release" { print; found++ } END { if (found != 1) exit 1 }') || return 1
   IFS=$'\t' read -r actual_kind actual_id actual_draft actual_immutable actual_tag actual_target actual_prerelease actual_title actual_body_b64 <<< "$metadata"
   [ "$actual_kind" = release ] || return 1
-  [ "$actual_id" = "$expected_release_id" ] || return 1
+  [ "$actual_id" = "$release_id" ] || return 1
   [ "$actual_draft" = "$expected_draft" ] || return 1
   [ "$actual_immutable" = "$expected_immutable" ] || return 1
   [ "$actual_tag" = "$release_tag" ] || return 1
   [ "$actual_target" = "$expected_target" ] || return 1
-  [ "$actual_prerelease" = "$expected_prerelease" ] || return 1
-  [ "$actual_title" = "$expected_title" ] || return 1
-  [ "$actual_body_b64" = "$expected_body_b64" ] || return 1
-}
-
-verify_release_assets() {
-  local snapshot=$1 expected_assets=$2
-  local remote_assets remote_count expected_count expected_record
-  local expected_name expected_size expected_digest remote_record
+  [ "$actual_prerelease" = true ] || return 1
+  [ "$actual_title" = "$release_title" ] || return 1
+  [ "$actual_body_b64" = "$notes_body_b64" ] || return 1
 
   remote_assets=$(printf '%s\n' "$snapshot" | awk -F '\t' 'BEGIN { OFS="\t" }
     $1 == "asset" {
@@ -545,7 +498,7 @@ verify_release_assets() {
     }
   ') || return 1
   remote_count=$(printf '%s\n' "$remote_assets" | awk 'NF { count++ } END { print count + 0 }')
-  expected_count=$(printf '%s\n' "$expected_assets" | awk 'NF { count++ } END { print count + 0 }')
+  expected_count=$(printf '%s\n' "$local_asset_records" | awk 'NF { count++ } END { print count + 0 }')
   [ "$remote_count" -eq "$expected_count" ] || return 1
 
   while IFS=$'\t' read -r expected_name expected_size expected_digest; do
@@ -554,7 +507,54 @@ verify_release_assets() {
     remote_record=$(printf '%s\n' "$remote_assets" | awk -F '\t' -v name="$expected_name" \
       '$1 == name { print; found++ } END { if (found != 1) exit 1 }') || return 1
     [ "$remote_record" = "$expected_record" ] || return 1
-  done <<< "$expected_assets"
+  done <<< "$local_asset_records"
+}
+
+fetch_latest_snapshot() {
+  local snapshot regular_release_ids
+
+  if snapshot=$(github_api "repos/$GITHUB_REPOSITORY/releases/latest" --jq \
+      '(["latest", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets | sort_by(.name)[] | ["latest-asset", .name, (.size | tostring), (.digest // ""), .state])) | @tsv'); then
+    printf '%s\n' "$snapshot"
+    return 0
+  fi
+  regular_release_ids=$(github_api \
+    "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq \
+    '.[] | select(.draft == false and .prerelease == false) | .id') || return 1
+  [ -z "$regular_release_ids" ] || return 1
+  printf 'latest-none\n'
+}
+
+verify_latest_snapshot() {
+  local snapshot=$1
+
+  [ "$snapshot" = latest-none ] && return 0
+  printf '%s\n' "$snapshot" | awk -F '\t' -v candidate="$release_id" '
+    $1 == "latest" {
+      if (NF != 9 || $2 !~ /^[1-9][0-9]*$/ || length($2) > 20 || $2 == candidate ||
+          $3 != "false" || ($4 != "true" && $4 != "false") ||
+          $7 != "false" || $9 !~ /^[A-Za-z0-9+\/=]*$/) exit 1
+      metadata++
+      next
+    }
+    $1 == "latest-asset" {
+      if (NF != 5 || $2 == "" || $3 !~ /^[0-9]+$/ ||
+          ($4 != "" && ($4 !~ /^sha256:[0-9a-f]+$/ || length($4) != 71)) ||
+          $5 != "uploaded") exit 1
+      next
+    }
+    { exit 1 }
+    END { if (metadata != 1) exit 1 }
+  '
+}
+
+fetch_immutability_policy() {
+  github_api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq \
+    '[(.enabled | tostring), (.enforced_by_owner | tostring)] | @tsv'
+}
+
+verify_immutability_policy() {
+  [ "$1" = $'true\tfalse' ] || [ "$1" = $'true\ttrue' ]
 }
 
 resolve_tag_commit() {
@@ -591,221 +591,179 @@ verify_tag_target() {
     return 1
   }
   [ "$resolved" = "$GITHUB_SHA" ] || {
-    printf 'release tag target differs from this workflow commit: %s != %s\n' \
+    printf 'release tag target differs from the expected commit: %s != %s\n' \
       "$resolved" "$GITHUB_SHA" >&2
     return 1
   }
 }
 
-immutability_policy=$(github_api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq \
-  '[(.enabled | tostring), (.enforced_by_owner | tostring)] | @tsv') || {
+immutability_policy=$(fetch_immutability_policy) || {
   printf 'cannot establish the repository immutable-release policy\n' >&2
   exit 1
 }
-case $immutability_policy in
-  $'true\tfalse'|$'true\ttrue') ;;
-  *)
-    printf 'repository immutable releases must be enabled before draft creation\n' >&2
-    exit 1
-    ;;
-esac
-
-existing_release_tags=$(github_api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-  --paginate --jq '.[].tag_name') || {
-  printf 'cannot establish the existing release set\n' >&2
+verify_immutability_policy "$immutability_policy" || {
+  printf 'repository immutable releases must be enabled before publication\n' >&2
   exit 1
 }
-if printf '%s\n' "$existing_release_tags" | grep -Fxq -- "$release_tag"; then
-  printf 'refusing to modify an existing release or draft: %s\n' "$release_tag" >&2
-  exit 1
-fi
-matching_tag_refs=$(github_api \
-  "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$release_tag" \
-  --jq '.[].ref') || {
-  printf 'cannot establish the existing tag set\n' >&2
+
+draft_snapshot=$(fetch_release_snapshot) || {
+  printf 'cannot fetch draft release ID %s\n' "$release_id" >&2
   exit 1
 }
-if printf '%s\n' "$matching_tag_refs" | grep -Fxq -- "refs/tags/$release_tag"; then
-  printf 'refusing to publish through an existing tag: %s\n' "$release_tag" >&2
+release_target_commitish=$(printf '%s\n' "$draft_snapshot" | awk -F '\t' \
+  '$1 == "release" { print $6; found++ } END { if (found != 1) exit 1 }') || {
+  printf 'draft release snapshot has invalid metadata framing\n' >&2
   exit 1
-fi
+}
+[ -n "$release_target_commitish" ] || {
+  printf 'draft release has an empty target_commitish\n' >&2
+  exit 1
+}
+verify_release_snapshot "$draft_snapshot" true false "$release_target_commitish" || {
+  printf 'draft release ID/tag/metadata/state/assets do not match the local release set\n' >&2
+  printf '%s\n' "$draft_snapshot" >&2
+  exit 1
+}
+verify_tag_target || exit 1
 
-create_response_query='[.id, .tag_name, (.draft | tostring), (.immutable | tostring), .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv'
-begin_remote_write 'draft-create POST'
+latest_snapshot=$(fetch_latest_snapshot) || {
+  printf 'cannot establish the current latest-release state before publication\n' >&2
+  exit 1
+}
+verify_latest_snapshot "$latest_snapshot" || {
+  printf 'current latest release snapshot is invalid\n' >&2
+  printf '%s\n' "$latest_snapshot" >&2
+  exit 1
+}
+
+current_local_asset_records=$(snapshot_local_assets) || {
+  printf 'cannot repeat the local release asset snapshot before publication\n' >&2
+  exit 1
+}
+[ "$current_local_asset_records" = "$local_asset_records" ] || {
+  printf 'local release assets changed before publication\n' >&2
+  exit 1
+}
+second_immutability_policy=$(fetch_immutability_policy) || {
+  printf 'cannot repeat the immutable-release policy before publication\n' >&2
+  exit 1
+}
+[ "$second_immutability_policy" = "$immutability_policy" ] || {
+  printf 'repository immutable-release policy changed before publication\n' >&2
+  exit 1
+}
+second_latest_snapshot=$(fetch_latest_snapshot) || {
+  printf 'cannot repeat the latest-release state before publication\n' >&2
+  exit 1
+}
+[ "$second_latest_snapshot" = "$latest_snapshot" ] || {
+  printf 'latest release changed concurrently before publication\n' >&2
+  exit 1
+}
+verify_tag_target || exit 1
+second_draft_snapshot=$(fetch_release_snapshot) || {
+  printf 'cannot repeat the draft release snapshot before publication\n' >&2
+  exit 1
+}
+[ "$second_draft_snapshot" = "$draft_snapshot" ] || {
+  printf 'draft release changed concurrently before publication\n' >&2
+  exit 1
+}
+
+patch_query='(["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets | sort_by(.name)[] | ["asset", .name, (.size | tostring), (.digest // ""), .state])) | @tsv'
+begin_remote_write "release PATCH ID $release_id"
 set +e
-run_github_remote_write -X POST "repos/$GITHUB_REPOSITORY/releases" \
-  -f "tag_name=$release_tag" \
-  -f "target_commitish=$GITHUB_SHA" \
-  -f "name=$release_title" \
-  -F "body=@$notes_file" \
-  -F draft=true -F prerelease="$publish_prerelease" --jq \
-  "$create_response_query"
-create_status=$?
+run_github_remote_write -X PATCH \
+  "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+  -F draft=false -F prerelease=true -f make_latest=false --jq \
+  "$patch_query"
+patch_status=$?
 set -e
-release_record=$(< "$remote_write_stdout")
-create_response_valid=false
-release_target_commitish=$GITHUB_SHA
-response_release_id=
-if [ "$create_status" -eq 0 ] &&
-   [ "$(printf '%s\n' "$release_record" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ]; then
-  IFS=$'\t' read -r parsed_response_release_id created_tag created_draft created_immutable \
-    response_target created_prerelease created_title created_body_b64 <<< "$release_record"
-  if [[ $parsed_response_release_id =~ ^[1-9][0-9]{0,19}$ ]] &&
-     [ "$created_tag" = "$release_tag" ] &&
-     [ "$created_draft" = true ] && [ "$created_immutable" = false ] &&
-     [ -n "$response_target" ] &&
-     [ "$created_prerelease" = "$publish_prerelease" ] &&
-     [ "$created_title" = "$release_title" ] &&
-     [ "$created_body_b64" = "$notes_body_b64" ]; then
-    create_response_valid=true
-    response_release_id=$parsed_response_release_id
-    release_target_commitish=$response_target
-  fi
-fi
-if [ "$create_status" -ne 0 ] || ! $create_response_valid; then
-  printf 'draft-create POST returned status %s or an unusable response; reconciling exact tag %s without retry\n' \
-    "$create_status" "$release_tag" >&2
-fi
-
-create_reconciled=false
-tag_snapshot=
-initial_snapshot=
-release_id=
-for attempt in $(seq 1 4); do
-  if tag_snapshot=$(fetch_release_snapshots_by_tag 2>/dev/null); then
-    candidate_release_id=$(printf '%s\n' "$tag_snapshot" | awk -F '\t' \
-      '$1 == "release" { print $2; found++ } END { if (found != 1) exit 1 }') ||
-      candidate_release_id=
-    if [[ $candidate_release_id =~ ^[1-9][0-9]{0,19}$ ]] &&
-       { [ -z "$response_release_id" ] ||
-         [ "$candidate_release_id" = "$response_release_id" ]; } &&
-       verify_release_snapshot "$tag_snapshot" "$candidate_release_id" true false \
-         "$release_target_commitish" "$publish_prerelease" "$release_title" \
-         "$notes_body_b64" &&
-       verify_release_assets "$tag_snapshot" '' &&
-       initial_snapshot=$(fetch_release_snapshot "$candidate_release_id" 2>/dev/null) &&
-       [ "$initial_snapshot" = "$tag_snapshot" ] &&
-       verify_tag_target &&
-       current_immutability_policy=$(github_api \
-         "repos/$GITHUB_REPOSITORY/immutable-releases" --jq \
-         '[(.enabled | tostring), (.enforced_by_owner | tostring)] | @tsv' \
-         2>/dev/null) &&
-       [ "$current_immutability_policy" = "$immutability_policy" ]; then
-      release_id=$candidate_release_id
-      create_reconciled=true
-      break
-    fi
-    if [ -n "$tag_snapshot" ]; then
-      printf 'exact tag resolved to a non-unique or incomplete draft during create reconciliation\n' >&2
-      printf '%s\n' "$tag_snapshot" >&2
-      fail_remote_write 'non-unique or incomplete exact-tag object; no takeover'
-    fi
-  fi
-  [ "$attempt" -eq 4 ] || sleep 1 || :
-done
-
-if ! $create_reconciled; then
-  printf 'draft-create outcome is not a unique complete empty draft for exact tag %s; no remote object is taken over\n' \
-    "$release_tag" >&2
-  [ ! -s "$remote_write_stderr" ] || /usr/bin/cat "$remote_write_stderr" >&2
-  [ -z "$tag_snapshot" ] || printf '%s\n' "$tag_snapshot" >&2
-  fail_remote_write 'indeterminate or non-matching; failed closed'
-fi
-if [ "$create_status" -ne 0 ]; then
-  printf 'draft-create POST transport failure reconciled to exact release ID %s\n' \
+patch_snapshot=$(< "$remote_write_stdout")
+patch_failed=false
+if [ "$patch_status" -ne 0 ]; then
+  patch_failed=true
+  printf 'release PATCH transport failed; reconciling numeric release ID %s\n' \
     "$release_id" >&2
+  [ ! -s "$remote_write_stderr" ] || /usr/bin/cat "$remote_write_stderr" >&2
+else
+  if ! verify_release_snapshot "$patch_snapshot" false true \
+      "$release_target_commitish"; then
+    patch_failed=true
+    printf 'release PATCH response is not yet the verified immutable prerelease; reconciling numeric release ID %s\n' \
+      "$release_id" >&2
+    printf '%s\n' "$patch_snapshot" >&2
+  fi
 fi
-finish_remote_write "unique complete empty draft ID $release_id"
 
-uploaded_asset_records=
-for asset in "${assets[@]}"; do
-  asset_name=${asset##*/}
-  asset_record=$(printf '%s\n' "$local_asset_records" | awk -F '\t' \
-    -v name="$asset_name" '$1 == name { print; found++ } END { if (found != 1) exit 1 }') || {
-    printf 'cannot locate local asset record for %s\n' "$asset_name" >&2
-    exit 1
-  }
-  if [ -n "$uploaded_asset_records" ]; then
-    expected_uploaded_asset_records=$(printf '%s\n%s' \
-      "$uploaded_asset_records" "$asset_record")
-  else
-    expected_uploaded_asset_records=$asset_record
+published_snapshot=
+for attempt in $(seq 1 6); do
+  candidate_snapshot=$(fetch_release_snapshot 2>/dev/null || :)
+  if [ -n "$candidate_snapshot" ] &&
+      verify_release_snapshot "$candidate_snapshot" false true \
+        "$release_target_commitish"; then
+    published_snapshot=$candidate_snapshot
+    break
   fi
-
-  begin_remote_write "asset-upload POST $asset_name"
-  set +e
-  run_asset_remote_write "$asset" "$asset_name"
-  upload_status=$?
-  set -e
-  upload_reconciled=false
-  remote_snapshot=
-  for attempt in $(seq 1 6); do
-    if remote_snapshot=$(fetch_release_snapshot "$release_id" 2>/dev/null) &&
-       verify_release_snapshot "$remote_snapshot" "$release_id" true false \
-         "$release_target_commitish" "$publish_prerelease" "$release_title" \
-         "$notes_body_b64" &&
-       verify_release_assets "$remote_snapshot" \
-         "$expected_uploaded_asset_records" &&
-       verify_tag_target &&
-       current_immutability_policy=$(github_api \
-         "repos/$GITHUB_REPOSITORY/immutable-releases" --jq \
-         '[(.enabled | tostring), (.enforced_by_owner | tostring)] | @tsv' \
-         2>/dev/null) &&
-       [ "$current_immutability_policy" = "$immutability_policy" ]; then
-      upload_reconciled=true
-      break
-    fi
-    if [ -n "$remote_snapshot" ] &&
-       { ! verify_release_snapshot "$remote_snapshot" "$release_id" true false \
-           "$release_target_commitish" "$publish_prerelease" "$release_title" \
-           "$notes_body_b64" ||
-         ! verify_release_assets "$remote_snapshot" "$uploaded_asset_records"; }; then
-      printf 'asset upload reconciliation observed an unknown or concurrently changed release state\n' >&2
-      printf '%s\n' "$remote_snapshot" >&2
-      fail_remote_write 'unknown or concurrently changed numeric release state'
-    fi
-    [ "$attempt" -eq 6 ] || sleep 1 || :
-  done
-  if ! $upload_reconciled; then
-    printf 'asset upload outcome for %s is not the exact expected draft state (request status %s); no retry or takeover is attempted\n' \
-      "$asset_name" "$upload_status" >&2
-    [ ! -s "$remote_write_stderr" ] || /usr/bin/cat "$remote_write_stderr" >&2
-    [ -z "$remote_snapshot" ] || printf '%s\n' "$remote_snapshot" >&2
-    fail_remote_write 'indeterminate or non-matching; draft retained'
+  if [ -n "$candidate_snapshot" ] &&
+      verify_release_snapshot "$candidate_snapshot" true false \
+        "$release_target_commitish" &&
+      [ "$candidate_snapshot" = "$draft_snapshot" ]; then
+    [ "$attempt" -eq 6 ] || sleep "$attempt" || :
+    continue
   fi
-  if [ "$upload_status" -ne 0 ]; then
-    printf 'asset upload transport failure for %s reconciled by release ID %s\n' \
-      "$asset_name" "$release_id" >&2
+  if [ -n "$candidate_snapshot" ]; then
+    printf 'release PATCH produced an unknown or concurrently changed state\n' >&2
+    printf '%s\n' "$candidate_snapshot" >&2
+    fail_remote_write 'unknown or concurrently changed numeric release state'
   fi
-  uploaded_asset_records=$expected_uploaded_asset_records
-  finish_remote_write "exact draft with $asset_name uploaded"
+  [ "$attempt" -eq 6 ] || sleep "$attempt" || :
 done
-
-final_snapshot=$(fetch_release_snapshot "$release_id") || {
-  printf 'cannot fetch the final verified draft release snapshot\n' >&2
-  exit 1
+[ -n "$published_snapshot" ] || {
+  printf 'release PATCH outcome remains indeterminate after bounded reconciliation of ID %s\n' \
+    "$release_id" >&2
+  fail_remote_write 'indeterminate after bounded numeric-ID reconciliation'
 }
-if ! verify_release_snapshot "$final_snapshot" "$release_id" true false \
-     "$release_target_commitish" "$publish_prerelease" "$release_title" \
-     "$notes_body_b64" ||
-   ! verify_release_assets "$final_snapshot" "$local_asset_records"; then
-  printf 'release changed concurrently after upload verification; release remains draft\n' >&2
-  printf '%s\n' "$final_snapshot" >&2
-  exit 1
-fi
 verify_tag_target || {
-  printf 'release tag changed after draft verification; release remains draft\n' >&2
-  exit 1
+  printf 'release tag changed after publication\n' >&2
+  fail_remote_write 'published ID has a changed tag target'
 }
-final_immutability_policy=$(github_api \
-  "repos/$GITHUB_REPOSITORY/immutable-releases" --jq \
-  '[(.enabled | tostring), (.enforced_by_owner | tostring)] | @tsv') || {
-  printf 'cannot re-read the immutable-release policy after draft verification\n' >&2
-  exit 1
+published_latest_snapshot=$(fetch_latest_snapshot) || {
+  printf 'publication returned but the current latest release cannot be re-read\n' >&2
+  fail_remote_write 'published ID verified but latest state is indeterminate'
 }
-[ "$final_immutability_policy" = "$immutability_policy" ] || {
-  printf 'repository immutable-release policy changed during draft creation\n' >&2
-  exit 1
+[ "$published_latest_snapshot" = "$latest_snapshot" ] || {
+  printf 'latest release changed during prerelease publication\n' >&2
+  printf '%s\n' "$published_latest_snapshot" >&2
+  fail_remote_write 'published ID verified but latest release changed'
 }
-printf 'Created verified %s %s with %d assets; draft remains private for manual publication.\n' \
-  "$release_kind" "$release_tag" "${#assets[@]}"
+verify_latest_snapshot "$published_latest_snapshot" || {
+  printf 'latest release snapshot became invalid after publication\n' >&2
+  fail_remote_write 'published ID verified but latest snapshot is invalid'
+}
+published_immutability_policy=$(fetch_immutability_policy) || {
+  printf 'published release cannot re-read the immutable-release policy\n' >&2
+  fail_remote_write 'published ID verified but immutable policy is indeterminate'
+}
+[ "$published_immutability_policy" = "$immutability_policy" ] || {
+  printf 'repository immutable-release policy changed during publication\n' >&2
+  fail_remote_write 'published ID verified but immutable policy changed'
+}
+current_local_asset_records=$(snapshot_local_assets) || {
+  printf 'cannot repeat the local release asset snapshot after publication\n' >&2
+  fail_remote_write 'published ID verified but local source snapshot is indeterminate'
+}
+[ "$current_local_asset_records" = "$local_asset_records" ] || {
+  printf 'local release assets changed during publication\n' >&2
+  fail_remote_write 'published ID verified but local source snapshot changed'
+}
+
+finish_remote_write "verified immutable prerelease ID $release_id with latest unchanged"
+
+if $patch_failed; then
+  printf 'Published and reconciled verified immutable prerelease %s as release ID %s; latest release is unchanged.\n' \
+    "$release_tag" "$release_id"
+else
+  printf 'Published verified immutable prerelease %s as release ID %s; latest release is unchanged.\n' \
+    "$release_tag" "$release_id"
+fi

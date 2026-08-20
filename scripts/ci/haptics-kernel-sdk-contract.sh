@@ -4,7 +4,7 @@
 haptics_validate_kernel_build_input_contract() {
   local release_mode=$1 kernel_build_archive=$2 kernel_build_archive_sha256=$3
   local kernel_build_dir=$4 kernel_bundle_metadata=$5 kernel_bundle_metadata_sha256=$6
-  local kernel_sdk_manifest=$7
+  local kernel_sdk_manifest=$7 kernel_toolchain_manifest=$8
 
   case "$release_mode" in
     0|1) ;;
@@ -35,23 +35,23 @@ haptics_validate_kernel_build_input_contract() {
       ci_die "HAPTICS_RELEASE_MODE=1 requires KERNEL_BUNDLE_METADATA"
     [ -n "$kernel_sdk_manifest" ] ||
       ci_die "HAPTICS_RELEASE_MODE=1 requires KERNEL_SDK_MANIFEST"
-    case "$kernel_build_archive" in
-      https://*) ;;
-      *) ci_die "HAPTICS_RELEASE_MODE=1 requires an HTTPS KERNEL_BUILD_ARCHIVE" ;;
-    esac
-    case "$kernel_bundle_metadata" in
-      https://*) ;;
-      *) ci_die "HAPTICS_RELEASE_MODE=1 requires HTTPS KERNEL_BUNDLE_METADATA" ;;
-    esac
-    case "$kernel_sdk_manifest" in
-      https://*) ;;
-      *) ci_die "HAPTICS_RELEASE_MODE=1 requires HTTPS KERNEL_SDK_MANIFEST" ;;
-    esac
+    [ -n "$kernel_toolchain_manifest" ] ||
+      ci_die "HAPTICS_RELEASE_MODE=1 requires KERNEL_TOOLCHAIN_MANIFEST"
+    [[ $kernel_build_archive =~ ^https://[^[:space:]]{1,2048}$ ]] ||
+      ci_die "HAPTICS_RELEASE_MODE=1 requires an HTTPS KERNEL_BUILD_ARCHIVE"
+    [[ $kernel_bundle_metadata =~ ^https://[^[:space:]]{1,2048}$ ]] ||
+      ci_die "HAPTICS_RELEASE_MODE=1 requires HTTPS KERNEL_BUNDLE_METADATA"
+    [[ $kernel_sdk_manifest =~ ^https://[^[:space:]]{1,2048}$ ]] ||
+      ci_die "HAPTICS_RELEASE_MODE=1 requires HTTPS KERNEL_SDK_MANIFEST"
+    [[ $kernel_toolchain_manifest =~ ^https://[^[:space:]]{1,2048}$ ]] ||
+      ci_die "HAPTICS_RELEASE_MODE=1 requires HTTPS KERNEL_TOOLCHAIN_MANIFEST"
   else
     [ -z "$kernel_build_archive" ] ||
       ci_die "HAPTICS_RELEASE_MODE=0 forbids KERNEL_BUILD_ARCHIVE"
     [ -z "$kernel_sdk_manifest" ] ||
       ci_die "HAPTICS_RELEASE_MODE=0 forbids KERNEL_SDK_MANIFEST"
+    [ -z "$kernel_toolchain_manifest" ] ||
+      ci_die "HAPTICS_RELEASE_MODE=0 forbids KERNEL_TOOLCHAIN_MANIFEST"
     [ -n "$kernel_build_dir" ] ||
       ci_die "HAPTICS_RELEASE_MODE=0 requires KERNEL_BUILD_DIR"
   fi

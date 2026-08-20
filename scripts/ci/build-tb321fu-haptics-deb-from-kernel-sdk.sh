@@ -18,6 +18,7 @@ if [ "${HAPTICS_WRAPPER_CLEAN_ENV:-}" != 1 ] || [ -z "${BASH_VERSION:-}" ]; then
     KERNEL_BUNDLE_METADATA="${KERNEL_BUNDLE_METADATA-}" \
     KERNEL_BUNDLE_METADATA_SHA256="${KERNEL_BUNDLE_METADATA_SHA256-}" \
     KERNEL_SDK_MANIFEST="${KERNEL_SDK_MANIFEST-}" \
+    KERNEL_TOOLCHAIN_MANIFEST="${KERNEL_TOOLCHAIN_MANIFEST-}" \
     SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-}" \
     http_proxy="${http_proxy-}" HTTP_PROXY="${HTTP_PROXY-}" \
     https_proxy="${https_proxy-}" HTTPS_PROXY="${HTTPS_PROXY-}" \
@@ -50,6 +51,7 @@ haptics_enter_clean_environment HAPTICS_WRAPPER_CLEAN_ENV "$SCRIPT_PATH" \
   KERNEL_BUNDLE_METADATA \
   KERNEL_BUNDLE_METADATA_SHA256 \
   KERNEL_SDK_MANIFEST \
+  KERNEL_TOOLCHAIN_MANIFEST \
   SOURCE_DATE_EPOCH \
   -- "$@"
 
@@ -69,12 +71,15 @@ KERNEL_BUILD_ARCHIVE_SHA256=${KERNEL_BUILD_ARCHIVE_SHA256:-75703c4cf2ed10777905d
 KERNEL_BUNDLE_METADATA=${KERNEL_BUNDLE_METADATA:-}
 KERNEL_BUNDLE_METADATA_SHA256=${KERNEL_BUNDLE_METADATA_SHA256:-}
 KERNEL_SDK_MANIFEST=${KERNEL_SDK_MANIFEST:-}
+KERNEL_TOOLCHAIN_MANIFEST=${KERNEL_TOOLCHAIN_MANIFEST:-}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
 readonly KERNEL_SOURCE_FETCH_ATTEMPTS=4
 
 [[ $HAPTICS_PRODUCER_COMMIT =~ ^[0-9a-f]{40}$ ]] || ci_die "invalid HAPTICS_PRODUCER_COMMIT"
 [[ $KERNEL_SOURCE_COMMIT =~ ^[0-9a-f]{40}$ ]] || ci_die "invalid KERNEL_SOURCE_COMMIT"
-[[ $SOURCE_DATE_EPOCH =~ ^[0-9]{1,10}$ ]] || ci_die "invalid SOURCE_DATE_EPOCH"
+haptics_epoch_is_valid "$SOURCE_DATE_EPOCH" || ci_die "invalid SOURCE_DATE_EPOCH"
+haptics_epoch_roundtrips "$SOURCE_DATE_EPOCH" ||
+  ci_die "SOURCE_DATE_EPOCH cannot be represented exactly on the build filesystem"
 [ "$HAPTICS_RELEASE_MODE" = 1 ] ||
   ci_die "kernel SDK archive packaging requires HAPTICS_RELEASE_MODE=1"
 haptics_validate_kernel_build_input_contract \
@@ -84,7 +89,8 @@ haptics_validate_kernel_build_input_contract \
   "" \
   "$KERNEL_BUNDLE_METADATA" \
   "$KERNEL_BUNDLE_METADATA_SHA256" \
-  "$KERNEL_SDK_MANIFEST"
+  "$KERNEL_SDK_MANIFEST" \
+  "$KERNEL_TOOLCHAIN_MANIFEST"
 
 output_requested=$(ci_abs_path "$OUTPUT_DIR")
 output_parent=$(dirname -- "$output_requested")
@@ -101,6 +107,13 @@ haptics_verify_expected_build_environment
 preflight_haptics_commit=$(ci_verify_clean_git_commit "$REPO_ROOT" "$HAPTICS_PRODUCER_COMMIT")
 [ "$preflight_haptics_commit" = "$HAPTICS_PRODUCER_COMMIT" ] ||
   ci_die "haptics producer preflight returned an unexpected commit"
+haptics_producer_epoch=$(ci_git -C "$REPO_ROOT" \
+  show -s --format=%ct "$preflight_haptics_commit^{commit}") ||
+  ci_die "cannot read the haptics producer commit epoch"
+haptics_epoch_is_valid "$haptics_producer_epoch" ||
+  ci_die "haptics producer commit has an invalid epoch"
+[ "$SOURCE_DATE_EPOCH" = "$haptics_producer_epoch" ] ||
+  ci_die "SOURCE_DATE_EPOCH must equal the haptics producer commit epoch"
 ci_log "haptics producer preflight passed: $preflight_haptics_commit"
 
 delivery_stage=
@@ -149,6 +162,7 @@ producer_env=(
   KERNEL_BUNDLE_METADATA="$KERNEL_BUNDLE_METADATA"
   KERNEL_BUNDLE_METADATA_SHA256="$KERNEL_BUNDLE_METADATA_SHA256"
   KERNEL_SDK_MANIFEST="$KERNEL_SDK_MANIFEST"
+  KERNEL_TOOLCHAIN_MANIFEST="$KERNEL_TOOLCHAIN_MANIFEST"
   EXPECTED_KERNEL_SOURCE_COMMIT="$KERNEL_SOURCE_COMMIT"
   HAPTICS_STRIP="$HAPTICS_STRIP"
   SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH"
@@ -234,24 +248,33 @@ lock_value() {
 
 source_lock_schema=$(lock_value schema)
 source_lock_mode=$(lock_value haptics-output-mode)
+source_lock_producer=$(lock_value haptics-producer-commit)
+source_lock_epoch=$(lock_value source-date-epoch)
 source_lock_input=$(lock_value kernel-build-input)
 source_lock_archive_sha256=$(lock_value kernel-build-archive-sha256)
 source_lock_bundle_id=$(lock_value kernel-bundle-id)
+source_lock_toolchain_manifest_sha256=$(lock_value kernel-toolchain-manifest-sha256)
 source_lock_environment_policy=$(lock_value environment-policy)
 source_lock_environment_policy_sha256=$(lock_value environment-policy-sha256)
 source_lock_toolset_sha256=$(lock_value build-toolset-sha256)
 source_lock_tools_manifest=$(lock_value build-tools-manifest)
 source_lock_tools_manifest_sha256=$(lock_value build-tools-manifest-sha256)
-[ "$source_lock_schema" = tb321fu.haptics-source-lock/v3 ] ||
+[ "$source_lock_schema" = tb321fu.haptics-source-lock/v4 ] ||
   ci_die "release haptics source lock has an unsupported schema: $source_lock_schema"
 [ "$source_lock_mode" = release-candidate ] ||
   ci_die "release haptics source lock is not a release candidate: $source_lock_mode"
+[ "$source_lock_producer" = "$HAPTICS_PRODUCER_COMMIT" ] ||
+  ci_die "release haptics source lock does not bind the requested producer commit"
+[ "$source_lock_epoch" = "$haptics_producer_epoch" ] ||
+  ci_die "release haptics source lock does not bind the producer commit epoch"
 [ "$source_lock_input" = kernel-sdk-archive ] ||
   ci_die "release haptics source lock does not identify a kernel SDK archive"
 [ "$source_lock_archive_sha256" = "${KERNEL_BUILD_ARCHIVE_SHA256,,}" ] ||
   ci_die "release haptics source lock does not bind the requested kernel SDK archive"
 [[ $source_lock_bundle_id =~ ^[0-9a-f]{64}$ ]] ||
   ci_die "release haptics source lock has an invalid kernel bundle identity"
+[[ $source_lock_toolchain_manifest_sha256 =~ ^[0-9a-f]{64}$ ]] ||
+  ci_die "release haptics source lock has an invalid kernel toolchain manifest identity"
 [ "$source_lock_environment_policy" = "$HAPTICS_BUILD_ENVIRONMENT_POLICY" ] ||
   ci_die "release haptics source lock has an unexpected environment policy"
 [ "$source_lock_environment_policy_sha256" = "$HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256" ] ||

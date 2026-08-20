@@ -14,13 +14,6 @@ ci_require_cmd() {
   command -v "$1" >/dev/null 2>&1 || ci_die "required command not found: $1"
 }
 
-ci_bool() {
-  case "${1:-}" in
-    1|yes|true|on) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 ci_abs_path() {
   case "$1" in
     /*) printf '%s\n' "$1" ;;
@@ -233,9 +226,13 @@ ci_verify_clean_git_commit() {
     ci_die "source commit mismatch: expected $expected_commit, got $actual_commit"
   index_flags=$("${git_cmd[@]}" ls-files -v) ||
     ci_die "cannot inspect source index flags: $resolved_root"
-  if grep -Eq '^[a-zS] ' <<<"$index_flags"; then
-    ci_die "source worktree has unsafe assume-unchanged/skip-worktree index flags: $resolved_root"
-  fi
+  while IFS= read -r index_record; do
+    case $index_record in
+      [a-zS]\ *)
+        ci_die "source worktree has unsafe assume-unchanged/skip-worktree index flags: $resolved_root"
+        ;;
+    esac
+  done <<<"$index_flags"
   status=$("${git_cmd[@]}" status --porcelain=v1 --untracked-files=all) ||
     ci_die "cannot inspect source worktree state: $resolved_root"
   [ -z "$status" ] || ci_die "source worktree must be clean: $resolved_root"
@@ -374,11 +371,20 @@ ci_download() {
   local src=$1
   local dst=$2
   local verifier=${3:-}
+  local maximum=${4:-}
   local tmp="${dst}.part.$$"
   local attempt=1
   local max_attempts=24
   local resume_reset=0
   local curl_rc
+  local actual_size
+  local -a size_args=()
+
+  if [ -n "$maximum" ]; then
+    [[ $maximum =~ ^[1-9][0-9]{0,11}$ ]] ||
+      ci_die "invalid download size limit for $dst"
+    size_args=(--max-filesize "$maximum")
+  fi
 
   rm -f -- "$tmp"
   case "$src" in
@@ -399,11 +405,27 @@ ci_download() {
           --speed-limit 1024 \
           --speed-time 300 \
           --continue-at - \
+          "${size_args[@]}" \
           --output "$tmp" \
           "$src"; then
           break
         else
           curl_rc=$?
+        fi
+
+        if [ -n "$maximum" ] && [ -e "$tmp" ]; then
+          actual_size=$(stat -c '%s' -- "$tmp") || {
+            rm -f -- "$tmp"
+            ci_die "cannot measure downloaded payload: $src"
+          }
+          if [ "$actual_size" -gt "$maximum" ]; then
+            rm -f -- "$tmp"
+            ci_die "download exceeds $maximum bytes: $src"
+          fi
+        fi
+        if [ "$curl_rc" -eq 63 ] && [ -n "$maximum" ]; then
+          rm -f -- "$tmp"
+          ci_die "download exceeds $maximum bytes: $src"
         fi
 
         if [ -s "$tmp" ] && ci_download_matches_sha256 "$tmp" "$verifier"; then
@@ -432,9 +454,25 @@ ci_download() {
     *)
       [ -f "$src" ] && [ ! -L "$src" ] ||
         ci_die "local download source is not a regular file: $src"
+      if [ -n "$maximum" ]; then
+        actual_size=$(stat -c '%s' -- "$src") ||
+          ci_die "cannot measure local download source: $src"
+        [ "$actual_size" -le "$maximum" ] ||
+          ci_die "download exceeds $maximum bytes: $src"
+      fi
       cp --reflink=auto -- "$src" "$tmp"
       ;;
   esac
+  if [ -n "$maximum" ]; then
+    actual_size=$(stat -c '%s' -- "$tmp") || {
+      rm -f -- "$tmp"
+      ci_die "cannot measure downloaded payload: $src"
+    }
+    if [ "$actual_size" -gt "$maximum" ]; then
+      rm -f -- "$tmp"
+      ci_die "download exceeds $maximum bytes: $src"
+    fi
+  fi
   if [ -n "$verifier" ]; then
     if ! (ci_verify_download "$tmp" "$verifier"); then
       rm -f -- "$tmp"
@@ -452,6 +490,6 @@ ci_extract_archive() {
   helper=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/safe-extract-archive.py
   ci_require_cmd "${CI_PYTHON3_BIN:-python3}"
   [ -f "$archive" ] || ci_die "archive not found: $archive"
-  "${CI_PYTHON3_BIN:-python3}" "$helper" "$archive" "$dest" ||
+  "${CI_PYTHON3_BIN:-python3}" -I "$helper" "$archive" "$dest" ||
     ci_die "safe archive extraction failed: $archive"
 }

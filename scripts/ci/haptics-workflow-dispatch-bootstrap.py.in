@@ -1,0 +1,2946 @@
+#!/usr/bin/env python3
+"""Candidate-specific external trust root for haptics workflow dispatch."""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+from dataclasses import dataclass
+import errno
+import hashlib
+import math
+import os
+import pathlib
+import pwd
+import re
+import resource
+import secrets
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+
+_ORIGINAL_SCANDIR = os.scandir
+
+
+TRUSTED_COMMIT = "@@TRUSTED_COMMIT@@"
+CANDIDATE_COMMIT = "@@CANDIDATE_COMMIT@@"
+GATE_SHA256 = "@@GATE_SHA256@@"
+WORKFLOW_SHA256 = "@@WORKFLOW_SHA256@@"
+BOUNDARY_VALIDATOR_SHA256 = "@@BOUNDARY_VALIDATOR_SHA256@@"
+ISOLATION_VALIDATOR_SHA256 = "@@ISOLATION_VALIDATOR_SHA256@@"
+REPOSITORY = "GUF296/tb321fu-haptics-debs"
+RELEASE_TAG = "tb321fu-haptics-debs-20260730.2"
+REMOTE_REF = f"codex-dispatch/{CANDIDATE_COMMIT}"
+GATE_PATH = "scripts/ci/dispatch-haptics-workflow.py"
+WORKFLOW_PATH = ".github/workflows/build.yml"
+BOUNDARY_VALIDATOR_PATH = "scripts/ci/check-workflow-input-boundaries.py"
+ISOLATION_VALIDATOR_PATH = "scripts/ci/test-haptics-release-job-isolation.py"
+PINS = (
+    (GATE_PATH, "100644", 2 * 1024 * 1024, GATE_SHA256),
+    (WORKFLOW_PATH, "100644", 1024 * 1024, WORKFLOW_SHA256),
+    (BOUNDARY_VALIDATOR_PATH, "100755", 2 * 1024 * 1024, BOUNDARY_VALIDATOR_SHA256),
+    (ISOLATION_VALIDATOR_PATH, "100644", 2 * 1024 * 1024, ISOLATION_VALIDATOR_SHA256),
+)
+MAX_COMMIT_BYTES = 64 * 1024
+MAX_TREE_BYTES = 2 * 1024 * 1024
+MAX_GIT_OUTPUT_BYTES = 2 * 1024 * 1024
+MAX_GATE_OUTPUT_BYTES = 1024 * 1024
+BOOTSTRAP_TIMEOUT_SECONDS = 330.0
+GATE_TIMEOUT_SECONDS = 300.0
+BOOTSTRAP_CLEANUP_GRACE_SECONDS = 5.0
+BOOTSTRAP_SIGNAL_POLL_SECONDS = 0.05
+MAX_PROCESS_TABLE_ENTRIES = 131072
+MAX_DESCENDANT_PROCESSES = 4096
+MAX_DESCENDANT_CLEANUP_PASSES = 40
+PIDFD_BATCH_SIZE = 32
+PIDFD_CAPACITY_MARGIN = 8
+MAX_FD_SNAPSHOT_ENTRIES = 4096
+MAX_PENDING_SIGNAL_DRAIN = 64
+PR_SET_CHILD_SUBREAPER = 36
+PR_GET_CHILD_SUBREAPER = 37
+STATE_DIRECTORY = pathlib.PurePosixPath(
+    ".local/state/tb321fu-haptics-workflow-dispatch"
+)
+OID = re.compile(r"[0-9a-f]{40}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+DISPATCH_ID = re.compile(r"[0-9a-f]{32}")
+POSITIVE_RUN_ID = re.compile(r"[1-9][0-9]{0,19}")
+GATE_VALIDATOR_MODE = "trusted-commit-blobs/v1"
+
+
+class BootstrapError(ValueError):
+    pass
+
+
+@dataclass
+class BootstrapSignal(BaseException):
+    signum: int
+
+
+@dataclass(frozen=True)
+class BoundedResult:
+    returncode: int
+    stdout: bytes
+    stderr: bytes
+
+
+@dataclass
+class DescriptorOwner:
+    descriptor: int = -1
+
+
+@dataclass(frozen=True)
+class PrivateGate:
+    path: pathlib.Path
+    descriptor: int
+    device: int
+    inode: int
+    size: int
+
+
+def choose_failure(
+    current: BaseException | None,
+    new: BaseException,
+    note: str,
+) -> BaseException:
+    if current is None:
+        return new
+    current_is_caller_policy = (
+        not isinstance(current, Exception)
+        and not isinstance(current, BootstrapSignal)
+    )
+    new_is_caller_policy = (
+        not isinstance(new, Exception)
+        and not isinstance(new, BootstrapSignal)
+    )
+    if new_is_caller_policy and not current_is_caller_policy:
+        new.add_note(note)
+        if new.__cause__ is None and isinstance(current, Exception):
+            new.__cause__ = current
+        return new
+    if current_is_caller_policy:
+        if new is not current:
+            current.add_note(note)
+        return current
+    if not isinstance(new, Exception) and isinstance(current, Exception):
+        new.add_note(note)
+        if new.__cause__ is None:
+            new.__cause__ = current
+        return new
+    if new is not current:
+        current.add_note(note)
+    return current
+
+
+def cleanup_candidate(exc: BaseException, message: str) -> BaseException:
+    if not isinstance(exc, Exception):
+        return exc
+    failure = BootstrapError(message)
+    failure.__cause__ = exc
+    return failure
+
+
+def close_owned_descriptor(
+    descriptor: int,
+    label: str,
+    primary: BaseException | None = None,
+) -> tuple[BaseException | None, bool]:
+    for _ in range(3):
+        try:
+            os.close(descriptor)
+        except BaseException as exc:
+            primary = choose_failure(
+                primary,
+                cleanup_candidate(exc, f"{label} close failed"),
+                f"{label} close also failed",
+            )
+            try:
+                os.fstat(descriptor)
+            except BaseException as probe:
+                if isinstance(probe, OSError) and probe.errno == errno.EBADF:
+                    return primary, True
+                primary = choose_failure(
+                    primary,
+                    cleanup_candidate(
+                        probe,
+                        f"{label} descriptor custody probe failed",
+                    ),
+                    f"{label} descriptor custody probe also failed",
+                )
+            continue
+        return primary, True
+    try:
+        os.fstat(descriptor)
+    except BaseException as probe:
+        if isinstance(probe, OSError) and probe.errno == errno.EBADF:
+            return primary, True
+        primary = choose_failure(
+            primary,
+            cleanup_candidate(
+                probe,
+                f"{label} final descriptor custody probe failed",
+            ),
+            f"{label} final descriptor custody probe also failed",
+        )
+    primary = choose_failure(
+        primary,
+        BootstrapError(f"{label} close did not converge"),
+        f"{label} descriptor custody also did not converge",
+    )
+    return primary, False
+
+
+def settle_scandir_iterator(
+    entries,
+    primary: BaseException | None,
+    label: str,
+) -> BaseException | None:
+    closed = False
+    for _ in range(3):
+        try:
+            entries.close()
+        except BaseException as exc:
+            primary = choose_failure(
+                primary,
+                cleanup_candidate(exc, f"{label} close failed"),
+                f"{label} close also failed",
+            )
+            continue
+        closed = True
+        break
+    if not closed:
+        primary = choose_failure(
+            primary,
+            BootstrapError(f"{label} close did not converge"),
+            f"{label} custody also did not converge",
+        )
+    return primary
+
+
+def trusted_fd_snapshot(
+    partial_descriptors: set[int] | None = None,
+) -> frozenset[int]:
+    descriptors: set[int] = set()
+    entries = None
+    primary: BaseException | None = None
+    try:
+        entries = _ORIGINAL_SCANDIR("/proc/self/fd")
+        count = 0
+        for entry in entries:
+            count += 1
+            if count > MAX_FD_SNAPSHOT_ENTRIES:
+                raise BootstrapError("bootstrap descriptor table exceeds its bound")
+            if entry.name.isascii() and entry.name.isdecimal():
+                descriptor = int(entry.name, 10)
+                descriptors.add(descriptor)
+                if partial_descriptors is not None:
+                    partial_descriptors.add(descriptor)
+    except BaseException as exc:
+        primary = cleanup_candidate(
+            exc,
+            "cannot inspect trusted bootstrap descriptor table",
+        )
+    if entries is not None:
+        primary = settle_scandir_iterator(
+            entries,
+            primary,
+            "trusted bootstrap descriptor-table iterator",
+        )
+    if primary is not None:
+        raise primary
+    live: set[int] = set()
+    for descriptor in descriptors:
+        try:
+            os.fstat(descriptor)
+        except OSError as exc:
+            if exc.errno != errno.EBADF:
+                raise BootstrapError(
+                    "cannot inspect trusted bootstrap descriptor table entry"
+                ) from exc
+        else:
+            live.add(descriptor)
+    return frozenset(live)
+
+
+def recover_scandir_acquisition(
+    before: frozenset[int],
+    identity: tuple[int, int],
+    label: str,
+    primary: BaseException,
+) -> BaseException:
+    partial_descriptors: set[int] = set()
+    try:
+        after = trusted_fd_snapshot(partial_descriptors)
+    except BaseException as exc:
+        primary = choose_failure(
+            primary,
+            cleanup_candidate(exc, f"{label} recovery failed"),
+            f"{label} recovery scan also failed",
+        )
+        after = frozenset(partial_descriptors)
+    for descriptor in sorted(after - before):
+        identity_matches: bool | None = None
+        try:
+            metadata = os.fstat(descriptor)
+        except BaseException as exc:
+            primary = choose_failure(
+                primary,
+                cleanup_candidate(exc, f"{label} recovery probe failed"),
+                f"{label} recovery probe also failed",
+            )
+        else:
+            identity_matches = (metadata.st_dev, metadata.st_ino) == identity
+        primary, closed = close_owned_descriptor(descriptor, label, primary)
+        if identity_matches is None:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} recovered descriptor identity is unknown"),
+                f"{label} recovery identity also became unknown",
+            )
+        elif not identity_matches:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} recovered an unexpected descriptor"),
+                f"{label} recovery identity also differed",
+            )
+        if not closed:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} recovery did not converge"),
+                f"{label} recovery also did not converge",
+            )
+    return primary
+
+
+def bounded_fd_snapshot(
+    partial_descriptors: set[int] | None = None,
+) -> frozenset[int]:
+    descriptors: set[int] = set()
+    entries = None
+    primary: BaseException | None = None
+    table_metadata = os.stat("/proc/self/fd", follow_symlinks=False)
+    acquisition_before = trusted_fd_snapshot(partial_descriptors)
+    try:
+        entries = os.scandir("/proc/self/fd")
+        count = 0
+        for entry in entries:
+            count += 1
+            if count > MAX_FD_SNAPSHOT_ENTRIES:
+                raise BootstrapError("bootstrap descriptor table exceeds its bound")
+            if entry.name.isascii() and entry.name.isdecimal():
+                descriptor = int(entry.name, 10)
+                descriptors.add(descriptor)
+                if partial_descriptors is not None:
+                    partial_descriptors.add(descriptor)
+    except BaseException as exc:
+        primary = cleanup_candidate(
+            exc,
+            "cannot inspect bootstrap descriptor table",
+        )
+        if entries is None:
+            primary = recover_scandir_acquisition(
+                acquisition_before,
+                (table_metadata.st_dev, table_metadata.st_ino),
+                "bootstrap descriptor-table acquisition",
+                primary,
+            )
+    if entries is not None:
+        primary = settle_scandir_iterator(
+            entries,
+            primary,
+            "bootstrap descriptor-table iterator",
+        )
+    if primary is not None:
+        raise primary
+    live: set[int] = set()
+    for descriptor in descriptors:
+        try:
+            os.fstat(descriptor)
+        except OSError as exc:
+            if exc.errno != errno.EBADF:
+                raise BootstrapError(
+                    "cannot inspect bootstrap descriptor table entry"
+                ) from exc
+        else:
+            live.add(descriptor)
+    return frozenset(live)
+
+
+def recover_descriptor_handoff(
+    before: frozenset[int],
+    identity: tuple[int, int],
+    label: str,
+    primary: BaseException,
+) -> tuple[BaseException, bool]:
+    recovered = False
+    partial_descriptors: set[int] = set()
+    try:
+        after = bounded_fd_snapshot(partial_descriptors)
+    except BaseException as exc:
+        primary = choose_failure(
+            primary,
+            cleanup_candidate(exc, f"{label} descriptor recovery failed"),
+            f"{label} descriptor recovery scan also failed",
+        )
+        after = frozenset(partial_descriptors)
+    for descriptor in sorted(after - before):
+        identity_matches: bool | None = None
+        try:
+            metadata = os.fstat(descriptor)
+        except BaseException as exc:
+            primary = choose_failure(
+                primary,
+                cleanup_candidate(
+                    exc,
+                    f"{label} descriptor recovery inspection failed",
+                ),
+                f"{label} descriptor recovery inspection also failed",
+            )
+        else:
+            identity_matches = (metadata.st_dev, metadata.st_ino) == identity
+        primary, closed = close_owned_descriptor(descriptor, label, primary)
+        if identity_matches is None:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} recovered descriptor identity is unknown"),
+                f"{label} recovery identity also became unknown",
+            )
+        elif not identity_matches:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} recovered an unexpected descriptor"),
+                f"{label} recovery identity also differed",
+            )
+        elif closed:
+            recovered = True
+        if not closed:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} descriptor recovery did not converge"),
+                f"{label} descriptor recovery also did not converge",
+            )
+    return primary, recovered
+
+
+def recover_created_private_gate_handoff(
+    before: frozenset[int],
+    parent_device: int,
+    label: str,
+    primary: BaseException,
+) -> tuple[BaseException, tuple[int, int] | None]:
+    partial_descriptors: set[int] = set()
+    try:
+        after = bounded_fd_snapshot(partial_descriptors)
+    except BaseException as exc:
+        primary = choose_failure(
+            primary,
+            cleanup_candidate(exc, f"{label} descriptor recovery failed"),
+            f"{label} descriptor recovery scan also failed",
+        )
+        after = frozenset(partial_descriptors)
+    candidates: list[tuple[int, os.stat_result | None, bool]] = []
+    for descriptor in sorted(after - before):
+        metadata: os.stat_result | None = None
+        try:
+            metadata = os.fstat(descriptor)
+        except BaseException as exc:
+            primary = choose_failure(
+                primary,
+                cleanup_candidate(
+                    exc,
+                    f"{label} descriptor recovery inspection failed",
+                ),
+                f"{label} descriptor recovery inspection also failed",
+            )
+        policy_matches = metadata is not None and (
+            stat.S_ISREG(metadata.st_mode)
+            and stat.S_IMODE(metadata.st_mode) == 0o500
+            and metadata.st_uid == os.geteuid()
+            and metadata.st_gid == os.getegid()
+            and metadata.st_nlink == 1
+            and metadata.st_size == 0
+            and metadata.st_dev == parent_device
+        )
+        candidates.append((descriptor, metadata, policy_matches))
+    recovered_identity: tuple[int, int] | None = None
+    if len(candidates) > 1:
+        primary = choose_failure(
+            primary,
+            BootstrapError(f"{label} descriptor recovery is ambiguous"),
+            f"{label} descriptor recovery also became ambiguous",
+        )
+    for descriptor, metadata, policy_matches in candidates:
+        primary, closed = close_owned_descriptor(descriptor, label, primary)
+        if metadata is None:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} recovered descriptor identity is unknown"),
+                f"{label} recovery identity also became unknown",
+            )
+        elif not policy_matches:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} recovered descriptor differs from policy"),
+                f"{label} recovery metadata also differed",
+            )
+        if not closed:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} descriptor recovery did not converge"),
+                f"{label} descriptor recovery also did not converge",
+            )
+            continue
+        if metadata is None:
+            continue
+        identity = (metadata.st_dev, metadata.st_ino)
+        if recovered_identity is None:
+            recovered_identity = identity
+        elif recovered_identity != identity:
+            recovered_identity = None
+    if len(candidates) != 1:
+        recovered_identity = None
+    return primary, recovered_identity
+
+
+def pidfd_target_pid(descriptor: int) -> int | None:
+    try:
+        raw = pathlib.Path(f"/proc/self/fdinfo/{descriptor}").read_bytes()
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
+        raise BootstrapError("cannot inspect bootstrap pidfd identity") from exc
+    if len(raw) > 4096 or not raw.endswith(b"\n"):
+        raise BootstrapError("bootstrap pidfd identity is malformed")
+    targets = [line[4:] for line in raw.splitlines() if line.startswith(b"Pid:")]
+    if len(targets) != 1:
+        raise BootstrapError("bootstrap pidfd identity is malformed")
+    target = targets[0].strip()
+    if target == b"-1":
+        return None
+    if not target.isdigit():
+        raise BootstrapError("bootstrap pidfd identity is malformed")
+    return int(target, 10)
+
+
+def recover_pidfd_handoff(
+    before: frozenset[int],
+    pid: int,
+    label: str,
+    primary: BaseException,
+) -> tuple[BaseException, bool]:
+    matched = False
+    partial_descriptors: set[int] = set()
+    try:
+        after = bounded_fd_snapshot(partial_descriptors)
+    except BaseException as exc:
+        primary = choose_failure(
+            primary,
+            cleanup_candidate(exc, f"{label} recovery failed"),
+            f"{label} recovery scan also failed",
+        )
+        after = frozenset(partial_descriptors)
+    for descriptor in sorted(after - before):
+        try:
+            is_pidfd = (
+                os.readlink(f"/proc/self/fd/{descriptor}")
+                == "anon_inode:[pidfd]"
+            )
+            target = pidfd_target_pid(descriptor) if is_pidfd else None
+        except BaseException as exc:
+            primary = choose_failure(
+                primary,
+                cleanup_candidate(exc, f"{label} identity inspection failed"),
+                f"{label} identity inspection also failed",
+            )
+            target = None
+        primary, closed = close_owned_descriptor(descriptor, label, primary)
+        if target == pid and closed:
+            matched = True
+        elif target != pid:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} recovered an unexpected target"),
+                f"{label} recovery target also differed",
+            )
+        if not closed:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} recovery did not converge"),
+                f"{label} recovery also did not converge",
+            )
+    return primary, matched
+
+
+def acquire_pidfd(
+    owner: DescriptorOwner,
+    pid: int,
+    label: str,
+) -> None:
+    if owner.descriptor >= 0:
+        raise BootstrapError(f"{label} owner is already populated")
+    baseline = bounded_fd_snapshot()
+    try:
+        owner.descriptor = os.pidfd_open(pid, 0)
+    except BaseException as exc:
+        selected = exc
+        if owner.descriptor >= 0:
+            selected, closed = close_owned_descriptor(
+                owner.descriptor,
+                label,
+                selected,
+            )
+            if closed:
+                owner.descriptor = -1
+        else:
+            selected, _ = recover_pidfd_handoff(
+                baseline,
+                pid,
+                label,
+                selected,
+            )
+        raise selected
+
+
+def cleanup_owned_namespace(
+    path: pathlib.Path,
+    identity: tuple[int, int],
+    label: str,
+    primary: BaseException | None,
+) -> tuple[BaseException | None, bool]:
+    for _ in range(3):
+        try:
+            current = os.stat(path, follow_symlinks=False)
+        except FileNotFoundError:
+            return primary, True
+        except BaseException as exc:
+            primary = choose_failure(
+                primary,
+                cleanup_candidate(exc, f"{label} identity inspection failed"),
+                f"{label} identity inspection also failed",
+            )
+            continue
+        if (current.st_dev, current.st_ino) != identity:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} changed before cleanup"),
+                f"{label} replacement was preserved",
+            )
+            return primary, False
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            continue
+        except BaseException as exc:
+            primary = choose_failure(
+                primary,
+                cleanup_candidate(exc, f"{label} unlink failed"),
+                f"{label} unlink also failed",
+            )
+            continue
+        return primary, True
+    try:
+        current = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        return primary, True
+    except BaseException as exc:
+        primary = choose_failure(
+            primary,
+            cleanup_candidate(exc, f"{label} final identity inspection failed"),
+            f"{label} final identity inspection also failed",
+        )
+    else:
+        if (current.st_dev, current.st_ino) != identity:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} changed before cleanup"),
+                f"{label} replacement was preserved",
+            )
+            return primary, False
+    primary = choose_failure(
+        primary,
+        BootstrapError(f"{label} cleanup did not converge"),
+        f"{label} cleanup also did not converge",
+    )
+    return primary, False
+
+
+def cleanup_owned_directory(
+    path: pathlib.Path,
+    identity: tuple[int, int],
+    label: str,
+    primary: BaseException | None,
+) -> tuple[BaseException | None, bool]:
+    for _ in range(3):
+        try:
+            current = os.stat(path, follow_symlinks=False)
+        except FileNotFoundError:
+            return primary, True
+        except BaseException as exc:
+            primary = choose_failure(
+                primary,
+                cleanup_candidate(exc, f"{label} identity inspection failed"),
+                f"{label} identity inspection also failed",
+            )
+            continue
+        if (current.st_dev, current.st_ino) != identity:
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} changed before cleanup"),
+                f"{label} replacement was preserved",
+            )
+            return primary, False
+        if not stat.S_ISDIR(current.st_mode):
+            primary = choose_failure(
+                primary,
+                BootstrapError(f"{label} is no longer a directory"),
+                f"{label} type changed before cleanup",
+            )
+            return primary, False
+        try:
+            os.rmdir(path)
+        except FileNotFoundError:
+            continue
+        except BaseException as exc:
+            primary = choose_failure(
+                primary,
+                cleanup_candidate(exc, f"{label} removal failed"),
+                f"{label} removal also failed",
+            )
+            continue
+        return primary, True
+    primary = choose_failure(
+        primary,
+        BootstrapError(f"{label} cleanup did not converge"),
+        f"{label} cleanup also did not converge",
+    )
+    return primary, False
+
+
+class OwnedPrivateDirectory:
+    def __init__(self, prefix: str) -> None:
+        self.prefix = prefix
+        self.path: pathlib.Path | None = None
+        self.identity: tuple[int, int] | None = None
+        self.children: list[tuple[pathlib.Path, tuple[int, int], str]] = []
+
+    def __enter__(self) -> "OwnedPrivateDirectory":
+        self.path = pathlib.Path(tempfile.mkdtemp(prefix=self.prefix))
+        primary: BaseException | None = None
+        try:
+            namespace = os.stat(self.path, follow_symlinks=False)
+            if not stat.S_ISDIR(namespace.st_mode):
+                raise BootstrapError("private bootstrap root is not a directory")
+            self.identity = (namespace.st_dev, namespace.st_ino)
+        except BaseException as exc:
+            primary = exc
+        descriptor = -1
+        if primary is None:
+            assert self.identity is not None
+            try:
+                before = bounded_fd_snapshot()
+            except BaseException as exc:
+                primary = exc
+            else:
+                try:
+                    descriptor = os.open(
+                        self.path,
+                        os.O_RDONLY
+                        | os.O_CLOEXEC
+                        | os.O_DIRECTORY
+                        | os.O_NOFOLLOW,
+                    )
+                except BaseException as exc:
+                    primary = exc
+                    primary, _ = recover_descriptor_handoff(
+                        before,
+                        self.identity,
+                        "private bootstrap root identity descriptor",
+                        primary,
+                    )
+        if descriptor >= 0 and primary is None:
+            opened = None
+            for _ in range(3):
+                try:
+                    opened = os.fstat(descriptor)
+                    break
+                except BaseException as exc:
+                    primary = choose_failure(
+                        primary,
+                        cleanup_candidate(
+                            exc,
+                            "private bootstrap root descriptor inspection failed",
+                        ),
+                        "private bootstrap root descriptor inspection also failed",
+                    )
+            if opened is None:
+                primary = choose_failure(
+                    primary,
+                    BootstrapError(
+                        "private bootstrap root descriptor inspection did not converge"
+                    ),
+                    "private bootstrap root descriptor inspection also did not converge",
+                )
+            elif (
+                (opened.st_dev, opened.st_ino) != self.identity
+                or not stat.S_ISDIR(opened.st_mode)
+            ):
+                primary = choose_failure(
+                    primary,
+                    BootstrapError(
+                        "private bootstrap root changed before descriptor custody"
+                    ),
+                    "private bootstrap root replacement was preserved",
+                )
+        if descriptor >= 0 and primary is None:
+            try:
+                os.fchmod(descriptor, 0o700)
+            except BaseException as exc:
+                primary = exc
+        if descriptor >= 0 and primary is None:
+            current = None
+            for _ in range(3):
+                try:
+                    current = os.fstat(descriptor)
+                    break
+                except BaseException as exc:
+                    primary = choose_failure(
+                        primary,
+                        cleanup_candidate(
+                            exc,
+                            "private bootstrap root post-chmod inspection failed",
+                        ),
+                        "private bootstrap root post-chmod inspection also failed",
+                    )
+            if current is None:
+                primary = choose_failure(
+                    primary,
+                    BootstrapError(
+                        "private bootstrap root post-chmod inspection did not converge"
+                    ),
+                    "private bootstrap root post-chmod inspection also did not converge",
+                )
+            elif (
+                (current.st_dev, current.st_ino) != self.identity
+                or not stat.S_ISDIR(current.st_mode)
+                or stat.S_IMODE(current.st_mode) != 0o700
+            ):
+                primary = choose_failure(
+                    primary,
+                    BootstrapError(
+                        "private bootstrap root descriptor changed during initialization"
+                    ),
+                    "private bootstrap root descriptor verification also failed",
+                )
+        if descriptor >= 0 and primary is None:
+            try:
+                namespace = os.stat(self.path, follow_symlinks=False)
+            except BaseException as exc:
+                primary = exc
+            else:
+                if (
+                    (namespace.st_dev, namespace.st_ino) != self.identity
+                    or not stat.S_ISDIR(namespace.st_mode)
+                    or stat.S_IMODE(namespace.st_mode) != 0o700
+                ):
+                    primary = BootstrapError(
+                        "private bootstrap root changed during initialization"
+                    )
+        if descriptor >= 0:
+            primary, _ = close_owned_descriptor(
+                descriptor,
+                "private bootstrap root identity descriptor",
+                primary,
+            )
+        if primary is not None:
+            if self.identity is not None:
+                primary, _ = cleanup_owned_directory(
+                    self.path,
+                    self.identity,
+                    "private bootstrap root",
+                    primary,
+                )
+            else:
+                primary = choose_failure(
+                    primary,
+                    BootstrapError(
+                        "private bootstrap root identity was not established"
+                    ),
+                    "unidentified private bootstrap root was preserved",
+                )
+            raise primary
+        return self
+
+    def register_directory(self, path: pathlib.Path, label: str) -> None:
+        if self.path is None or path.parent != self.path:
+            raise BootstrapError("private directory registration is outside custody")
+        metadata = path.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise BootstrapError(f"{label} is not a directory")
+        self.children.append((path, (metadata.st_dev, metadata.st_ino), label))
+
+    def __exit__(self, _kind, value, _traceback) -> bool:
+        primary = value
+        for path, identity, label in reversed(self.children):
+            primary, _ = cleanup_owned_directory(
+                path,
+                identity,
+                label,
+                primary,
+            )
+        if self.path is not None and self.identity is not None:
+            primary, _ = cleanup_owned_directory(
+                self.path,
+                self.identity,
+                "private bootstrap root",
+                primary,
+            )
+        if primary is not None and primary is not value:
+            raise primary
+        return False
+
+
+def read_process_record(descriptor: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    interruptions = 0
+    while total <= 4096:
+        try:
+            chunk = os.read(descriptor, 4097 - total)
+        except InterruptedError:
+            interruptions += 1
+            if interruptions > 3:
+                raise BootstrapError(
+                    "bootstrap process record read did not converge"
+                )
+            continue
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > 4096:
+            raise BootstrapError("bootstrap process record exceeds its bound")
+    raise BootstrapError("bootstrap process record exceeds its bound")
+
+
+class NativeSignalSet(ctypes.Structure):
+    _fields_ = [("bits", ctypes.c_ulong * 16)]
+
+
+def atomic_capture_and_block(signals, capture) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    new_mask = NativeSignalSet()
+    old_mask = NativeSignalSet()
+    if libc.sigemptyset(ctypes.byref(new_mask)) != 0:
+        raise BootstrapError("cannot initialize outer bootstrap signal mask")
+    for signum in signals:
+        if libc.sigaddset(ctypes.byref(new_mask), int(signum)) != 0:
+            raise BootstrapError("cannot initialize outer bootstrap signal mask")
+    result = libc.pthread_sigmask(
+        int(signal.SIG_BLOCK),
+        ctypes.byref(new_mask),
+        ctypes.byref(old_mask),
+    )
+    if result != 0:
+        raise OSError(result, os.strerror(result))
+    previous = frozenset(
+        signum
+        for signum in signal.valid_signals()
+        if libc.sigismember(ctypes.byref(old_mask), int(signum)) == 1
+    )
+    capture(previous)
+
+
+class BootstrapCancellationGuard:
+    """Own launcher cancellation across authentication, staging and execution."""
+
+    def __init__(self) -> None:
+        self.signals = {signal.SIGINT, signal.SIGTERM}
+        self.signum: int | None = None
+        self.original_mask = None
+        self.previous_int_handler = None
+        self.previous_term_handler = None
+        self.handlers_captured = False
+        self.terminal_handoff_failure: BaseException | None = None
+
+    def record(self, signum, _frame=None) -> None:
+        if self.signum is None or signum == signal.SIGINT:
+            self.signum = signum
+
+    def capture_original_mask(self, previous) -> None:
+        self.original_mask = frozenset(previous)
+
+    def consume_pending(self) -> None:
+        for _ in range(MAX_PENDING_SIGNAL_DRAIN):
+            try:
+                pending = signal.sigtimedwait(self.signals, 0)
+            except InterruptedError:
+                continue
+            except OSError as exc:
+                raise BootstrapError(
+                    "cannot consume pending outer bootstrap cancellation"
+                ) from exc
+            if pending is None:
+                return
+            self.record(pending.si_signo)
+        raise BootstrapError(
+            "pending outer bootstrap cancellation did not converge"
+        )
+
+    @staticmethod
+    def retry(operation, message: str) -> BaseException | None:
+        failure: BaseException | None = None
+        for _ in range(3):
+            try:
+                operation()
+                return failure
+            except BaseException as exc:
+                failure = choose_failure(failure, exc, message)
+        if failure is None:
+            failure = BootstrapError(message)
+        failure.add_note(message)
+        return failure
+
+    def restore_handlers(self) -> tuple[BaseException, ...]:
+        if not self.handlers_captured:
+            return ()
+        failures: list[BaseException] = []
+        for signum, handler, label in (
+            (signal.SIGTERM, self.previous_term_handler, "SIGTERM"),
+            (signal.SIGINT, self.previous_int_handler, "SIGINT"),
+        ):
+            failure = self.retry(
+                lambda signum=signum, handler=handler: signal.signal(
+                    signum, handler
+                ),
+                f"outer bootstrap {label} handler restore did not converge",
+            )
+            if failure is not None:
+                failures.append(failure)
+        return tuple(failures)
+
+    def restore_terminal_mask(self) -> BaseException | None:
+        if self.original_mask is None:
+            return None
+        self.terminal_handoff_failure = None
+        failure: BaseException | None = None
+        for _ in range(3):
+            try:
+                signal.pthread_sigmask(signal.SIG_SETMASK, self.original_mask)
+            except BaseException as exc:
+                try:
+                    current = frozenset(
+                        signal.pthread_sigmask(signal.SIG_BLOCK, set())
+                    )
+                except BaseException as probe:
+                    failure = choose_failure(
+                        failure,
+                        cleanup_candidate(
+                            exc,
+                            "outer bootstrap signal-mask restore failed",
+                        ),
+                        "outer bootstrap signal-mask restore also failed",
+                    )
+                    failure = choose_failure(
+                        failure,
+                        cleanup_candidate(
+                            probe,
+                            "outer bootstrap terminal mask state inspection failed",
+                        ),
+                        "outer bootstrap terminal mask inspection also failed",
+                    )
+                else:
+                    if current == self.original_mask:
+                        if failure is not None and failure is not exc:
+                            exc.add_note(
+                                "outer bootstrap signal-mask restoration failed "
+                                "before caller policy handoff"
+                            )
+                            if exc.__cause__ is None and isinstance(
+                                failure, Exception
+                            ):
+                                exc.__cause__ = failure
+                        self.terminal_handoff_failure = exc
+                        return exc
+                    failure = choose_failure(
+                        failure,
+                        cleanup_candidate(
+                            exc,
+                            "outer bootstrap signal-mask restore failed",
+                        ),
+                        "outer bootstrap signal-mask restore also failed",
+                    )
+                continue
+            else:
+                return failure
+        return choose_failure(
+            failure,
+            BootstrapError(
+                "outer bootstrap signal-mask restore did not converge"
+            ),
+            "outer bootstrap signal-mask restore also did not converge",
+        )
+
+    def __enter__(self) -> "BootstrapCancellationGuard":
+        if not hasattr(signal, "sigtimedwait"):
+            raise BootstrapError("outer bootstrap requires bounded signal consumption")
+        primary: BaseException | None = None
+        try:
+            try:
+                atomic_capture_and_block(
+                    self.signals,
+                    self.capture_original_mask,
+                )
+            except BaseException:
+                raise
+            assert self.original_mask is not None
+            if self.original_mask & self.signals:
+                raise BootstrapError(
+                    "bootstrap inherited a blocked SIGINT or SIGTERM"
+                )
+            self.previous_int_handler = signal.getsignal(signal.SIGINT)
+            self.previous_term_handler = signal.getsignal(signal.SIGTERM)
+            self.handlers_captured = True
+            signal.signal(signal.SIGINT, self.record)
+            signal.signal(signal.SIGTERM, self.record)
+            self.consume_pending()
+            signal.pthread_sigmask(signal.SIG_SETMASK, self.original_mask)
+            return self
+        except BaseException as exc:
+            if isinstance(exc, (BootstrapError, BootstrapSignal)) or not isinstance(
+                exc, Exception
+            ):
+                primary = exc
+            else:
+                primary = BootstrapError(
+                    "cannot install outer bootstrap cancellation state"
+                )
+                primary.__cause__ = exc
+        failures = list(self.restore_handlers())
+        if self.original_mask is not None:
+            failure = self.restore_terminal_mask()
+            if failure is not None:
+                failures.append(failure)
+        assert primary is not None
+        for failure in failures:
+            if failure is self.terminal_handoff_failure:
+                if failure is not primary:
+                    failure.add_note(
+                        "outer bootstrap setup failed before caller policy handoff"
+                    )
+                    if failure.__cause__ is None and isinstance(primary, Exception):
+                        failure.__cause__ = primary
+                primary = failure
+            else:
+                primary = choose_failure(
+                    primary,
+                    failure,
+                    "outer bootstrap setup restoration also failed",
+                )
+        raise primary
+
+    def checkpoint(self) -> None:
+        if self.signum is not None:
+            raise BootstrapSignal(self.signum)
+
+    def __exit__(self, _kind, value, _traceback) -> bool:
+        primary = value
+        failures: list[BaseException] = []
+        cancellation_blocked = False
+        for _ in range(3):
+            try:
+                signal.pthread_sigmask(signal.SIG_BLOCK, self.signals)
+            except BaseException as exc:
+                failures.append(exc)
+            try:
+                current_mask = frozenset(
+                    signal.pthread_sigmask(signal.SIG_BLOCK, set())
+                )
+            except BaseException as exc:
+                failures.append(exc)
+                continue
+            if self.signals <= current_mask:
+                cancellation_blocked = True
+                break
+        if cancellation_blocked:
+            try:
+                self.consume_pending()
+            except BaseException as exc:
+                failures.append(exc)
+            failures.extend(self.restore_handlers())
+            try:
+                self.consume_pending()
+            except BaseException as exc:
+                failures.append(exc)
+            if self.original_mask is not None:
+                failure = self.restore_terminal_mask()
+                if failure is not None:
+                    failures.append(failure)
+        else:
+            failures.append(
+                BootstrapError(
+                    "outer bootstrap terminal cancellation block did not converge"
+                )
+            )
+        handoff_failure = self.terminal_handoff_failure
+        if handoff_failure is not None:
+            if primary is not None and primary is not handoff_failure:
+                handoff_failure.add_note(
+                    "bootstrap failed before caller signal policy handoff"
+                )
+                if handoff_failure.__cause__ is None and isinstance(
+                    primary, Exception
+                ):
+                    handoff_failure.__cause__ = primary
+            for failure in failures:
+                if failure is not handoff_failure:
+                    handoff_failure.add_note(str(failure))
+            raise handoff_failure
+        caller_policy = (
+            primary
+            if (
+                primary is not None
+                and not isinstance(primary, Exception)
+                and not isinstance(primary, BootstrapSignal)
+            )
+            else next(
+                (
+                    failure
+                    for failure in failures
+                    if not isinstance(failure, Exception)
+                    and not isinstance(failure, BootstrapSignal)
+                ),
+                None,
+            )
+        )
+        if caller_policy is not None:
+            if primary is not None and primary is not caller_policy:
+                caller_policy.add_note(
+                    "bootstrap failed before caller signal policy was restored"
+                )
+                if caller_policy.__cause__ is None and isinstance(primary, Exception):
+                    caller_policy.__cause__ = primary
+            for failure in failures:
+                if failure is not caller_policy:
+                    caller_policy.add_note(str(failure))
+            raise caller_policy
+        selected = self.signum
+        if isinstance(primary, BootstrapSignal) and (
+            selected is None or primary.signum == signal.SIGINT
+        ):
+            selected = primary.signum
+        if selected is not None:
+            cancellation = BootstrapSignal(selected)
+            if primary is not None and not isinstance(primary, BootstrapSignal):
+                cancellation.add_note(
+                    "bootstrap failed before outer cancellation cleanup completed"
+                )
+            for failure in failures:
+                cancellation.add_note(str(failure))
+            raise cancellation
+        if primary is not None:
+            for failure in failures:
+                primary.add_note(str(failure))
+            return False
+        if failures:
+            failure = BootstrapError("outer bootstrap signal restoration failed")
+            for cleanup_failure in failures:
+                failure.add_note(str(cleanup_failure))
+            raise failure
+        return False
+
+
+def get_child_subreaper() -> bool:
+    current = ctypes.c_int()
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(current), 0, 0, 0) != 0:
+        raise BootstrapError("cannot inspect bootstrap child-subreaper state")
+    return bool(current.value)
+
+
+def set_child_subreaper(enabled: bool) -> bool:
+    previous = get_child_subreaper()
+    libc = ctypes.CDLL(None, use_errno=True)
+    if previous != enabled and libc.prctl(
+        PR_SET_CHILD_SUBREAPER,
+        int(enabled),
+        0,
+        0,
+        0,
+    ) != 0:
+        raise BootstrapError("cannot set bootstrap child-subreaper state")
+    return previous
+
+
+def process_parent_map() -> dict[int, tuple[int, int]]:
+    processes: dict[int, tuple[int, int]] = {}
+    process_table_baseline = bounded_fd_snapshot()
+    process_table_metadata = os.stat("/proc", follow_symlinks=False)
+    entries = None
+    scan_primary: BaseException | None = None
+    try:
+        entries = os.scandir("/proc")
+        count = 0
+        for entry in entries:
+            if not entry.name.isascii() or not entry.name.isdecimal():
+                continue
+            count += 1
+            if count > MAX_PROCESS_TABLE_ENTRIES:
+                raise BootstrapError("bootstrap process table exceeds its bound")
+            pid = int(entry.name, 10)
+            descriptor = -1
+            raw = b""
+            skipped = False
+            primary: BaseException | None = None
+            record_path = f"/proc/{pid}/stat"
+            record_metadata: os.stat_result | None = None
+            try:
+                flags = os.O_RDONLY | os.O_CLOEXEC
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                record_metadata = os.stat(record_path, follow_symlinks=False)
+                record_baseline = bounded_fd_snapshot()
+                try:
+                    descriptor = os.open(record_path, flags)
+                except BaseException as exc:
+                    disappearance = isinstance(
+                        exc,
+                        (FileNotFoundError, ProcessLookupError),
+                    )
+                    primary = (
+                        exc
+                        if disappearance
+                        else cleanup_candidate(
+                            exc,
+                            f"cannot inspect bootstrap process record {pid}",
+                        )
+                    )
+                    notes_before = tuple(getattr(primary, "__notes__", ()))
+                    primary, _ = recover_descriptor_handoff(
+                        record_baseline,
+                        (record_metadata.st_dev, record_metadata.st_ino),
+                        "bootstrap process record open",
+                        primary,
+                    )
+                    if disappearance and tuple(
+                        getattr(primary, "__notes__", ())
+                    ) == notes_before:
+                        skipped = True
+                        primary = None
+                if descriptor >= 0:
+                    opened_metadata = os.fstat(descriptor)
+                    if (
+                        opened_metadata.st_dev,
+                        opened_metadata.st_ino,
+                    ) != (
+                        record_metadata.st_dev,
+                        record_metadata.st_ino,
+                    ):
+                        raise BootstrapError(
+                            f"bootstrap process record {pid} changed during open"
+                        )
+                    raw = read_process_record(descriptor)
+            except (FileNotFoundError, ProcessLookupError):
+                skipped = True
+            except OSError as exc:
+                primary = BootstrapError(
+                    f"cannot inspect bootstrap process record {pid}"
+                )
+                primary.__cause__ = exc
+            except BaseException as exc:
+                primary = exc
+            if descriptor >= 0:
+                primary, _ = close_owned_descriptor(
+                    descriptor,
+                    "bootstrap process record",
+                    primary,
+                )
+            if primary is not None:
+                raise primary
+            if skipped:
+                continue
+            closing = raw.rfind(b") ")
+            fields = raw[closing + 2:].split() if closing > 0 else []
+            if (
+                len(fields) < 20
+                or re.fullmatch(rb"[0-9]+", fields[1]) is None
+                or re.fullmatch(rb"[0-9]+", fields[19]) is None
+            ):
+                raise BootstrapError(
+                    f"bootstrap process record {pid} is malformed"
+                )
+            processes[pid] = (int(fields[1], 10), int(fields[19], 10))
+    except BaseException as exc:
+        scan_primary = (
+            exc
+            if not isinstance(exc, Exception) or isinstance(exc, BootstrapError)
+            else cleanup_candidate(
+                exc,
+                "cannot inspect bootstrap process table",
+            )
+        )
+        if entries is None:
+            scan_primary, _ = recover_descriptor_handoff(
+                process_table_baseline,
+                (process_table_metadata.st_dev, process_table_metadata.st_ino),
+                "bootstrap process-table iterator open",
+                scan_primary,
+            )
+    if entries is not None:
+        scan_primary = settle_scandir_iterator(
+            entries,
+            scan_primary,
+            "bootstrap process-table iterator",
+        )
+    if scan_primary is not None:
+        raise scan_primary
+    return processes
+
+
+def owned_descendants(
+    root_pid: int,
+    baseline_children: frozenset[int],
+    *,
+    exclude_unreaped_root: bool,
+) -> dict[int, int]:
+    processes = process_parent_map()
+    owner_pid = os.getpid()
+    ordered_processes = sorted(processes.items())
+    children: dict[int, list[tuple[int, int]]] = {}
+    direct: list[tuple[int, int]] = []
+    for pid, (parent, start_time) in ordered_processes:
+        children.setdefault(parent, []).append((pid, start_time))
+        if parent == owner_pid and pid not in baseline_children:
+            direct.append((pid, start_time))
+    owned = dict(direct[:MAX_DESCENDANT_PROCESSES])
+    queue = list(owned)
+    cursor = 0
+    while cursor < len(queue) and len(owned) < MAX_DESCENDANT_PROCESSES:
+        parent = queue[cursor]
+        cursor += 1
+        for pid, start_time in children.get(parent, ()):
+            if pid not in owned and pid not in baseline_children:
+                owned[pid] = start_time
+                queue.append(pid)
+                if len(owned) >= MAX_DESCENDANT_PROCESSES:
+                    break
+    if exclude_unreaped_root:
+        owned.pop(root_pid, None)
+    owned.pop(owner_pid, None)
+    return owned
+
+
+def reap_owned_children(pids: set[int]) -> None:
+    for pid in pids:
+        interruptions = 0
+        while True:
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                break
+            except InterruptedError:
+                interruptions += 1
+                if interruptions > 3:
+                    raise BootstrapError(
+                        "bootstrap descendant reap did not converge"
+                    )
+                continue
+            break
+
+
+def kill_owned_descendants(
+    descendants: dict[int, int],
+    root_pid: int,
+    baseline_children: frozenset[int],
+    *,
+    exclude_unreaped_root: bool,
+) -> BaseException | None:
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        raise BootstrapError("bootstrap descendant cleanup requires pidfd support")
+    ordered = sorted(descendants.items())
+    cleanup_failure: BaseException | None = None
+    for offset in range(0, len(ordered), PIDFD_BATCH_SIZE):
+        pinned: list[tuple[int, int, DescriptorOwner]] = []
+        try:
+            for pid, expected_start_time in ordered[
+                offset:offset + PIDFD_BATCH_SIZE
+            ]:
+                owner = DescriptorOwner()
+                pinned.append((pid, expected_start_time, owner))
+                try:
+                    acquire_pidfd(
+                        owner,
+                        pid,
+                        "bootstrap descendant pidfd open handoff",
+                    )
+                except ProcessLookupError:
+                    pinned.pop()
+                    continue
+                except BaseException as exc:
+                    registered_owner = pinned.pop()[2]
+                    if registered_owner.descriptor >= 0:
+                        exc, closed = close_owned_descriptor(
+                            registered_owner.descriptor,
+                            "bootstrap descendant pidfd registration",
+                            exc,
+                        )
+                        if closed:
+                            registered_owner.descriptor = -1
+                    cleanup_failure = choose_failure(
+                        cleanup_failure,
+                        cleanup_candidate(
+                            exc,
+                            "bootstrap descendant pidfd open failed",
+                        ),
+                        "bootstrap descendant pidfd open also failed",
+                    )
+                    continue
+            try:
+                confirmed = owned_descendants(
+                    root_pid,
+                    baseline_children,
+                    exclude_unreaped_root=exclude_unreaped_root,
+                )
+            except BaseException as exc:
+                cleanup_failure = choose_failure(
+                    cleanup_failure,
+                    exc,
+                    "bootstrap descendant identity refresh also failed",
+                )
+                confirmed = {}
+            for pid, expected_start_time, owner in pinned:
+                descriptor = owner.descriptor
+                if confirmed.get(pid) != expected_start_time:
+                    continue
+                try:
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL, None, 0)
+                except ProcessLookupError:
+                    pass
+                except BaseException as exc:
+                    cleanup_failure = choose_failure(
+                        cleanup_failure,
+                        cleanup_candidate(
+                            exc,
+                            "bootstrap descendant pidfd signal failed",
+                        ),
+                        "bootstrap descendant pidfd signal also failed",
+                    )
+        finally:
+            for _, _, owner in pinned:
+                if owner.descriptor < 0:
+                    continue
+                cleanup_failure, closed = close_owned_descriptor(
+                    owner.descriptor,
+                    "bootstrap descendant pidfd",
+                    cleanup_failure,
+                )
+                if closed:
+                    owner.descriptor = -1
+    return cleanup_failure
+
+
+def cleanup_descendants(
+    root_pid: int,
+    baseline_children: frozenset[int],
+    *,
+    exclude_unreaped_root: bool,
+) -> bool:
+    found = False
+    cleanup_failure: BaseException | None = None
+    for _ in range(MAX_DESCENDANT_CLEANUP_PASSES):
+        try:
+            descendants = owned_descendants(
+                root_pid,
+                baseline_children,
+                exclude_unreaped_root=exclude_unreaped_root,
+            )
+        except BaseException as exc:
+            cleanup_failure = choose_failure(
+                cleanup_failure,
+                exc,
+                "bootstrap descendant discovery also failed",
+            )
+            continue
+        if not descendants:
+            if cleanup_failure is not None:
+                raise cleanup_failure
+            return found
+        found = True
+        wave_failure = kill_owned_descendants(
+            descendants,
+            root_pid,
+            baseline_children,
+            exclude_unreaped_root=exclude_unreaped_root,
+        )
+        if wave_failure is not None:
+            cleanup_failure = choose_failure(
+                cleanup_failure,
+                wave_failure,
+                "bootstrap descendant cleanup wave also failed",
+            )
+        try:
+            reap_owned_children(set(descendants))
+        except BaseException as exc:
+            cleanup_failure = choose_failure(
+                cleanup_failure,
+                exc,
+                "bootstrap descendant reap also failed",
+            )
+        try:
+            time.sleep(0.01)
+        except BaseException as exc:
+            cleanup_failure = choose_failure(
+                cleanup_failure,
+                exc,
+                "bootstrap descendant cleanup sleep also failed",
+            )
+    remaining_unknown = False
+    try:
+        remaining = owned_descendants(
+            root_pid,
+            baseline_children,
+            exclude_unreaped_root=exclude_unreaped_root,
+        )
+    except BaseException as exc:
+        cleanup_failure = choose_failure(
+            cleanup_failure,
+            exc,
+            "bootstrap final descendant discovery also failed",
+        )
+        remaining = {}
+        remaining_unknown = True
+    if remaining:
+        failure = BootstrapError("bootstrap descendant cleanup did not converge")
+        if cleanup_failure is not None:
+            selected = choose_failure(
+                failure,
+                cleanup_failure,
+                "bootstrap descendant cleanup did not converge",
+            )
+            if selected is failure:
+                failure.__cause__ = cleanup_failure
+            raise selected
+        raise failure
+    if remaining_unknown or cleanup_failure is not None:
+        if cleanup_failure is not None:
+            raise cleanup_failure
+        raise BootstrapError("bootstrap descendant cleanup state is unknown")
+    return found
+
+
+def require_pidfd_capacity() -> None:
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        raise BootstrapError("bootstrap process cleanup requires pidfd support")
+    try:
+        soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+        open_descriptors = len(bounded_fd_snapshot())
+    except BaseException as exc:
+        primary = cleanup_candidate(
+            exc,
+            "cannot inspect bootstrap descriptor capacity",
+        )
+        raise primary
+    if (
+        soft_limit != resource.RLIM_INFINITY
+        and soft_limit - open_descriptors
+        < PIDFD_BATCH_SIZE + PIDFD_CAPACITY_MARGIN
+    ):
+        raise BootstrapError("bootstrap descriptor capacity is below its bound")
+
+
+def run_bounded(
+    arguments: list[str],
+    *,
+    cwd: pathlib.Path,
+    environment: dict[str, str],
+    deadline: float,
+    stdout_limit: int,
+    stderr_limit: int,
+    label: str,
+    pass_fds: tuple[int, ...] = (),
+) -> BoundedResult:
+    remaining = deadline - time.monotonic()
+    if (
+        not arguments
+        or any(type(value) is not str or not value for value in arguments)
+        or not math.isfinite(remaining)
+        or remaining <= 0
+        or not 0 < stdout_limit <= MAX_GIT_OUTPUT_BYTES
+        or not 0 < stderr_limit <= MAX_GIT_OUTPUT_BYTES
+        or type(pass_fds) is not tuple
+        or len(pass_fds) > 16
+        or len(set(pass_fds)) != len(pass_fds)
+        or any(type(descriptor) is not int or descriptor < 3 for descriptor in pass_fds)
+    ):
+        raise BootstrapError(f"{label} invocation is outside its bound")
+    if not hasattr(signal, "sigtimedwait"):
+        raise BootstrapError(f"{label} requires bounded signal consumption")
+    try:
+        sigchld_policy = signal.getsignal(signal.SIGCHLD)
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
+        raise BootstrapError(f"cannot inspect {label} SIGCHLD policy") from exc
+    if sigchld_policy != signal.SIG_DFL:
+        raise BootstrapError(f"{label} requires default SIGCHLD policy")
+    try:
+        previous_sigchld_policy = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            raise
+        raise BootstrapError(f"cannot normalize {label} SIGCHLD policy") from exc
+    if previous_sigchld_policy != signal.SIG_DFL:
+        try:
+            signal.signal(signal.SIGCHLD, previous_sigchld_policy)
+        except BaseException as restore_exc:
+            exc = BootstrapError(f"{label} SIGCHLD policy changed during setup")
+            exc.add_note(f"SIGCHLD policy restoration also failed: {restore_exc}")
+            raise exc
+        raise BootstrapError(f"{label} SIGCHLD policy changed during setup")
+    file_limit = max(stdout_limit, stderr_limit)
+    cancellation_signals = {signal.SIGINT, signal.SIGTERM}
+    child_signal_mask = None
+
+    def prepare_child() -> None:
+        if child_signal_mask is None:
+            raise RuntimeError("bootstrap child signal mask is unavailable")
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.pthread_sigmask(signal.SIG_SETMASK, child_signal_mask)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (file_limit, file_limit))
+
+    process: subprocess.Popen[bytes] | None = None
+    root_pidfd = DescriptorOwner()
+    primary: BaseException | None = None
+    timed_out = False
+    leaked_descendants = False
+    cancellation_signum: int | None = None
+    previous_subreaper: bool | None = None
+    previous_int_handler = None
+    previous_term_handler = None
+    int_handler_installed = False
+    term_handler_installed = False
+    baseline_children: frozenset[int] = frozenset()
+    spawn_signal_mask = None
+    cleanup_signal_mask = None
+    inherited_signal_mask = None
+    cleanup_signal_blocked = False
+
+    def record_bootstrap_signal(signum, _frame=None) -> None:
+        nonlocal cancellation_signum
+        if cancellation_signum is None or signum == signal.SIGINT:
+            cancellation_signum = signum
+
+    def consume_pending_cancellation() -> None:
+        for _ in range(MAX_PENDING_SIGNAL_DRAIN):
+            try:
+                pending = signal.sigtimedwait(cancellation_signals, 0)
+            except InterruptedError:
+                continue
+            except OSError as exc:
+                raise BootstrapError(
+                    "cannot consume pending bootstrap cancellation"
+                ) from exc
+            if pending is None:
+                return
+            record_bootstrap_signal(pending.si_signo)
+        raise BootstrapError(
+            f"{label} pending cancellation did not converge"
+        )
+
+    def remember_failure(exc: BaseException, note: str) -> None:
+        nonlocal primary
+        primary = choose_failure(primary, exc, note)
+
+    def signal_root(signum: int, operation: str) -> None:
+        delivered = False
+        failures: list[BaseException] = []
+        if process is None:
+            return
+        try:
+            os.killpg(process.pid, signum)
+            delivered = True
+        except ProcessLookupError:
+            delivered = True
+        except BaseException as exc:
+            failures.append(exc)
+        if root_pidfd.descriptor >= 0:
+            try:
+                signal.pidfd_send_signal(
+                    root_pidfd.descriptor,
+                    signum,
+                    None,
+                    0,
+                )
+                delivered = True
+            except ProcessLookupError:
+                delivered = True
+            except BaseException as exc:
+                failures.append(exc)
+        else:
+            try:
+                # An unreaped direct child retains its numeric PID, so this
+                # fallback cannot target a reused process.
+                os.kill(process.pid, signum)
+                delivered = True
+            except ProcessLookupError:
+                delivered = True
+            except BaseException as exc:
+                failures.append(exc)
+        for failure in failures:
+            if (
+                not isinstance(failure, Exception)
+                and not isinstance(failure, BootstrapSignal)
+            ):
+                remember_failure(
+                    failure,
+                    f"{label} {operation} cleanup encountered caller cancellation",
+                )
+        if not delivered:
+            failure = BootstrapError(f"{label} {operation} cleanup failed")
+            if failures:
+                failure.__cause__ = failures[0]
+            remember_failure(failure, f"{label} {operation} cleanup failed")
+
+    def wait_root(timeout: float) -> bool:
+        if process is None or process.returncode is not None:
+            return True
+        wait_deadline = time.monotonic() + timeout
+        failures = 0
+        while process.returncode is None:
+            wait_remaining = wait_deadline - time.monotonic()
+            if wait_remaining <= 0:
+                return False
+            try:
+                process.wait(
+                    timeout=min(wait_remaining, BOOTSTRAP_SIGNAL_POLL_SECONDS)
+                )
+            except subprocess.TimeoutExpired:
+                continue
+            except BaseException as exc:
+                failures += 1
+                remember_failure(exc, f"{label} process wait cleanup failed")
+                if failures >= 3:
+                    return False
+        return True
+
+    def fallback_reap_root(timeout: float) -> bool:
+        if process is None or process.returncode is not None:
+            return True
+        reap_deadline = time.monotonic() + timeout
+        while process.returncode is None:
+            try:
+                waited, status = os.waitpid(process.pid, os.WNOHANG)
+            except InterruptedError:
+                continue
+            except ChildProcessError:
+                return process.returncode is not None
+            except BaseException as exc:
+                remember_failure(exc, f"{label} exact root reap failed")
+                return False
+            if waited == process.pid:
+                process.returncode = os.waitstatus_to_exitcode(status)
+                return True
+            if time.monotonic() >= reap_deadline:
+                return False
+            try:
+                time.sleep(0.01)
+            except BaseException as exc:
+                remember_failure(exc, f"{label} exact root reap sleep failed")
+        return True
+
+    with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+        try:
+            inherited_signal_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+            if inherited_signal_mask & cancellation_signals:
+                raise BootstrapError(
+                    f"{label} inherited a blocked SIGINT or SIGTERM"
+                )
+            previous_int_handler = signal.getsignal(signal.SIGINT)
+            int_handler_installed = True
+            signal.signal(
+                signal.SIGINT,
+                record_bootstrap_signal,
+            )
+            previous_term_handler = signal.getsignal(signal.SIGTERM)
+            term_handler_installed = True
+            signal.signal(
+                signal.SIGTERM,
+                record_bootstrap_signal,
+            )
+            previous_subreaper = get_child_subreaper()
+            set_child_subreaper(True)
+            before = process_parent_map()
+            baseline_children = frozenset(
+                pid
+                for pid, (parent, _start_time) in before.items()
+                if parent == os.getpid()
+            )
+            if baseline_children:
+                raise BootstrapError(
+                    f"{label} found pre-existing child processes"
+                )
+            require_pidfd_capacity()
+            if cancellation_signum is not None:
+                raise BootstrapSignal(cancellation_signum)
+            launch_remaining = deadline - time.monotonic()
+            if not math.isfinite(launch_remaining) or launch_remaining <= 0:
+                raise BootstrapError(f"{label} exceeded its deadline")
+            spawn_signal_mask = frozenset(inherited_signal_mask)
+            observed_spawn_signal_mask = signal.pthread_sigmask(
+                signal.SIG_BLOCK,
+                cancellation_signals,
+            )
+            if frozenset(observed_spawn_signal_mask) != spawn_signal_mask:
+                raise BootstrapError(
+                    f"{label} cancellation signal mask changed during spawn setup"
+                )
+            if spawn_signal_mask & cancellation_signals:
+                raise BootstrapError(
+                    f"{label} cancellation signal mask changed before spawn"
+                )
+            consume_pending_cancellation()
+            if cancellation_signum is not None:
+                raise BootstrapSignal(cancellation_signum)
+            child_signal_mask = frozenset(spawn_signal_mask)
+            process = subprocess.Popen(
+                arguments,
+                cwd=cwd,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                close_fds=True,
+                pass_fds=pass_fds,
+                start_new_session=True,
+                preexec_fn=prepare_child,
+            )
+            acquire_pidfd(
+                root_pidfd,
+                process.pid,
+                f"{label} root pidfd open handoff",
+            )
+            signal.pthread_sigmask(signal.SIG_SETMASK, spawn_signal_mask)
+            spawn_signal_mask = None
+            while process.returncode is None:
+                if cancellation_signum is not None:
+                    primary = BootstrapSignal(cancellation_signum)
+                    break
+                wait_remaining = deadline - time.monotonic()
+                if not math.isfinite(wait_remaining) or wait_remaining <= 0:
+                    timed_out = True
+                    break
+                try:
+                    process.wait(
+                        timeout=min(
+                            wait_remaining,
+                            BOOTSTRAP_SIGNAL_POLL_SECONDS,
+                        )
+                    )
+                except subprocess.TimeoutExpired:
+                    continue
+                except BaseException as exc:
+                    primary = exc
+                    break
+        except BaseException as exc:
+            primary = choose_failure(
+                primary,
+                exc,
+                f"{label} launcher cleanup also failed",
+            )
+        finally:
+            if spawn_signal_mask is not None:
+                cleanup_signal_mask = spawn_signal_mask
+            elif inherited_signal_mask is not None:
+                cleanup_signal_mask = frozenset(inherited_signal_mask)
+            if (
+                process is not None
+                or previous_subreaper is not None
+                or int_handler_installed
+                or term_handler_installed
+                or spawn_signal_mask is not None
+            ):
+                for _ in range(3):
+                    try:
+                        observed_signal_mask = signal.pthread_sigmask(
+                            signal.SIG_BLOCK,
+                            cancellation_signals,
+                        )
+                        if cleanup_signal_mask is None:
+                            cleanup_signal_mask = frozenset(observed_signal_mask)
+                    except BaseException as exc:
+                        remember_failure(exc, f"{label} signal deferral failed")
+                    try:
+                        current_signal_mask = frozenset(
+                            signal.pthread_sigmask(signal.SIG_BLOCK, set())
+                        )
+                    except BaseException as exc:
+                        remember_failure(
+                            exc,
+                            f"{label} signal deferral state inspection failed",
+                        )
+                        continue
+                    if cancellation_signals <= current_signal_mask:
+                        cleanup_signal_blocked = True
+                        break
+                spawn_signal_mask = None
+                if cleanup_signal_blocked:
+                    try:
+                        consume_pending_cancellation()
+                    except BaseException as exc:
+                        remember_failure(exc, f"{label} signal deferral failed")
+                else:
+                    remember_failure(
+                        BootstrapError(
+                            f"{label} cleanup cancellation block did not converge"
+                        ),
+                        f"{label} cleanup cancellation block did not converge",
+                    )
+            if process is not None:
+                if process.returncode is None:
+                    signal_root(signal.SIGTERM, "TERM")
+                    wait_root(1.0)
+                if process.returncode is None:
+                    signal_root(signal.SIGKILL, "KILL")
+                    if not wait_root(2.0):
+                        signal_root(signal.SIGKILL, "pidfd KILL")
+                        try:
+                            fallback_reap_root(2.0)
+                        except BaseException as exc:
+                            remember_failure(
+                                exc,
+                                f"{label} fallback root reap escaped",
+                            )
+                if process.returncode is None:
+                    cleanup_failure = BootstrapError(
+                        f"{label} process reap did not converge"
+                    )
+                    remember_failure(cleanup_failure, str(cleanup_failure))
+                descendant_cleanup_complete = False
+                for _ in range(3):
+                    try:
+                        leaked_descendants = (
+                            cleanup_descendants(
+                                process.pid,
+                                baseline_children,
+                                exclude_unreaped_root=(
+                                    process.returncode is None
+                                ),
+                            )
+                            or leaked_descendants
+                        )
+                        descendant_cleanup_complete = True
+                        break
+                    except BaseException as exc:
+                        remember_failure(
+                            exc,
+                            f"{label} descendant cleanup interrupted",
+                        )
+                if not descendant_cleanup_complete:
+                    cleanup_failure = BootstrapError(
+                        f"{label} descendant cleanup did not complete"
+                    )
+                    remember_failure(cleanup_failure, str(cleanup_failure))
+            elif previous_subreaper is not None:
+                # Popen may create a child and then raise before Python assigns
+                # its return value.  The empty-baseline subreaper boundary is
+                # the remaining ownership credential for that window.
+                orphan_cleanup_complete = False
+                for _ in range(3):
+                    try:
+                        leaked_descendants = (
+                            cleanup_descendants(
+                                -1,
+                                baseline_children,
+                                exclude_unreaped_root=False,
+                            )
+                            or leaked_descendants
+                        )
+                        orphan_cleanup_complete = True
+                        break
+                    except BaseException as exc:
+                        remember_failure(
+                            exc,
+                            f"{label} unassigned child cleanup interrupted",
+                        )
+                if not orphan_cleanup_complete:
+                    cleanup_failure = BootstrapError(
+                        f"{label} unassigned child cleanup did not complete"
+                    )
+                    remember_failure(cleanup_failure, str(cleanup_failure))
+            if root_pidfd.descriptor >= 0:
+                primary, root_pidfd_closed = close_owned_descriptor(
+                    root_pidfd.descriptor,
+                    f"{label} root pidfd",
+                    primary,
+                )
+                if root_pidfd_closed:
+                    root_pidfd.descriptor = -1
+            if previous_subreaper is not None:
+                subreaper_restored = False
+                for _ in range(3):
+                    try:
+                        set_child_subreaper(previous_subreaper)
+                        subreaper_restored = True
+                        break
+                    except BaseException as exc:
+                        remember_failure(exc, f"{label} subreaper restore failed")
+                if not subreaper_restored:
+                    remember_failure(
+                        BootstrapError(f"{label} subreaper restore did not converge"),
+                        f"{label} subreaper restore did not converge",
+                    )
+            if cleanup_signal_mask is not None and cleanup_signal_blocked:
+                try:
+                    consume_pending_cancellation()
+                except BaseException as exc:
+                    remember_failure(exc, f"{label} pending signal cleanup failed")
+            if term_handler_installed and cleanup_signal_blocked:
+                term_handler_restored = False
+                for _ in range(3):
+                    try:
+                        signal.signal(signal.SIGTERM, previous_term_handler)
+                        term_handler_restored = True
+                        break
+                    except BaseException as exc:
+                        remember_failure(
+                            exc,
+                            f"{label} SIGTERM handler restore failed",
+                        )
+                if not term_handler_restored:
+                    remember_failure(
+                        BootstrapError(
+                            f"{label} SIGTERM handler restore did not converge"
+                        ),
+                        f"{label} SIGTERM handler restore did not converge",
+                    )
+            if int_handler_installed and cleanup_signal_blocked:
+                int_handler_restored = False
+                for _ in range(3):
+                    try:
+                        signal.signal(signal.SIGINT, previous_int_handler)
+                        int_handler_restored = True
+                        break
+                    except BaseException as exc:
+                        remember_failure(
+                            exc,
+                            f"{label} SIGINT handler restore failed",
+                        )
+                if not int_handler_restored:
+                    remember_failure(
+                        BootstrapError(
+                            f"{label} SIGINT handler restore did not converge"
+                        ),
+                        f"{label} SIGINT handler restore did not converge",
+                    )
+            if cleanup_signal_mask is not None:
+                if cleanup_signal_blocked:
+                    try:
+                        consume_pending_cancellation()
+                    except BaseException as exc:
+                        remember_failure(exc, f"{label} pending signal restore failed")
+                signal_mask_restored = False
+                for _ in range(3):
+                    try:
+                        # Handler restoration requires confirmed cancellation
+                        # blocking, but a known caller mask must be restored even
+                        # when every state probe failed.
+                        signal.pthread_sigmask(
+                            signal.SIG_SETMASK,
+                            cleanup_signal_mask,
+                        )
+                        signal_mask_restored = True
+                        break
+                    except BaseException as exc:
+                        remember_failure(exc, f"{label} signal-mask restore failed")
+                if not signal_mask_restored:
+                    remember_failure(
+                        BootstrapError(
+                            f"{label} signal-mask restore did not converge"
+                        ),
+                        f"{label} signal-mask restore did not converge",
+                    )
+            if cancellation_signum is not None and not (
+                primary is not None
+                and not isinstance(primary, Exception)
+                and not isinstance(primary, BootstrapSignal)
+            ):
+                cancellation = BootstrapSignal(cancellation_signum)
+                if primary is not None and not isinstance(primary, BootstrapSignal):
+                    cancellation.add_note(
+                        f"{label} failed before cancellation cleanup completed"
+                    )
+                primary = cancellation
+        if process is None:
+            if primary is not None:
+                raise primary
+            raise BootstrapError(f"{label} process was not created")
+        if primary is not None:
+            raise primary
+        stdout_size = os.fstat(stdout_file.fileno()).st_size
+        stderr_size = os.fstat(stderr_file.fileno()).st_size
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        stdout = stdout_file.read(stdout_limit + 1)
+        stderr = stderr_file.read(stderr_limit + 1)
+    if timed_out:
+        raise BootstrapError(f"{label} exceeded its deadline")
+    if leaked_descendants:
+        raise BootstrapError(f"{label} left descendant processes")
+    if (
+        stdout_size > stdout_limit
+        or len(stdout) > stdout_limit
+        or (stdout_size == stdout_limit and process.returncode != 0)
+    ):
+        raise BootstrapError(f"{label} stdout exceeds its size bound")
+    if (
+        stderr_size > stderr_limit
+        or len(stderr) > stderr_limit
+        or (stderr_size == stderr_limit and process.returncode != 0)
+    ):
+        raise BootstrapError(f"{label} stderr exceeds its size bound")
+    return BoundedResult(process.returncode, stdout, stderr)
+
+
+def git_environment(home: pathlib.Path) -> dict[str, str]:
+    return {
+        "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "TZ": "UTC",
+        "HOME": str(home),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GCM_INTERACTIVE": "never",
+        "GIT_ASKPASS": "/bin/false",
+        "SSH_ASKPASS": "/bin/false",
+    }
+
+
+def require_repo(path: pathlib.Path) -> pathlib.Path:
+    if type(path) is not pathlib.PosixPath or not path.is_absolute():
+        raise BootstrapError("repository path must be absolute")
+    try:
+        resolved = path.resolve(strict=True)
+        metadata = path.lstat()
+    except OSError as exc:
+        raise BootstrapError("cannot inspect repository path") from exc
+    if resolved != path or not stat.S_ISDIR(metadata.st_mode):
+        raise BootstrapError("repository path must be one canonical real directory")
+    return path
+
+
+def run_git(
+    repo: pathlib.Path,
+    home: pathlib.Path,
+    arguments: list[str],
+    deadline: float,
+    *,
+    stdout_limit: int = MAX_GIT_OUTPUT_BYTES,
+) -> BoundedResult:
+    return run_bounded(
+        ["/usr/bin/git", "-C", str(repo), *arguments],
+        cwd=repo,
+        environment=git_environment(home),
+        deadline=deadline,
+        stdout_limit=stdout_limit,
+        stderr_limit=64 * 1024,
+        label="trusted Git object query",
+    )
+
+
+def read_object(
+    repo: pathlib.Path,
+    home: pathlib.Path,
+    oid: str,
+    expected_type: str,
+    size_bound: int,
+    deadline: float,
+    cache: dict[tuple[str, str], bytes],
+) -> bytes:
+    if not OID.fullmatch(oid) or expected_type not in {"commit", "tree", "blob"}:
+        raise BootstrapError("Git object identity is not canonical")
+    key = (expected_type, oid)
+    if key in cache:
+        return cache[key]
+    object_type = run_git(
+        repo, home, ["cat-file", "-t", oid], deadline, stdout_limit=16
+    )
+    if object_type.returncode or object_type.stdout != f"{expected_type}\n".encode():
+        raise BootstrapError(f"pinned {expected_type} object is absent or mistyped")
+    size_result = run_git(
+        repo, home, ["cat-file", "-s", oid], deadline, stdout_limit=32
+    )
+    if size_result.returncode or re.fullmatch(rb"(?:0|[1-9][0-9]*)\n", size_result.stdout) is None:
+        raise BootstrapError(f"pinned {expected_type} object size is not canonical")
+    size = int(size_result.stdout[:-1], 10)
+    if size > size_bound or (expected_type != "tree" and size == 0):
+        raise BootstrapError(f"pinned {expected_type} object exceeds its size policy")
+    content = run_git(
+        repo,
+        home,
+        ["cat-file", expected_type, oid],
+        deadline,
+        stdout_limit=max(1, size),
+    )
+    if content.returncode or len(content.stdout) != size:
+        raise BootstrapError(f"cannot export exact pinned {expected_type} bytes")
+    digest = hashlib.sha1(usedforsecurity=False)
+    digest.update(f"{expected_type} {size}".encode("ascii") + b"\0")
+    digest.update(content.stdout)
+    if not secrets.compare_digest(digest.hexdigest(), oid):
+        raise BootstrapError(f"pinned {expected_type} bytes differ from their object id")
+    cache[key] = content.stdout
+    return content.stdout
+
+
+def commit_relation(raw: bytes, label: str) -> tuple[str, tuple[str, ...]]:
+    header, separator, _ = raw.partition(b"\n\n")
+    lines = header.split(b"\n")
+    if not separator or not lines or re.fullmatch(rb"tree [0-9a-f]{40}", lines[0]) is None:
+        raise BootstrapError(f"{label} commit header is not canonical")
+    parents: list[str] = []
+    for line in lines[1:]:
+        if not line.startswith(b"parent "):
+            break
+        if re.fullmatch(rb"parent [0-9a-f]{40}", line) is None:
+            raise BootstrapError(f"{label} parent header is not canonical")
+        parents.append(line[7:].decode("ascii"))
+    return lines[0][5:].decode("ascii"), tuple(parents)
+
+
+def parse_tree(raw: bytes) -> dict[bytes, tuple[str, str]]:
+    entries: dict[bytes, tuple[str, str]] = {}
+    offset = 0
+    while offset < len(raw):
+        space = raw.find(b" ", offset)
+        nul = raw.find(b"\0", space + 1)
+        if space <= offset or nul <= space + 1 or nul + 21 > len(raw):
+            raise BootstrapError("pinned tree object framing is invalid")
+        mode_raw = raw[offset:space]
+        name = raw[space + 1:nul]
+        oid = raw[nul + 1:nul + 21].hex()
+        try:
+            mode = mode_raw.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise BootstrapError("pinned tree mode is not ASCII") from exc
+        if (
+            mode not in {"40000", "100644", "100755", "120000", "160000"}
+            or not name
+            or b"/" in name
+            or name in entries
+            or not OID.fullmatch(oid)
+        ):
+            raise BootstrapError("pinned tree entry is not canonical")
+        entries[name] = (mode, oid)
+        offset = nul + 21
+    return entries
+
+
+def walk_path(
+    repo: pathlib.Path,
+    home: pathlib.Path,
+    root_tree: str,
+    relative: str,
+    expected_mode: str,
+    size_bound: int,
+    deadline: float,
+    cache: dict[tuple[str, str], bytes],
+) -> bytes:
+    components = relative.split("/")
+    if not components or any(
+        not component or component in {".", ".."} for component in components
+    ):
+        raise BootstrapError("pinned path is not canonical")
+    tree_oid = root_tree
+    for index, component in enumerate(components):
+        tree_raw = read_object(
+            repo, home, tree_oid, "tree", MAX_TREE_BYTES, deadline, cache
+        )
+        entry = parse_tree(tree_raw).get(component.encode("ascii"))
+        if entry is None:
+            raise BootstrapError(f"pinned path is absent: {relative}")
+        mode, oid = entry
+        if index + 1 < len(components):
+            if mode != "40000":
+                raise BootstrapError(f"pinned path parent is not a tree: {relative}")
+            tree_oid = oid
+            continue
+        if mode != expected_mode:
+            raise BootstrapError(f"pinned path mode differs from policy: {relative}")
+        return read_object(repo, home, oid, "blob", size_bound, deadline, cache)
+    raise BootstrapError("pinned path traversal produced no blob")
+
+
+def authenticate_source(repo: pathlib.Path, private: pathlib.Path, deadline: float) -> bytes:
+    home = private / "git-home"
+    try:
+        home_metadata = home.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise BootstrapError("private Git home is unavailable") from exc
+    if (
+        not stat.S_ISDIR(home_metadata.st_mode)
+        or stat.S_IMODE(home_metadata.st_mode) != 0o700
+        or home_metadata.st_uid != os.geteuid()
+    ):
+        raise BootstrapError("private Git home differs from policy")
+    object_format = run_git(
+        repo, home, ["rev-parse", "--show-object-format"], deadline, stdout_limit=16
+    )
+    if object_format.returncode or object_format.stdout != b"sha1\n":
+        raise BootstrapError("repository object format must be exactly sha1")
+    cache: dict[tuple[str, str], bytes] = {}
+    trusted_raw = read_object(
+        repo, home, TRUSTED_COMMIT, "commit", MAX_COMMIT_BYTES, deadline, cache
+    )
+    candidate_raw = read_object(
+        repo, home, CANDIDATE_COMMIT, "commit", MAX_COMMIT_BYTES, deadline, cache
+    )
+    trusted_tree, _ = commit_relation(trusted_raw, "trusted")
+    candidate_tree, candidate_parents = commit_relation(candidate_raw, "candidate")
+    if candidate_parents != (TRUSTED_COMMIT,):
+        raise BootstrapError("candidate is not the direct single-parent child of trusted P")
+    if not secrets.compare_digest(candidate_tree, trusted_tree):
+        raise BootstrapError("candidate tree differs from trusted P")
+    gate = b""
+    for relative, mode, size_bound, expected_sha256 in PINS:
+        raw = walk_path(
+            repo,
+            home,
+            trusted_tree,
+            relative,
+            mode,
+            size_bound,
+            deadline,
+            cache,
+        )
+        if not secrets.compare_digest(hashlib.sha256(raw).hexdigest(), expected_sha256):
+            raise BootstrapError(f"pinned path SHA-256 differs: {relative}")
+        if relative == GATE_PATH:
+            gate = raw
+    if not gate or b"\0" in gate:
+        raise BootstrapError("pinned gate bytes are empty or contain NUL")
+    return gate
+
+
+def require_operator_home(profile: str) -> tuple[pathlib.PosixPath, pathlib.PosixPath]:
+    try:
+        account_home = pwd.getpwuid(os.geteuid()).pw_dir
+    except (KeyError, OSError) as exc:
+        raise BootstrapError("cannot resolve operator account") from exc
+    if type(account_home) is not str or os.environ.get("HOME") != account_home:
+        raise BootstrapError("operator HOME differs from the account database")
+    home = pathlib.Path(account_home)
+    state_parent = home / STATE_DIRECTORY
+    paths = [home, home / ".local", home / ".local/state", state_parent]
+    for path in paths:
+        try:
+            resolved = path.resolve(strict=True)
+            metadata = path.lstat()
+        except OSError as exc:
+            raise BootstrapError("cannot inspect operator state ancestry") from exc
+        if (
+            resolved != path
+            or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise BootstrapError("operator state ancestry differs from policy")
+    return home, state_parent / f"{CANDIDATE_COMMIT}.{profile}.tsv"
+
+
+def gate_environment(
+    home: pathlib.Path,
+    dispatch: bool,
+    gate_deadline: float,
+) -> dict[str, str]:
+    deadline_ns = math.floor(gate_deadline * 1_000_000_000)
+    if deadline_ns <= 0:
+        raise BootstrapError("private gate deadline is not canonical")
+    environment = {
+        "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "TZ": "UTC",
+        "HOME": str(home),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "HAPTICS_TRUSTED_GATE_SHA256": GATE_SHA256,
+        "HAPTICS_WORKFLOW_DEADLINE_NS": str(deadline_ns),
+        "GH_HOST": "github.com",
+        "GH_PROMPT_DISABLED": "1",
+        "GH_PAGER": "cat",
+        "NO_COLOR": "1",
+    }
+    if dispatch:
+        environment["GH_ALLOW_DISPATCH"] = "1"
+    for name in ("http_proxy", "https_proxy", "no_proxy"):
+        value = os.environ.get(name, "")
+        if value and len(value) <= 2048 and "\n" not in value and "\r" not in value:
+            environment[name] = value
+    return environment
+
+
+def publish_private_gate(private: pathlib.Path, raw: bytes) -> PrivateGate:
+    path = private / "trusted-dispatch-gate.py"
+    writer = -1
+    reader = -1
+    created_identity: tuple[int, int] | None = None
+    primary: BaseException | None = None
+    try:
+        private_metadata = os.stat(private, follow_symlinks=False)
+        writer_baseline = bounded_fd_snapshot()
+        try:
+            writer = os.open(
+                path,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_CLOEXEC
+                | os.O_NOFOLLOW,
+                0o500,
+            )
+        except BaseException as exc:
+            primary, recovered_identity = recover_created_private_gate_handoff(
+                writer_baseline,
+                private_metadata.st_dev,
+                "private gate writer open handoff",
+                exc,
+            )
+            if recovered_identity is not None:
+                created_identity = recovered_identity
+            raise primary
+        opened = os.fstat(writer)
+        created_identity = (opened.st_dev, opened.st_ino)
+        offset = 0
+        while offset < len(raw):
+            written = os.write(writer, raw[offset:])
+            if written <= 0:
+                raise BootstrapError("private gate write made no progress")
+            offset += written
+        os.fchmod(writer, 0o500)
+        os.fsync(writer)
+        metadata = os.fstat(writer)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o500
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_gid != os.getegid()
+            or metadata.st_nlink != 1
+            or metadata.st_size != len(raw)
+        ):
+            raise BootstrapError("private gate metadata differs from policy")
+        if (metadata.st_dev, metadata.st_ino) != created_identity:
+            raise BootstrapError("private gate identity changed while it was written")
+        reader_baseline = bounded_fd_snapshot()
+        try:
+            reader = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        except BaseException as exc:
+            primary, _ = recover_descriptor_handoff(
+                reader_baseline,
+                created_identity,
+                "private gate reader open handoff",
+                exc,
+            )
+            raise primary
+        pinned = os.fstat(reader)
+        namespace = os.stat(path, follow_symlinks=False)
+        if (
+            (pinned.st_dev, pinned.st_ino) != created_identity
+            or (namespace.st_dev, namespace.st_ino) != created_identity
+            or pinned.st_mode != metadata.st_mode
+            or pinned.st_uid != metadata.st_uid
+            or pinned.st_gid != metadata.st_gid
+            or pinned.st_nlink != 1
+            or pinned.st_size != len(raw)
+        ):
+            raise BootstrapError("private gate changed while it was pinned")
+        hasher = hashlib.sha256()
+        remaining = len(raw)
+        while remaining:
+            chunk = os.read(reader, min(65536, remaining))
+            if not chunk:
+                raise BootstrapError("private gate ended before its bound")
+            hasher.update(chunk)
+            remaining -= len(chunk)
+        if os.read(reader, 1):
+            raise BootstrapError("private gate exceeds its bound")
+        os.lseek(reader, 0, os.SEEK_SET)
+        if not secrets.compare_digest(hasher.hexdigest(), GATE_SHA256):
+            raise BootstrapError("private gate changed after publication")
+        primary, writer_closed = close_owned_descriptor(
+            writer,
+            "private gate writer",
+            primary,
+        )
+        if writer_closed:
+            writer = -1
+        if primary is not None:
+            raise primary
+        gate = PrivateGate(
+            path,
+            reader,
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_size,
+        )
+        reader = -1
+        return gate
+    except BaseException as exc:
+        primary = choose_failure(
+            primary,
+            exc,
+            "private gate publication also failed",
+        )
+        for descriptor, descriptor_label in (
+            (reader, "private gate reader"),
+            (writer, "private gate writer"),
+        ):
+            if descriptor < 0:
+                continue
+            primary, _ = close_owned_descriptor(
+                descriptor,
+                descriptor_label,
+                primary,
+            )
+        if created_identity is not None:
+            primary, _ = cleanup_owned_namespace(
+                path,
+                created_identity,
+                "private gate namespace",
+                primary,
+            )
+        assert primary is not None
+        raise primary
+
+
+def verify_private_gate(gate: PrivateGate) -> None:
+    before = os.fstat(gate.descriptor)
+    namespace = os.stat(gate.path, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_IMODE(before.st_mode) != 0o500
+        or before.st_uid != os.geteuid()
+        or before.st_gid != os.getegid()
+        or before.st_nlink != 1
+        or before.st_size != gate.size
+        or (before.st_dev, before.st_ino) != (gate.device, gate.inode)
+        or (namespace.st_dev, namespace.st_ino) != (gate.device, gate.inode)
+    ):
+        raise BootstrapError("private gate identity changed before execution")
+    hasher = hashlib.sha256()
+    offset = 0
+    while offset < gate.size:
+        chunk = os.pread(gate.descriptor, min(65536, gate.size - offset), offset)
+        if not chunk:
+            raise BootstrapError("private gate ended during execution attestation")
+        hasher.update(chunk)
+        offset += len(chunk)
+    after = os.fstat(gate.descriptor)
+    namespace_after = os.stat(gate.path, follow_symlinks=False)
+    if (
+        (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_uid,
+            after.st_gid,
+            after.st_nlink,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        != (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_uid,
+            before.st_gid,
+            before.st_nlink,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        or (namespace_after.st_dev, namespace_after.st_ino)
+        != (gate.device, gate.inode)
+        or not secrets.compare_digest(hasher.hexdigest(), GATE_SHA256)
+    ):
+        raise BootstrapError("private gate changed during execution attestation")
+
+
+def require_gate_transcript(
+    gate_output: str,
+    *,
+    dispatch: bool,
+    release_tag: str,
+) -> None:
+    if not gate_output.endswith("\n") or "\r" in gate_output or "\0" in gate_output:
+        raise BootstrapError("private gate output framing is not canonical")
+    lines = gate_output[:-1].split("\n")
+    prefix = [
+        "schema\ttb321fu.haptics-workflow-gate/v1",
+        f"trusted-commit\t{TRUSTED_COMMIT}",
+        f"candidate-commit\t{CANDIDATE_COMMIT}",
+        f"gate-sha256\t{GATE_SHA256}",
+        f"workflow-sha256\t{WORKFLOW_SHA256}",
+        f"validator-sha256\t{BOUNDARY_VALIDATOR_PATH}\t"
+        f"{BOUNDARY_VALIDATOR_SHA256}",
+        f"validator-sha256\t{ISOLATION_VALIDATOR_PATH}\t"
+        f"{ISOLATION_VALIDATOR_SHA256}",
+        f"validator-mode\t{GATE_VALIDATOR_MODE}",
+    ]
+    if lines[: len(prefix)] != prefix:
+        raise BootstrapError("private gate authentication evidence is not exact")
+    if not dispatch:
+        if lines != [*prefix, "HAPTICS_WORKFLOW_GATE_VERIFY=PASS"]:
+            raise BootstrapError("private gate verify evidence is not exact")
+        return
+    tail = lines[len(prefix) :]
+    expected_names = (
+        "repository",
+        "remote-ref",
+        "release-tag",
+        "run-id",
+        "run-display-title",
+        "run-head-branch",
+        "run-head-sha",
+        "run-url",
+        "dispatch-id",
+        "input-sha256",
+        "dispatch-state-sha256",
+    )
+    if len(tail) != len(expected_names) + 1 or tail[-1] != "HAPTICS_WORKFLOW_DISPATCH=PASS":
+        raise BootstrapError("private gate dispatch evidence is not exact")
+    values: dict[str, str] = {}
+    for expected_name, line in zip(expected_names, tail[:-1], strict=True):
+        name, separator, value = line.partition("\t")
+        if name != expected_name or not separator or not value or "\t" in value:
+            raise BootstrapError("private gate dispatch evidence is not canonical")
+        values[name] = value
+    run_id = values["run-id"]
+    dispatch_id = values["dispatch-id"]
+    expected_release_tag = release_tag or "-"
+    if (
+        values["repository"] != REPOSITORY
+        or values["remote-ref"] != REMOTE_REF
+        or values["release-tag"] != expected_release_tag
+        or POSITIVE_RUN_ID.fullmatch(run_id) is None
+        or DISPATCH_ID.fullmatch(dispatch_id) is None
+        or values["run-display-title"] != f"haptics-dispatch-{dispatch_id}"
+        or values["run-head-branch"] != REMOTE_REF
+        or values["run-head-sha"] != CANDIDATE_COMMIT
+        or values["run-url"]
+        != f"https://github.com/{REPOSITORY}/actions/runs/{run_id}"
+        or SHA256.fullmatch(values["input-sha256"]) is None
+        or SHA256.fullmatch(values["dispatch-state-sha256"]) is None
+    ):
+        raise BootstrapError("private gate dispatch evidence differs from policy")
+
+
+def main() -> None:
+    cancellation = BootstrapCancellationGuard()
+    try:
+        cancellation.__enter__()
+    except BootstrapSignal as exc:
+        raise SystemExit(128 + exc.signum) from None
+    except (OSError, BootstrapError) as exc:
+        raise SystemExit(f"haptics workflow bootstrap failed: {exc}") from exc
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--profile", choices=("diagnostic", "release"))
+    parser.add_argument("--repo-dir", required=True)
+    bootstrap_output: str | None = None
+    try:
+        arguments = parser.parse_args()
+        cancellation.checkpoint()
+        if arguments.verify_only == (arguments.profile is not None):
+            raise BootstrapError("select verify-only or one dispatch profile")
+        if any(
+            pattern.fullmatch(value) is None
+            for pattern, value in (
+                (OID, TRUSTED_COMMIT),
+                (OID, CANDIDATE_COMMIT),
+                (SHA256, GATE_SHA256),
+                (SHA256, WORKFLOW_SHA256),
+                (SHA256, BOUNDARY_VALIDATOR_SHA256),
+                (SHA256, ISOLATION_VALIDATOR_SHA256),
+            )
+        ):
+            raise BootstrapError("embedded bootstrap identities are not canonical")
+        if TRUSTED_COMMIT == CANDIDATE_COMMIT:
+            raise BootstrapError("embedded bootstrap commits are not distinct")
+        started = time.monotonic()
+        deadline = started + BOOTSTRAP_TIMEOUT_SECONDS
+        repo = require_repo(pathlib.Path(arguments.repo_dir))
+        cancellation.checkpoint()
+        with OwnedPrivateDirectory(
+            prefix="tb321fu-haptics-external-bootstrap."
+        ) as private_custody:
+            assert private_custody.path is not None
+            private = private_custody.path
+            cancellation.checkpoint()
+            git_home = private / "git-home"
+            git_home.mkdir(mode=0o700)
+            private_custody.register_directory(git_home, "private Git home")
+            gate_raw = authenticate_source(repo, private, deadline)
+            cancellation.checkpoint()
+            gate = publish_private_gate(private, gate_raw)
+            gate_primary: BaseException | None = None
+            try:
+                cancellation.checkpoint()
+                if arguments.verify_only:
+                    home = private / "verify-home"
+                    home.mkdir(mode=0o700)
+                    private_custody.register_directory(
+                        home,
+                        "private verify home",
+                    )
+                    gate_arguments = [
+                        "/usr/bin/python3",
+                        "-I",
+                        "-B",
+                        f"/proc/self/fd/{gate.descriptor}",
+                        "--verify-only",
+                        "--repo-dir",
+                        str(repo),
+                        "--trusted-commit",
+                        TRUSTED_COMMIT,
+                        "--candidate-commit",
+                        CANDIDATE_COMMIT,
+                    ]
+                    dispatch = False
+                    release_tag = ""
+                else:
+                    profile = arguments.profile
+                    home, state_path = require_operator_home(profile)
+                    release_tag = RELEASE_TAG if profile == "release" else ""
+                    gate_arguments = [
+                        "/usr/bin/python3",
+                        "-I",
+                        "-B",
+                        f"/proc/self/fd/{gate.descriptor}",
+                        "--dispatch",
+                        "--repo-dir",
+                        str(repo),
+                        "--trusted-commit",
+                        TRUSTED_COMMIT,
+                        "--candidate-commit",
+                        CANDIDATE_COMMIT,
+                        "--repository",
+                        REPOSITORY,
+                        "--remote-ref",
+                        REMOTE_REF,
+                        "--release-tag",
+                        release_tag,
+                        "--dispatch-state",
+                        str(state_path),
+                    ]
+                    dispatch = True
+                inner_started = time.monotonic()
+                gate_deadline = min(
+                    inner_started + GATE_TIMEOUT_SECONDS,
+                    deadline - BOOTSTRAP_CLEANUP_GRACE_SECONDS,
+                )
+                if not math.isfinite(gate_deadline) or gate_deadline <= inner_started:
+                    raise BootstrapError(
+                        "source authentication exhausted the private gate deadline"
+                    )
+                verify_private_gate(gate)
+                cancellation.checkpoint()
+                result = run_bounded(
+                    gate_arguments,
+                    cwd=private,
+                    environment=gate_environment(home, dispatch, gate_deadline),
+                    deadline=deadline,
+                    stdout_limit=MAX_GATE_OUTPUT_BYTES,
+                    stderr_limit=MAX_GATE_OUTPUT_BYTES,
+                    label="private trusted workflow gate",
+                    pass_fds=(gate.descriptor,),
+                )
+                cancellation.checkpoint()
+                if result.returncode or result.stderr:
+                    raise BootstrapError(
+                        "private trusted workflow gate rejected the request"
+                    )
+                try:
+                    gate_output = result.stdout.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise BootstrapError("private gate output must be UTF-8") from exc
+                require_gate_transcript(
+                    gate_output,
+                    dispatch=dispatch,
+                    release_tag=release_tag,
+                )
+                cancellation.checkpoint()
+            except BaseException as exc:
+                gate_primary = exc
+            finally:
+                gate_primary, _ = close_owned_descriptor(
+                    gate.descriptor,
+                    "private gate execution descriptor",
+                    gate_primary,
+                )
+                gate_primary, _ = cleanup_owned_namespace(
+                    gate.path,
+                    (gate.device, gate.inode),
+                    "private gate namespace",
+                    gate_primary,
+                )
+            if gate_primary is not None:
+                raise gate_primary
+            cancellation.checkpoint()
+        cancellation.checkpoint()
+        gate_evidence = gate_output
+        bootstrap_output = "".join(
+            (
+                "schema\ttb321fu.haptics-workflow-bootstrap/v1\n",
+                f"trusted-commit\t{TRUSTED_COMMIT}\n",
+                f"candidate-commit\t{CANDIDATE_COMMIT}\n",
+                f"gate-sha256\t{GATE_SHA256}\n",
+                f"workflow-sha256\t{WORKFLOW_SHA256}\n",
+                f"validator-sha256\t{BOUNDARY_VALIDATOR_PATH}\t"
+                f"{BOUNDARY_VALIDATOR_SHA256}\n",
+                f"validator-sha256\t{ISOLATION_VALIDATOR_PATH}\t"
+                f"{ISOLATION_VALIDATOR_SHA256}\n",
+                gate_evidence,
+                "HAPTICS_WORKFLOW_BOOTSTRAP=PASS\n",
+            )
+        )
+        cancellation.checkpoint()
+    except BootstrapSignal as exc:
+        raise SystemExit(128 + exc.signum) from None
+    except KeyboardInterrupt:
+        raise SystemExit(130) from None
+    except (OSError, BootstrapError) as exc:
+        raise SystemExit(f"haptics workflow bootstrap failed: {exc}") from exc
+    finally:
+        active = sys.exception()
+        try:
+            cancellation.__exit__(
+                type(active) if active is not None else None,
+                active,
+                active.__traceback__ if active is not None else None,
+            )
+        except BootstrapSignal as exc:
+            raise SystemExit(128 + exc.signum) from None
+        except KeyboardInterrupt:
+            raise SystemExit(130) from None
+        except BootstrapError as exc:
+            if active is None:
+                raise SystemExit(
+                    f"haptics workflow bootstrap failed: {exc}"
+                ) from exc
+            active.add_note(str(exc))
+    if bootstrap_output is None:
+        raise SystemExit("haptics workflow bootstrap failed: evidence output is missing")
+    sys.stdout.write(bootstrap_output)
+
+
+if __name__ == "__main__":
+    main()

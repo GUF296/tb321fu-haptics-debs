@@ -88,6 +88,7 @@ def write_manifest(path: pathlib.Path, records: list[tuple[str, str, int, str]])
 def write_archive(
     path: pathlib.Path,
     *,
+    compression: str = "w:gz",
     prefix: str = "",
     extra: bool = False,
     source: bool = False,
@@ -100,12 +101,15 @@ def write_archive(
     link_mode: int = 0o777,
     long_component: bool = False,
     deep_path: bool = False,
+    extra_directory: bool = False,
+    omit_directory: str | None = None,
 ) -> None:
     file_modes = file_modes or {}
-    with tarfile.open(path, "w:gz", format=tarfile.GNU_FORMAT) as archive:
+    with tarfile.open(path, compression, format=tarfile.GNU_FORMAT) as archive:
         add_directory(archive, "./", directory_mode)
         for directory in ("include", "include/config", "include/generated"):
-            add_directory(archive, f"./{prefix}{directory}", directory_mode)
+            if directory != omit_directory:
+                add_directory(archive, f"./{prefix}{directory}", directory_mode)
         for name, data in required.items():
             archive_name = f"./{prefix}{name[2:]}"
             if noncanonical_member and name == "./.config":
@@ -123,6 +127,8 @@ def write_archive(
             add_regular(archive, "./" + "/".join(["d"] * 129), b"deep\n")
         if extra:
             add_regular(archive, f"./{prefix}unexpected", b"unexpected\n")
+        if extra_directory:
+            add_directory(archive, f"./{prefix}unexpected-empty-directory")
         if source:
             add_symlink(archive, "./source", "include")
         if duplicate_root:
@@ -169,6 +175,16 @@ def extract(archive: pathlib.Path, destination: pathlib.Path) -> None:
 def require_rejected(result: subprocess.CompletedProcess[str], label: str) -> None:
     if result.returncode == 0:
         raise SystemExit(f"unsafe SDK fixture was accepted: {label}")
+
+
+def require_normalized_rejection(
+    result: subprocess.CompletedProcess[str], label: str
+) -> None:
+    require_rejected(result, label)
+    if "Traceback" in result.stderr:
+        raise SystemExit(f"{label} leaked a Python traceback")
+    if not result.stderr.startswith("kernel SDK verification failed: "):
+        raise SystemExit(f"{label} did not use the verifier error boundary")
 
 
 def validate_fixture(root: pathlib.Path, archive: pathlib.Path, manifest: pathlib.Path) -> None:
@@ -381,6 +397,34 @@ def main() -> None:
         extra_extract = root / "extra-extract"
         extract(extra_archive, extra_extract)
         require_rejected(run(extra_archive, extra_manifest, extra_extract), "unmanifested archive member")
+
+        extra_directory_archive = root / "extra-directory.tar.gz"
+        write_archive(extra_directory_archive, extra_directory=True)
+        require_rejected(
+            run(extra_directory_archive, good_manifest, "--archive-only"),
+            "unmanifested empty archive directory",
+        )
+
+        corrupt_xz_archive = root / "corrupt.tar.xz"
+        write_archive(corrupt_xz_archive, compression="w:xz")
+        corrupt_xz_archive.write_bytes(corrupt_xz_archive.read_bytes()[:-64])
+        corrupt_xz_result = run(corrupt_xz_archive, good_manifest, "--archive-only")
+        require_normalized_rejection(corrupt_xz_result, "corrupt xz archive")
+
+        corrupt_xz_crc_archive = root / "corrupt-crc.tar.xz"
+        write_archive(corrupt_xz_crc_archive, compression="w:xz")
+        corrupt_xz_crc = bytearray(corrupt_xz_crc_archive.read_bytes())
+        corrupt_xz_crc[len(corrupt_xz_crc) // 2] ^= 1
+        corrupt_xz_crc_archive.write_bytes(corrupt_xz_crc)
+        corrupt_xz_crc_result = run(corrupt_xz_crc_archive, good_manifest, "--archive-only")
+        require_normalized_rejection(corrupt_xz_crc_result, "corrupt xz CRC")
+
+        missing_directory_archive = root / "missing-directory.tar.gz"
+        write_archive(missing_directory_archive, omit_directory="include/config")
+        require_rejected(
+            run(missing_directory_archive, good_manifest, "--archive-only"),
+            "missing structural archive directory",
+        )
 
         noncanonical_archive = root / "noncanonical.tar.gz"
         noncanonical_manifest = root / "noncanonical.tsv"

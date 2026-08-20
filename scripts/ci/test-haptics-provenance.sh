@@ -181,6 +181,7 @@ expected_fields=(
   aw86937-module-sha256
   haptic-test-helper-binary-sha256
   kernel-bundle-id
+  kernel-toolchain-manifest-sha256
   kernel-release
   kernel-source-commit
   kernel-config-sha256
@@ -188,6 +189,13 @@ expected_fields=(
   kernel-build-archive-sha256
   source-date-epoch
 )
+[ "${#expected_fields[@]}" -eq 24 ] || fail 'source-lock v4 field count is not 24'
+grep -Fq 'tb321fu.haptics-source-lock/v4' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+  fail 'builder omits the release source-lock v4 schema'
+grep -Fq 'tb321fu.haptics-source-lock/v4-local' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+  fail 'builder omits the local source-lock v4 schema'
 previous_line=0
 for token in "${expected_fields[@]}"; do
   line=$(grep -n -F "printf '$token\\t" \
@@ -447,6 +455,7 @@ require_failure 'refusing stale OUTPUT_DIR' \
     KERNEL_BUNDLE_METADATA=https://example.invalid/KERNEL-BUNDLE.tsv \
     KERNEL_BUNDLE_METADATA_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
     KERNEL_SDK_MANIFEST=https://example.invalid/KERNEL-SDK-MANIFEST.tsv \
+    KERNEL_TOOLCHAIN_MANIFEST=https://example.invalid/KERNEL-TOOLCHAIN.tsv \
     SOURCE_DATE_EPOCH=0 \
     bash "$sdk_script"
 

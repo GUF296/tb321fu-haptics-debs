@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import lzma
 import os
 import pathlib
 import re
 import stat
 import sys
 import tarfile
+import zlib
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -25,6 +27,9 @@ MAX_PATH_BYTES = 4_096
 MAX_COMPONENT_BYTES = 255
 MAX_PATH_COMPONENTS = 128
 MAX_LINK_TARGET_BYTES = 4_096
+MAX_EXTRACTED_MEMBERS = MAX_ARCHIVE_MEMBERS
+MAX_EXTRACTED_FILE_BYTES = MAX_ARCHIVE_FILE_BYTES
+MAX_EXTRACTED_TOTAL_BYTES = MAX_ARCHIVE_TOTAL_BYTES
 DIRECTORY_MODE = 0o755
 SYMLINK_MODE = 0o777
 FILE_MODES = {0o600, 0o644, 0o755}
@@ -37,10 +42,30 @@ REQUIRED_FILES = (
     "./include/generated/autoconf.h",
     "./include/generated/utsrelease.h",
 )
+# The tested Kbuild SDK carries these two reviewed empty directories. Manifest
+# v1 records only files and symlinks, so they are the sole directory members
+# permitted beyond parents of manifest records.
+OPTIONAL_EMPTY_DIRECTORY_MEMBERS = frozenset(
+    {
+        "./arch/arm64/tools",
+        "./scripts/kconfig/lxdialog",
+    }
+)
 
 
 class SDKError(ValueError):
     """Raised when an SDK archive violates the release contract."""
+
+
+ARCHIVE_READ_ERRORS = (
+    OSError,
+    tarfile.TarError,
+    EOFError,
+    ValueError,
+    zlib.error,
+    lzma.LZMAError,
+)
+VERIFICATION_ERRORS = (SDKError,) + ARCHIVE_READ_ERRORS
 
 
 @dataclass(frozen=True)
@@ -159,9 +184,13 @@ def parse_manifest(path: pathlib.Path) -> dict[str, ManifestRecord]:
     return records
 
 
-def digest_stream(source) -> str:
+def digest_stream(source, *, limit: int | None = None) -> str:
     digest = hashlib.sha256()
+    total = 0
     while chunk := source.read(1024 * 1024):
+        total += len(chunk)
+        if limit is not None and total > limit:
+            raise SDKError(f"stream exceeds {limit} bytes")
         digest.update(chunk)
     return digest.hexdigest()
 
@@ -208,15 +237,32 @@ def parent_paths(path: str) -> set[str]:
     return {"./" + "/".join(parts[:depth]) for depth in range(1, len(parts))}
 
 
+def structural_directories(records: dict[str, ManifestRecord]) -> set[str]:
+    directories: set[str] = set()
+    for path in records:
+        directories.update(parent_paths(path))
+    return directories
+
+
+def require_exact_directory_members(
+    records: dict[str, ManifestRecord], directories: set[str], *, label: str
+) -> None:
+    required = structural_directories(records)
+    missing = sorted(required - directories)
+    unexpected = sorted(directories - required - OPTIONAL_EMPTY_DIRECTORY_MEMBERS)
+    if missing or unexpected:
+        raise SDKError(
+            f"{label} directory members differ from the SDK contract: "
+            f"missing={missing!r} unexpected={unexpected!r}"
+        )
+
+
 def validate_archive_namespace(
     member_kinds: dict[str, str],
     records: dict[str, ManifestRecord],
     link_targets: dict[str, str],
 ) -> None:
-    structural_directories: set[str] = set()
-    for path in records:
-        structural_directories.update(parent_paths(path))
-    known_directories = structural_directories | {
+    known_directories = structural_directories(records) | {
         path for path, kind in member_kinds.items() if kind == "directory"
     }
 
@@ -255,7 +301,7 @@ def validate_archive_namespace(
                 raise SDKError(f"SDK archive symlink chain escapes the direct root: {path}")
 
 
-def archive_records(archive: pathlib.Path) -> dict[str, ManifestRecord]:
+def archive_records(archive: pathlib.Path) -> tuple[dict[str, ManifestRecord], set[str]]:
     flags = (
         os.O_RDONLY
         | getattr(os, "O_CLOEXEC", 0)
@@ -287,7 +333,7 @@ def archive_records(archive: pathlib.Path) -> dict[str, ManifestRecord]:
         raise SDKError(f"SDK archive exceeds {MAX_ARCHIVE_BYTES} compressed bytes")
     try:
         handle = tarfile.open(fileobj=archive_file, mode="r:*")
-    except (OSError, tarfile.TarError) as exc:
+    except ARCHIVE_READ_ERRORS as exc:
         archive_file.close()
         raise SDKError(f"cannot read SDK archive {archive}: {exc}") from exc
 
@@ -296,13 +342,25 @@ def archive_records(archive: pathlib.Path) -> dict[str, ManifestRecord]:
         candidates: set[str] = set()
         member_kinds: dict[str, str] = {}
         link_targets: dict[str, str] = {}
+        directory_members: set[str] = set()
         total_bytes = 0
         member_count = 0
-        for member in handle:
+        root_header_seen = False
+        members = iter(handle)
+        while True:
+            try:
+                member = next(members)
+            except StopIteration:
+                break
+            except ARCHIVE_READ_ERRORS as exc:
+                raise SDKError(f"cannot read SDK archive {archive}: {exc}") from exc
             member_count += 1
             if member_count > MAX_ARCHIVE_MEMBERS:
                 raise SDKError(f"SDK archive has too many members: {member_count}")
             if member.name in ("", ".", "./"):
+                if root_header_seen:
+                    raise SDKError("SDK archive has duplicate root directory headers")
+                root_header_seen = True
                 if member.isdir():
                     if member.mode & 0o7777 != DIRECTORY_MODE:
                         raise SDKError(f"SDK archive root directory mode must be {DIRECTORY_MODE:o}")
@@ -324,6 +382,7 @@ def archive_records(archive: pathlib.Path) -> dict[str, ManifestRecord]:
                 if member.mode & 0o7777 != DIRECTORY_MODE:
                     raise SDKError(f"SDK archive directory mode must be {DIRECTORY_MODE:o}: {member_path}")
                 member_kinds[member_path] = "directory"
+                directory_members.add(member_path)
                 continue
             if member.isreg():
                 if member.mode & 0o7777 not in FILE_MODES:
@@ -335,11 +394,18 @@ def archive_records(archive: pathlib.Path) -> dict[str, ManifestRecord]:
                     raise SDKError("SDK archive expands beyond the total size limit")
                 if total_bytes > archive_bytes * MAX_COMPRESSION_RATIO:
                     raise SDKError("SDK archive compression ratio exceeds the safety limit")
-                source = handle.extractfile(member)
-                if source is None:
-                    raise SDKError(f"cannot read SDK archive member: {member_path}")
-                with source:
-                    digest = digest_stream(source)
+                try:
+                    source = handle.extractfile(member)
+                    if source is None:
+                        raise SDKError(f"cannot read SDK archive member: {member_path}")
+                    with source:
+                        digest = digest_stream(source, limit=MAX_ARCHIVE_FILE_BYTES)
+                except SDKError:
+                    raise
+                except ARCHIVE_READ_ERRORS as exc:
+                    raise SDKError(
+                        f"cannot read SDK archive member: {member_path}: {exc}"
+                    ) from exc
                 kind = "file"
             elif member.issym():
                 if member.mode & 0o7777 != SYMLINK_MODE:
@@ -362,7 +428,7 @@ def archive_records(archive: pathlib.Path) -> dict[str, ManifestRecord]:
         )
         if final_identity != identity:
             raise SDKError("SDK archive changed while it was being verified")
-    return records
+    return records, directory_members
 
 
 def direct_root_candidates(records: dict[str, ManifestRecord]) -> set[str]:
@@ -382,7 +448,49 @@ def direct_root_candidates(records: dict[str, ManifestRecord]) -> set[str]:
     return candidates
 
 
-def extracted_records(root: pathlib.Path) -> dict[str, ManifestRecord]:
+def _metadata_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def extracted_regular_digest(
+    candidate: pathlib.Path, path: str, initial: os.stat_result
+) -> str:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(candidate, flags)
+    except OSError as exc:
+        raise SDKError(f"cannot open extracted SDK file: {path}: {exc}") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if _metadata_identity(opened) != _metadata_identity(initial):
+            raise SDKError(f"extracted SDK file changed before reading: {path}")
+        with os.fdopen(descriptor, "rb") as source:
+            descriptor = -1
+            digest = digest_stream(source, limit=MAX_EXTRACTED_FILE_BYTES)
+        final = candidate.lstat()
+        if _metadata_identity(final) != _metadata_identity(initial):
+            raise SDKError(f"extracted SDK file changed while reading: {path}")
+        return digest
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def extracted_records(root: pathlib.Path) -> tuple[dict[str, ManifestRecord], set[str]]:
     try:
         root_stat = root.lstat()
     except OSError as exc:
@@ -393,65 +501,96 @@ def extracted_records(root: pathlib.Path) -> dict[str, ManifestRecord]:
     records: dict[str, ManifestRecord] = {}
     member_kinds: dict[str, str] = {}
     link_targets: dict[str, str] = {}
-    for directory, names, files in os.walk(root, followlinks=False):
-        current = pathlib.Path(directory)
-        for name in sorted(names):
-            candidate = current / name
-            mode = candidate.lstat().st_mode
-            if stat.S_ISLNK(mode):
-                names.remove(name)
+    directory_members: set[str] = set()
+    member_count = 0
+    total_bytes = 0
+
+    def account_member(path: str, size: int = 0) -> None:
+        nonlocal member_count, total_bytes
+        if path in member_kinds:
+            raise SDKError(f"extracted SDK has duplicate member: {path}")
+        member_count += 1
+        if member_count > MAX_EXTRACTED_MEMBERS:
+            raise SDKError(
+                f"extracted SDK has too many members: {member_count}"
+            )
+        if size < 0 or size > MAX_EXTRACTED_FILE_BYTES:
+            raise SDKError(f"extracted SDK member exceeds size limit: {path}")
+        total_bytes += size
+        if total_bytes > MAX_EXTRACTED_TOTAL_BYTES:
+            raise SDKError("extracted SDK expands beyond the total size limit")
+
+    pending: list[tuple[pathlib.Path, os.stat_result]] = [(root, root_stat)]
+    while pending:
+        current, expected_current = pending.pop()
+        try:
+            current_stat = current.lstat()
+        except OSError as exc:
+            raise SDKError(f"cannot stat extracted SDK directory {current}: {exc}") from exc
+        if _metadata_identity(current_stat) != _metadata_identity(expected_current):
+            raise SDKError(f"extracted SDK directory changed before reading: {current}")
+        try:
+            entries = os.scandir(current)
+        except OSError as exc:
+            raise SDKError(f"cannot enumerate extracted SDK directory {current}: {exc}") from exc
+        try:
+            for entry in entries:
+                candidate = current / entry.name
+                try:
+                    initial = candidate.lstat()
+                except OSError as exc:
+                    raise SDKError(f"cannot stat extracted SDK member {candidate}: {exc}") from exc
+                mode = initial.st_mode
                 path = canonical_path(candidate.relative_to(root).as_posix(), label="extracted SDK")
                 if root_source_path(path):
                     raise SDKError("extracted SDK must not contain ./source")
-                target = os.readlink(candidate)
-                if resolve_contained_symlink(path, target) is None:
-                    raise SDKError(
-                        f"extracted SDK symlink escapes the direct root: {path} -> {target!r}"
+                if stat.S_ISLNK(mode):
+                    target = os.readlink(candidate)
+                    if _metadata_identity(candidate.lstat()) != _metadata_identity(initial):
+                        raise SDKError(f"extracted SDK symlink changed while reading: {path}")
+                    account_member(path)
+                    if resolve_contained_symlink(path, target) is None:
+                        raise SDKError(
+                            f"extracted SDK symlink escapes the direct root: {path} -> {target!r}"
+                        )
+                    if mode & 0o7777 != SYMLINK_MODE:
+                        raise SDKError(f"extracted SDK symlink mode must be {SYMLINK_MODE:o}: {path}")
+                    records[path] = ManifestRecord(
+                        "symlink", digest_link_target(target, label="extracted SDK"), mode & 0o7777, path
                     )
-                records[path] = ManifestRecord(
-                    "symlink", digest_link_target(target, label="extracted SDK"), mode & 0o7777, path
-                )
-                if mode & 0o7777 != SYMLINK_MODE:
-                    raise SDKError(f"extracted SDK symlink mode must be {SYMLINK_MODE:o}: {path}")
-                member_kinds[path] = "symlink"
-                link_targets[path] = target
-            elif not stat.S_ISDIR(mode):
-                raise SDKError(f"extracted SDK has unsupported directory entry: {candidate}")
-            else:
-                path = canonical_path(candidate.relative_to(root).as_posix(), label="extracted SDK")
-                if mode & 0o7777 != DIRECTORY_MODE:
-                    raise SDKError(f"extracted SDK directory mode must be {DIRECTORY_MODE:o}: {path}")
-                member_kinds[path] = "directory"
-        for name in sorted(files):
-            candidate = current / name
-            mode = candidate.lstat().st_mode
-            path = canonical_path(candidate.relative_to(root).as_posix(), label="extracted SDK")
-            if root_source_path(path):
-                raise SDKError("extracted SDK must not contain ./source")
-            if stat.S_ISLNK(mode):
-                target = os.readlink(candidate)
-                if resolve_contained_symlink(path, target) is None:
-                    raise SDKError(
-                        f"extracted SDK symlink escapes the direct root: {path} -> {target!r}"
-                    )
-                records[path] = ManifestRecord(
-                    "symlink", digest_link_target(target, label="extracted SDK"), mode & 0o7777, path
-                )
-                if mode & 0o7777 != SYMLINK_MODE:
-                    raise SDKError(f"extracted SDK symlink mode must be {SYMLINK_MODE:o}: {path}")
-                member_kinds[path] = "symlink"
-                link_targets[path] = target
-            elif stat.S_ISREG(mode):
-                if mode & 0o7777 not in FILE_MODES:
-                    raise SDKError(f"extracted SDK has unsupported file mode: {path}")
-                with candidate.open("rb") as source:
-                    digest = digest_stream(source)
-                records[path] = ManifestRecord("file", digest, mode & 0o7777, path)
-                member_kinds[path] = "file"
-            else:
-                raise SDKError(f"extracted SDK has unsupported member type: {path}")
+                    member_kinds[path] = "symlink"
+                    link_targets[path] = target
+                elif stat.S_ISDIR(mode):
+                    if mode & 0o7777 != DIRECTORY_MODE:
+                        raise SDKError(f"extracted SDK directory mode must be {DIRECTORY_MODE:o}: {path}")
+                    account_member(path)
+                    member_kinds[path] = "directory"
+                    directory_members.add(path)
+                    pending.append((candidate, initial))
+                elif stat.S_ISREG(mode):
+                    if mode & 0o7777 not in FILE_MODES:
+                        raise SDKError(f"extracted SDK has unsupported file mode: {path}")
+                    if initial.st_size > MAX_EXTRACTED_FILE_BYTES:
+                        raise SDKError(f"extracted SDK member exceeds size limit: {path}")
+                    account_member(path, initial.st_size)
+                    digest = extracted_regular_digest(candidate, path, initial)
+                    records[path] = ManifestRecord("file", digest, mode & 0o7777, path)
+                    member_kinds[path] = "file"
+                else:
+                    raise SDKError(f"extracted SDK has unsupported member type: {path}")
+        finally:
+            entries.close()
+        try:
+            final_current = current.lstat()
+        except OSError as exc:
+            raise SDKError(f"cannot restat extracted SDK directory {current}: {exc}") from exc
+        if _metadata_identity(final_current) != _metadata_identity(expected_current):
+            raise SDKError(f"extracted SDK directory changed while reading: {current}")
+    final_root = root.lstat()
+    if _metadata_identity(final_root) != _metadata_identity(root_stat):
+        raise SDKError("extracted SDK root changed while it was being verified")
     validate_archive_namespace(member_kinds, records, link_targets)
-    return records
+    return records, directory_members
 
 
 def validate_kernel_release_identity(records: dict[str, ManifestRecord], release: str) -> None:
@@ -489,16 +628,22 @@ def require_identical_records(
 
 def verify_archive(
     archive: pathlib.Path, manifest: pathlib.Path, kernel_release: str | None = None
-) -> dict[str, ManifestRecord]:
+) -> tuple[dict[str, ManifestRecord], set[str]]:
     expected = parse_manifest(manifest)
-    archived = archive_records(archive)
+    try:
+        archived, archived_directories = archive_records(archive)
+    except SDKError:
+        raise
+    except (OSError, tarfile.TarError, EOFError, ValueError, zlib.error) as exc:
+        raise SDKError(f"cannot safely parse SDK archive {archive}: {exc}") from exc
     roots = direct_root_candidates(archived)
     if roots != {"."}:
         raise SDKError(f"SDK archive must have exactly one direct Kbuild root, found {sorted(roots)!r}")
     require_identical_records(expected, archived, label="SDK archive")
+    require_exact_directory_members(expected, archived_directories, label="SDK archive")
     if kernel_release is not None:
         validate_kernel_release_identity(expected, kernel_release)
-    return expected
+    return expected, archived_directories
 
 
 def verify(
@@ -507,8 +652,17 @@ def verify(
     extracted: pathlib.Path,
     kernel_release: str | None = None,
 ) -> None:
-    expected = verify_archive(archive, manifest, kernel_release)
-    require_identical_records(expected, extracted_records(extracted), label="extracted SDK")
+    expected, archived_directories = verify_archive(archive, manifest, kernel_release)
+    extracted, extracted_directories = extracted_records(extracted)
+    require_identical_records(expected, extracted, label="extracted SDK")
+    require_exact_directory_members(expected, extracted_directories, label="extracted SDK")
+    if extracted_directories != archived_directories:
+        missing = sorted(archived_directories - extracted_directories)
+        extra = sorted(extracted_directories - archived_directories)
+        raise SDKError(
+            "extracted SDK directory members differ from the archive: "
+            f"missing={missing!r} extra={extra!r}"
+        )
 
 
 def main() -> int:
@@ -534,7 +688,7 @@ def main() -> int:
             raise SDKError("an extracted SDK root is required without --archive-only")
         else:
             verify(args.archive, args.manifest, args.extracted_root, args.kernel_release)
-    except (SDKError, OSError) as exc:
+    except VERIFICATION_ERRORS as exc:
         print(f"kernel SDK verification failed: {exc}", file=sys.stderr)
         return 1
     print("KERNEL_SDK=PASS")

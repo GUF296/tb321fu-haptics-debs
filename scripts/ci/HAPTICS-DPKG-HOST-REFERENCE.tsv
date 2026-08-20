@@ -1,0 +1,301 @@
+schema	tb321fu.haptics-dpkg-host-reference/v1
+state-file	diversions	644	1814	71854c408023395866dbe9a81192b0264ec8f885f379bf5fa32b031e4214e48f
+state-file	statoverride	644	285	b4877b6f62b29484b52d373a5b3ae25465c8ba0423f4b441ec6849554400453b
+state-file	triggers/File	644	2038	3d930b09cc102d0b31273ca7dfc469d941382ff129104bd4e0a42da8be53d14c
+state-file	triggers/aspell-autobuildhash	644	28	b2eb5757b46fc925e6f149607f3aa9ae31755735a438fd9ae3effabab0ebf2ed
+state-file	triggers/google-cloud-cli-postprocess	644	17	ffc5cff07578c1474169bb2ef86293d0450ed653ae5bf94d13820d5e86fbeb60
+state-file	triggers/ispell-autobuildhash	644	28	b2eb5757b46fc925e6f149607f3aa9ae31755735a438fd9ae3effabab0ebf2ed
+state-file	triggers/ldconfig	644	9	e1919c8b2afb858bd2aadc7ccb27c847b3b687ed9dffe00219d645d0c30b8b83
+state-file	triggers/lib32	644	19	026e8827dbb154c92f39202a5e12557b8531536c0d675b670cdf71d9c858c418
+state-file	triggers/libo32	644	19	026e8827dbb154c92f39202a5e12557b8531536c0d675b670cdf71d9c858c418
+state-file	triggers/libx32	644	19	026e8827dbb154c92f39202a5e12557b8531536c0d675b670cdf71d9c858c418
+state-file	triggers/linux-update-6.17.0-1020-azure	644	30	1561fc6e4542c9f4a1470da987563ad47cf4cd9702b167214eadcfc1e2f445fd
+state-file	triggers/nginx-reload	644	14	62089e47c006446d9c46ba91f95dd1f7356314ccd0ef3442e0e97cd8dfd5720c
+state-file	triggers/shim-kernel-check	644	20	b9db8762472d2570272518f276cbfa4f4df2d604b4cfd699455fae91ffd21d25
+state-file	triggers/shim-secureboot-policy	644	20	b9db8762472d2570272518f276cbfa4f4df2d604b4cfd699455fae91ffd21d25
+state-file	triggers/texmf-format	644	19	be01eda22677db3dce172b9688e883d5a35c21267eb68a90a4d6faf27c74c2ed
+state-file	triggers/texmf-hyphen	644	19	be01eda22677db3dce172b9688e883d5a35c21267eb68a90a4d6faf27c74c2ed
+state-file	triggers/texmf-map	644	19	be01eda22677db3dce172b9688e883d5a35c21267eb68a90a4d6faf27c74c2ed
+state-file	triggers/twisted-plugins-cache	644	16	631b3ab0f9b94b5bf8e191980e24d2167cf37549e5e1618432dd0d75e8af929c
+state-file	triggers/update-ca-certificates	644	16	e4f7fe96541f669b07bf6fd456f38e50a91716997939d95f4379e9aaa97fda08
+state-file	triggers/update-ca-certificates-fresh	644	16	e4f7fe96541f669b07bf6fd456f38e50a91716997939d95f4379e9aaa97fda08
+state-file	triggers/update-default-ispell	644	28	b2eb5757b46fc925e6f149607f3aa9ae31755735a438fd9ae3effabab0ebf2ed
+state-file	triggers/update-default-wordlist	644	28	b2eb5757b46fc925e6f149607f3aa9ae31755735a438fd9ae3effabab0ebf2ed
+state-file	triggers/update-initramfs	644	16	004ffcdcbf41e7551c5889d6e2926b738866b5be7357d1c4777eaf715ec913f2
+state-file	triggers/update-sgmlcatalog	644	10	a8831dc8c0ae72ef5e2e5043402b303481aefdfb96aba7a71059edd46e1298a2
+trigger	/etc/dbus-1/system.d	dbus	amd64	noawait
+trigger	/etc/lsb-release	plymouth-theme-ubuntu-text	amd64	noawait
+trigger	/etc/php/8.3/cgi/conf.d	php8.3-cgi	amd64	noawait
+trigger	/etc/php/8.3/cli/conf.d	php8.3-cli	amd64	noawait
+trigger	/etc/php/8.3/fpm/conf.d	php8.3-fpm	amd64	noawait
+trigger	/etc/php/8.3/phpdbg/conf.d	php8.3-phpdbg	amd64	noawait
+trigger	/etc/rsyslog.d	rsyslog	amd64	noawait
+trigger	/etc/sgml	sgml-base	all	await
+trigger	/etc/ufw/applications.d	ufw	all	noawait
+trigger	/lib/udev/hwdb.d	udev	amd64	noawait
+trigger	/opt/man	man-db	amd64	noawait
+trigger	/usr/X11R6/man	man-db	amd64	noawait
+trigger	/usr/lib/binfmt.d	systemd	amd64	noawait
+trigger	/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders	libgdk-pixbuf-2.0-0	amd64	noawait
+trigger	/usr/lib/ld-linux.so.2	libc6-i386	amd64	noawait
+trigger	/usr/lib/systemd/catalog	systemd	amd64	noawait
+trigger	/usr/lib/udev/hwdb.d	udev	amd64	noawait
+trigger	/usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders	libgdk-pixbuf-2.0-0	amd64	noawait
+trigger	/usr/lib/x86_64-linux-gnu/gio/modules	libglib2.0-0t64	amd64	noawait
+trigger	/usr/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules	libgtk-3-0t64	amd64	noawait
+trigger	/usr/local/man	man-db	amd64	noawait
+trigger	/usr/local/share/man	man-db	amd64	noawait
+trigger	/usr/man	man-db	amd64	noawait
+trigger	/usr/share/app-info/icons	appstream	amd64	noawait
+trigger	/usr/share/app-info/xml	appstream	amd64	noawait
+trigger	/usr/share/app-info/yaml	appstream	amd64	noawait
+trigger	/usr/share/dbus-1/system-services	dbus	amd64	noawait
+trigger	/usr/share/dbus-1/system.d	dbus	amd64	noawait
+trigger	/usr/share/debianutils/shells.d	debianutils	amd64	noawait
+trigger	/usr/share/doc/texlive-doc	tex-common	all	noawait
+trigger	/usr/share/fonts	fontconfig	amd64	noawait
+trigger	/usr/share/ghostscript/fonts	fontconfig	amd64	noawait
+trigger	/usr/share/glib-2.0/schemas	libglib2.0-0t64	amd64	await
+trigger	/usr/share/hunspell	dictionaries-common	all	noawait
+trigger	/usr/share/hunspell	postgresql-common	all	noawait
+trigger	/usr/share/icons/hicolor	hicolor-icon-theme	all	noawait
+trigger	/usr/share/info	install-info	amd64	noawait
+trigger	/usr/share/man	man-db	amd64	noawait
+trigger	/usr/share/mime/packages	shared-mime-info	amd64	noawait
+trigger	/usr/share/myspell/dicts	postgresql-common	all	noawait
+trigger	/usr/share/package-data-downloads	update-notifier-common	all	noawait
+trigger	/usr/share/postgresql	postgresql-common	all	noawait
+trigger	/usr/share/sgml	sgml-base	all	await
+trigger	/usr/share/texlive/texmf-dist	tex-common	all	noawait
+trigger	/usr/share/texmf	tex-common	all	noawait
+trigger	/usr/share/texmf/fonts	fontconfig	amd64	noawait
+trigger	/usr/share/xml	sgml-base	all	await
+trigger	explicit:aspell-autobuildhash	dictionaries-common	all	noawait
+trigger	explicit:google-cloud-cli-postprocess	google-cloud-cli	amd64	await
+trigger	explicit:ispell-autobuildhash	dictionaries-common	all	noawait
+trigger	explicit:ldconfig	libc-bin	amd64	await
+trigger	explicit:lib32	base-files	amd64	noawait
+trigger	explicit:libo32	base-files	amd64	noawait
+trigger	explicit:libx32	base-files	amd64	noawait
+trigger	explicit:linux-update-6.17.0-1020-azure	linux-image-6.17.0-1020-azure	amd64	await
+trigger	explicit:nginx-reload	nginx	amd64	noawait
+trigger	explicit:shim-kernel-check	shim-signed	amd64	noawait
+trigger	explicit:shim-secureboot-policy	shim-signed	amd64	noawait
+trigger	explicit:texmf-format	tex-common	all	noawait
+trigger	explicit:texmf-hyphen	tex-common	all	noawait
+trigger	explicit:texmf-map	tex-common	all	noawait
+trigger	explicit:twisted-plugins-cache	python3-twisted	all	await
+trigger	explicit:update-ca-certificates	ca-certificates	all	await
+trigger	explicit:update-ca-certificates-fresh	ca-certificates	all	await
+trigger	explicit:update-default-ispell	dictionaries-common	all	noawait
+trigger	explicit:update-default-wordlist	dictionaries-common	all	noawait
+trigger	explicit:update-initramfs	initramfs-tools	all	await
+trigger	explicit:update-sgmlcatalog	sgml-base	all	await
+handler	appstream	amd64	1.0.2-1build6	install ok installed
+handler	base-files	amd64	13ubuntu10.4	install ok installed
+handler	ca-certificates	all	20260601~24.04.1	install ok installed
+handler	dbus	amd64	1.14.10-4ubuntu4.1	install ok installed
+handler	debianutils	amd64	5.17build1	install ok installed
+handler	dictionaries-common	all	1.29.7	install ok installed
+handler	fontconfig	amd64	2.15.0-1.1ubuntu2	install ok installed
+handler	google-cloud-cli	amd64	576.0.0-0	install ok installed
+handler	hicolor-icon-theme	all	0.17-2	install ok installed
+handler	initramfs-tools	all	0.142ubuntu25.8	install ok installed
+handler	install-info	amd64	7.1-3build2	install ok installed
+handler	libc-bin	amd64	2.39-0ubuntu8.7	install ok installed
+handler	libc6-i386	amd64	2.39-0ubuntu8.7	install ok installed
+handler	libgdk-pixbuf-2.0-0	amd64	2.42.10+dfsg-3ubuntu3.3	install ok installed
+handler	libglib2.0-0t64	amd64	2.80.0-6ubuntu3.8	install ok installed
+handler	libgtk-3-0t64	amd64	3.24.41-4ubuntu1.3	install ok installed
+handler	linux-image-6.17.0-1020-azure	amd64	6.17.0-1020.20~24.04.1	install ok installed
+handler	man-db	amd64	2.12.0-4build2	install ok installed
+handler	nginx	amd64	1.24.0-2ubuntu7.13	install ok installed
+handler	php8.3-cgi	amd64	8.3.6-0ubuntu0.24.04.9	install ok installed
+handler	php8.3-cli	amd64	8.3.6-0ubuntu0.24.04.9	install ok installed
+handler	php8.3-fpm	amd64	8.3.6-0ubuntu0.24.04.9	install ok installed
+handler	php8.3-phpdbg	amd64	8.3.6-0ubuntu0.24.04.9	install ok installed
+handler	plymouth-theme-ubuntu-text	amd64	24.004.60-1ubuntu7.2	install ok installed
+handler	postgresql-common	all	293.pgdg24.04+1	install ok installed
+handler	python3-twisted	all	24.3.0-1ubuntu0.2	install ok installed
+handler	rsyslog	amd64	8.2312.0-3ubuntu9.2	install ok installed
+handler	sgml-base	all	1.31	install ok installed
+handler	shared-mime-info	amd64	2.4-4	install ok installed
+handler	shim-signed	amd64	1.58+15.8-0ubuntu1	install ok installed
+handler	systemd	amd64	255.4-1ubuntu8.16	install ok installed
+handler	tex-common	all	6.18	install ok installed
+handler	udev	amd64	255.4-1ubuntu8.16	install ok installed
+handler	ufw	all	0.36.2-6	install ok installed
+handler	update-notifier-common	all	3.192.68.2	install ok installed
+diversion	/bin	/bin.usr-is-merged	base-files
+diversion	/lib	/lib.usr-is-merged	base-files
+diversion	/lib/x86_64-linux-gnu/libe2p.so.2	/lib/x86_64-linux-gnu/libe2p.so.2.usr-is-merged	libext2fs2t64
+diversion	/lib/x86_64-linux-gnu/libe2p.so.2.3	/lib/x86_64-linux-gnu/libe2p.so.2.3.usr-is-merged	libext2fs2t64
+diversion	/lib/x86_64-linux-gnu/libext2fs.so.2	/lib/x86_64-linux-gnu/libext2fs.so.2.usr-is-merged	libext2fs2t64
+diversion	/lib/x86_64-linux-gnu/libext2fs.so.2.4	/lib/x86_64-linux-gnu/libext2fs.so.2.4.usr-is-merged	libext2fs2t64
+diversion	/lib/x86_64-linux-gnu/libhistory.so.8	/lib/x86_64-linux-gnu/libhistory.so.8.usr-is-merged	libreadline8t64
+diversion	/lib/x86_64-linux-gnu/libhistory.so.8.2	/lib/x86_64-linux-gnu/libhistory.so.8.2.usr-is-merged	libreadline8t64
+diversion	/lib/x86_64-linux-gnu/libreadline.so.8	/lib/x86_64-linux-gnu/libreadline.so.8.usr-is-merged	libreadline8t64
+diversion	/lib/x86_64-linux-gnu/libreadline.so.8.2	/lib/x86_64-linux-gnu/libreadline.so.8.2.usr-is-merged	libreadline8t64
+diversion	/lib/x86_64-linux-gnu/libtirpc.so.3	/lib/x86_64-linux-gnu/libtirpc.so.3.usr-is-merged	libtirpc3t64
+diversion	/lib/x86_64-linux-gnu/libtirpc.so.3.0.0	/lib/x86_64-linux-gnu/libtirpc.so.3.0.0.usr-is-merged	libtirpc3t64
+diversion	/lib32	/lib32.usr-is-merged	base-files
+diversion	/lib64	/lib64.usr-is-merged	base-files
+diversion	/lib64/ld-linux-x86-64.so.2	/lib64/ld-linux-x86-64.so.2.usr-is-merged	libc6
+diversion	/libo32	/libo32.usr-is-merged	base-files
+diversion	/sbin	/sbin.usr-is-merged	base-files
+diversion	/usr/bin/parallel	/usr/bin/parallel.moreutils	parallel
+diversion	/usr/bin/pg_config	/usr/bin/pg_config.libpq-dev	postgresql-common
+diversion	/usr/share/dict/words	/usr/share/dict/words.pre-dictionaries-common	dictionaries-common
+diversion	/usr/share/man/man1/parallel.1.gz	/usr/share/man/man1/parallel.moreutils.1.gz	parallel
+diversion	/usr/share/vim/vim91/doc/help.txt	/usr/share/vim/vim91/doc/help.txt.vim-tiny	vim-runtime
+diversion	/usr/share/vim/vim91/doc/tags	/usr/share/vim/vim91/doc/tags.vim-tiny	vim-runtime
+statoverride	root	_chrony	640	/etc/chrony/chrony.keys
+statoverride	root	ssl-cert	710	/etc/ssl/private
+statoverride	root	crontab	2755	/usr/bin/crontab
+statoverride	root	messagebus	4754	/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+statoverride	_chrony	_chrony	750	/var/lib/chrony
+statoverride	root	root	1733	/var/lib/php/sessions
+statoverride	_chrony	_chrony	750	/var/log/chrony
+script	appstream	amd64	appstream.postinst	755	932	6b09a215cf28f1ce96e6749d64c21febe1f976ca4f2147ce93b023da5d4903c5
+script	appstream	amd64	appstream.postrm	755	437	791625014bc5df0489ca894d0277a2d77744d448b084274583029382efb1214a
+script	appstream	amd64	appstream.preinst	755	177	7251d389b442d84bac5ba850cec2b395dbbbf7e032afa3d16b3dfc37677fe16f
+script	appstream	amd64	appstream.prerm	755	177	7251d389b442d84bac5ba850cec2b395dbbbf7e032afa3d16b3dfc37677fe16f
+script	appstream	amd64	appstream.triggers	644	126	3fc6f233bf0a16b3990f7d2cd8c6625493866966591a7ec29398ea3bcdc2ec9a
+script	base-files	amd64	base-files.postinst	755	6408	39363871bd80eac518e772ce0c4d35a3c1f5465dfc2bd9191c2780933a364cc8
+script	base-files	amd64	base-files.postrm	755	1098	309cc3a30dd7bf8c94ff4e80448ff341b8bb8d220401e7e278556fb241e5ac51
+script	base-files	amd64	base-files.preinst	755	995	5177dab6ecbd8ed3bc2857e0116aca8805f239c753fd34c9ddbbdef5dfcd1fb0
+script	base-files	amd64	base-files.prerm	755	682	8d1520c47bdd5d576fbd2da8b2f686e34353a4f8bbe73d92a85711788fd85fb8
+script	base-files	amd64	base-files.triggers	644	132	4ba9b0c6e79e6a25d8ef59265b5e3aba6365c3afb769d2b06175e94db5e00ab0
+script	ca-certificates	all	ca-certificates.postinst	755	5817	bbad2df5d3c5e3d787789275830bc5b597fe6e9218a99516947a079dcae9e262
+script	ca-certificates	all	ca-certificates.postrm	755	1629	df6b014dfc49380007a13f89320a110bd8bf852ab01856ae2c4bf42ba4566f0e
+script	ca-certificates	all	ca-certificates.triggers	644	70	f93b9730b11a1a18e7170368d631c6c580f62ea80e33022f078842ccc6ede38f
+script	dbus	amd64	dbus.postinst	755	3156	5a29f2fc34c19db36779da4c4cf9186b92722b7c1db23451f63bc4ea071f1708
+script	dbus	amd64	dbus.postrm	755	844	a95887c3ca348363a1f8d8803324a240a4df64147c650818f49d6c042e2b84ab
+script	dbus	amd64	dbus.preinst	755	232	2ab1a7b267f804b61c96d4f43ea3cad96c849299d8daed9232a5c72946981830
+script	dbus	amd64	dbus.prerm	755	386	86a04c421a0e0274e2b36cddf15c719b1108419c7a36b3dc97ab014a9a961c07
+script	dbus	amd64	dbus.triggers	644	133	f52c9c91b7cfef5ec549e7e51cf7ebea4caba7f86d8ef76d8a4586ea49a67af7
+script	debianutils	amd64	debianutils.postinst	755	1854	a980387f36542104d18d6c9e6342284df03f037e9e6f2b36d855db7dbf0bd9a3
+script	debianutils	amd64	debianutils.postrm	755	304	a36e7b7df91bdd67023323d8a7194ed18765dc4ff86fead0702de9e75db0330f
+script	debianutils	amd64	debianutils.prerm	755	133	abe587408235bf70e018ab0002a822bb7d50bbbd365ac44cbf874bae8647e796
+script	debianutils	amd64	debianutils.triggers	644	49	3ce557d2c051964127472f4d1c6cdf13a789cd01f7e0454dec5225d7c9480255
+script	dictionaries-common	all	dictionaries-common.postinst	755	4813	ba34320d91fcda0323b9d02f9e3dd739eed05b84da4dfc0fc3f1c954c08355c4
+script	dictionaries-common	all	dictionaries-common.postrm	755	934	bcd65aa3328811368e1e29a29a45347f16bd2d78efd2625c6271249bfb88fae5
+script	dictionaries-common	all	dictionaries-common.preinst	755	1754	7af4263bddfe315d722c0e13ad3cb9d9cfda69271cb806c9ed03c2f72ba8c75a
+script	dictionaries-common	all	dictionaries-common.prerm	755	1211	b7d70c58674c8440750d41e314856100687251d92ab97241c1f1d4cd0a834e5c
+script	dictionaries-common	all	dictionaries-common.triggers	644	228	8ac2ec724810f98a853e83e4f4caa90da4fdf9a2f463a93a91450286cd576aa7
+script	fontconfig	amd64	fontconfig.postinst	755	594	1b68e5108dd99bb1f05c9f2eb6060315124b4c595a5b7fc5b17239d1919c6cc6
+script	fontconfig	amd64	fontconfig.postrm	755	125	bb85325ecff10f88f982fa9790a7175787ae888ddc75a6d1743693b78c5bedde
+script	fontconfig	amd64	fontconfig.triggers	644	120	0d00dbd05ca79529a14c78bc75f646b9f8a07bd8625462a48341605661ca184d
+script	google-cloud-cli	amd64	google-cloud-cli.postinst	755	472	8909280c80fdb8ce51bff7c51a4b89a4db2b9f9cb7b94e7c9738e61b5c9209ab
+script	google-cloud-cli	amd64	google-cloud-cli.prerm	755	353	6d03eb8c10d222e7061d023c814afae8d3aef8bc87072c4d87a0a7f126cb3c23
+script	google-cloud-cli	amd64	google-cloud-cli.triggers	644	110	04901c21a42a230a7e6d1a43e550f5273823ecf6dd28473ab36e248f340c8795
+script	hicolor-icon-theme	all	hicolor-icon-theme.postinst	755	449	3adf7d60b1d729059963437e94a8152295c15ef0a7029d829fe3475ed8b40454
+script	hicolor-icon-theme	all	hicolor-icon-theme.prerm	755	132	5c2b58816f3dc0e4630803472a5ed90e7a09f39a6ea7c4fa3f361f7c5bdc2d4f
+script	hicolor-icon-theme	all	hicolor-icon-theme.triggers	644	42	1726164ba6187816021fad8dcb29a13b9af1f1db4a5a25398630403a70cde08a
+script	initramfs-tools	all	initramfs-tools.postinst	755	2146	9a9927ce0264e32937e62df85008ddf5015e1e7038bdffae7a1a5c201e80295a
+script	initramfs-tools	all	initramfs-tools.postrm	755	1168	58aee45abc37486289e301a545ea233adde0dab39de8481a9f6a2a3e8349d62f
+script	initramfs-tools	all	initramfs-tools.preinst	755	1397	7fb1dd75a93da7bdc6ccc516c418fd427ffbf8deeb78588ffec84838a13cec1b
+script	initramfs-tools	all	initramfs-tools.prerm	755	294	57afebdf34b49b887fb74e008d481f71f3170f788095f29642029417a64fa276
+script	initramfs-tools	all	initramfs-tools.triggers	644	32	3fc43b7b97cdad86bfceb6fd7cfab3a52dbbf3a538f0bef5985fa725c1b55507
+script	install-info	amd64	install-info.postinst	755	1251	99809b0d9b42b6fb69223138b4f5516fc27eba07657d32d5224cf118ca6c3b3e
+script	install-info	amd64	install-info.triggers	644	33	779ca42f98bc599310528693524a45b6ce50843e54cc096020b17695e0baa841
+script	libc-bin	amd64	libc-bin.postinst	755	898	11993c6ae210c6fa149dcaf55bb46db7f9c301bb986d70115ce817f4db962caf
+script	libc-bin	amd64	libc-bin.triggers	644	440	c3d6b5df131336e54c31dc5687929467de7abea5c5798e3d6a6b2a64ef971fd4
+script	libc6-i386	amd64	libc6-i386.postinst	755	1221	3755ede62b5131b4c0fcd50dbd1fd535bd214391986bdf06ce179f22d0c9fa33
+script	libc6-i386	amd64	libc6-i386.postrm	755	528	5e63a72c5a282476f9527f8a0355c158cadf7b0b0dd9946d6a03848f87f427b5
+script	libc6-i386	amd64	libc6-i386.preinst	755	955	db2b21649c79ac1a443437ab3e1337a1d222310187a270ecf730ef5efde04075
+script	libc6-i386	amd64	libc6-i386.triggers	644	204	a92a0efe91bef51f22207c97a52efd9f11f5eb144528c37064376b4c6187f259
+script	libgdk-pixbuf-2.0-0	amd64	libgdk-pixbuf-2.0-0:amd64.postinst	755	1079	3fcf1465fb9acc0bd2e04ad5ada30ef21fd30647401125b8110f00065daa399c
+script	libgdk-pixbuf-2.0-0	amd64	libgdk-pixbuf-2.0-0:amd64.postrm	755	271	1e204714a77a2598db11ac4b46c4e4637cd8be885ece2eb4ff528b93f166ff8c
+script	libgdk-pixbuf-2.0-0	amd64	libgdk-pixbuf-2.0-0:amd64.triggers	644	204	b10fc7a20701b6d5d8c2654549491887ea1cb04d0d7d48cbe6eeacc128ba963c
+script	libglib2.0-0t64	amd64	libglib2.0-0t64:amd64.postinst	755	1088	70a55b455c9ce54a969b31f7754cdcb09d2ce7c9ddc149b1b6ac51b631d3fe73
+script	libglib2.0-0t64	amd64	libglib2.0-0t64:amd64.postrm	755	1497	4efd043a91e2bc9a254797e4e20d21dda7f924ab18eb44f3baa984955d758cf0
+script	libglib2.0-0t64	amd64	libglib2.0-0t64:amd64.preinst	755	2102	ad3ea65a0921c4ab49770ccd9e99a8b1982081c8860628b9c0df365102364617
+script	libglib2.0-0t64	amd64	libglib2.0-0t64:amd64.triggers	644	173	274d9375bb2f8eacac4e7d2aae3934fa6ce87d3081ec7fa1c6098a51b4913990
+script	libgtk-3-0t64	amd64	libgtk-3-0t64:amd64.postinst	755	475	1fdb6efcc83add444246b5edc098bc1083e8c627e2fee4dffe23f0f8e6be21e4
+script	libgtk-3-0t64	amd64	libgtk-3-0t64:amd64.postrm	755	438	8f97f2daa68cb90ceece3142a27d209e96761a65cd6f74aaa1bdbb4dba9d2ed6
+script	libgtk-3-0t64	amd64	libgtk-3-0t64:amd64.preinst	755	1353	0ebbd35f9e6c1b4f25052e0e9089484ce3742aea269a30098f3a014cc7f5ade5
+script	libgtk-3-0t64	amd64	libgtk-3-0t64:amd64.triggers	644	142	6a1ea56d65af0d4b85a9ba7741604af0069b1cf50ee16ea39582cfa7a8f644aa
+script	linux-image-6.17.0-1020-azure	amd64	linux-image-6.17.0-1020-azure.postinst	755	2175	4a16c702073a999e43394b9d086234ba8b5addb7f7394350c7e32ae33e306de1
+script	linux-image-6.17.0-1020-azure	amd64	linux-image-6.17.0-1020-azure.postrm	755	1435	d5842abd840c99f59502e49b1d5fa2965a39f0aa46a0a4d08401fe682403b29e
+script	linux-image-6.17.0-1020-azure	amd64	linux-image-6.17.0-1020-azure.preinst	755	454	d143b9e87a8d479751284ed8b766d2e3f0ab6ce80add169f51eb4689cb26762d
+script	linux-image-6.17.0-1020-azure	amd64	linux-image-6.17.0-1020-azure.prerm	755	322	6ab0bb1d3c9d845687baeb606ece5921f83fb7325a7d5911da691253bab6e33b
+script	linux-image-6.17.0-1020-azure	amd64	linux-image-6.17.0-1020-azure.triggers	644	40	b85d174e00f36ac1827ad537a069d40a7468b6150fbb8084557d562ddcf1b8b5
+script	man-db	amd64	man-db.postinst	755	4940	591a58ad4e6d2df6746382af57b4b14b96aa4b7558d679f4fef75ebdf18eed53
+script	man-db	amd64	man-db.postrm	755	1650	0f8fb8ccb8e087702b4267c2f0572b9f80edf6e908c327a0636ba66fc44cea3f
+script	man-db	amd64	man-db.prerm	755	273	9f93dd4357cb6ae71c41157733d81fc98b564be38abe3d0b9f6afa153b638704
+script	man-db	amd64	man-db.triggers	644	383	0a0a9141e038168b0a6d0978584b1d74c1805d5004b5be2b07f1be1ddb886c44
+script	nginx	amd64	nginx.postinst	755	689	00403902bfafffa4114d577c1f2562bae537e12772d33afe49829fb6d07efe6a
+script	nginx	amd64	nginx.prerm	755	313	f6f96721962c42e7729b21a389682ddcff7063cbabe554f66b3a9151de0a4e88
+script	nginx	amd64	nginx.triggers	644	30	2063cff13d5799e8242525c06f3cbaaba39e9eb2f210bfab80f2a225d32d5981
+script	php8.3-cgi	amd64	php8.3-cgi.postinst	755	1326	3ad6cdb56d62648f343a298c7c2e23e449b87573e5c6d257e1d01b5639f1ab81
+script	php8.3-cgi	amd64	php8.3-cgi.postrm	755	1042	51da6257a6f67f2de61eb7f32d76242b6accfaba6e21984052c09c079b7ce3dd
+script	php8.3-cgi	amd64	php8.3-cgi.prerm	755	1011	5bad661c1949a8acb7a48da21250fc83841acd562d71013b90526615affb50f8
+script	php8.3-cgi	amd64	php8.3-cgi.triggers	644	41	6912e2356fabc51bc30512b69dbcd6e1f88d8fb69fa4d8ffd9af14283582423d
+script	php8.3-cli	amd64	php8.3-cli.postinst	755	928	88387124f3e1066013341223e2d9d7f569d372ba48f6e84b4acd5cc6c1afc1d3
+script	php8.3-cli	amd64	php8.3-cli.postrm	755	698	65853f31ac0a8ae38bd576cde83ac80eb13d6a6a650e17288908107c05f4ce2b
+script	php8.3-cli	amd64	php8.3-cli.prerm	755	632	4a7abe34f99c6a36f21b200e6a535ac318634a6ef6ddeb710114960529171817
+script	php8.3-cli	amd64	php8.3-cli.triggers	644	41	a3d4c66a058d4b70e08bfd22bb97b7682b65f068db454a62def8fc3b42f88ec5
+script	php8.3-fpm	amd64	php8.3-fpm.postinst	755	3589	d126b34a56378a0feb6b8e27a137ad491516b5dae0b04958f07405c3020f7bc6
+script	php8.3-fpm	amd64	php8.3-fpm.postrm	755	1774	d4b4412a4afa252182960c2a8eed274916cd98f09948c74f0d36fca676cc31fc
+script	php8.3-fpm	amd64	php8.3-fpm.preinst	755	423	2dfa2ff101e917b8daf9840cbfbb5c7d74e8b5ed3768853eb6bfb55d8c811cc4
+script	php8.3-fpm	amd64	php8.3-fpm.prerm	755	1225	712d642fe33549e5c09ddc91427942a21d1b09510fdc22a3e0a7399b0aae968c
+script	php8.3-fpm	amd64	php8.3-fpm.triggers	644	41	d787d7a3de6840451e1ba3cd26e94bf6e18086f728296689251c9e00b77e2816
+script	php8.3-phpdbg	amd64	php8.3-phpdbg.postinst	755	869	bf68a8483b8be43ffc7b3fbb2bc51e370e14cd779a19658f14a3ec0debba3cb0
+script	php8.3-phpdbg	amd64	php8.3-phpdbg.postrm	755	716	631278f53ecf481b8a2760c564b6a6667aa229e1a01416a6a3e347912eccc471
+script	php8.3-phpdbg	amd64	php8.3-phpdbg.prerm	755	573	cb9a9b880ae3f564cf31c8693e25bba1e10b381fc3542b08af73a8ecdef3d5df
+script	php8.3-phpdbg	amd64	php8.3-phpdbg.triggers	644	44	5569105cbffb78fbf8e4d737b95c1c69d3f06a9f0278e5d7dda3ad5ebcbefbdc
+script	plymouth-theme-ubuntu-text	amd64	plymouth-theme-ubuntu-text.postinst	755	1455	1e961f8bf41a8d3105917f14a9444f710d0eb4b0f2db81b3dd22e249b9b8abc6
+script	plymouth-theme-ubuntu-text	amd64	plymouth-theme-ubuntu-text.postrm	755	128	e3880e73dc894bc565965e1dde0dc6b200a43de3a9d4871401f6ac0f48ff8312
+script	plymouth-theme-ubuntu-text	amd64	plymouth-theme-ubuntu-text.prerm	755	229	e8cff2d1444c039728bb557efd67dd6b033a9ddaafaab4379e268f919c481eac
+script	plymouth-theme-ubuntu-text	amd64	plymouth-theme-ubuntu-text.triggers	644	34	cf8b7127a387b81cfeabe649355c976e090aaa647bef965e6c1b118437948dbb
+script	postgresql-common	all	postgresql-common.postinst	755	7252	4234b304cb43f8b3c80857482d99dc807f18bdb769f1c7a749ca612c3ac9650b
+script	postgresql-common	all	postgresql-common.postrm	755	2278	55b1c0202cf03fe3a925787bfe6d7152bae4fe00bd557b223c500a2e5d48bbd2
+script	postgresql-common	all	postgresql-common.preinst	755	1118	d435fe1582a1f3ef1450acc08ad2855c35ae0f97ef9f090a1d0961a55c5b586d
+script	postgresql-common	all	postgresql-common.prerm	755	810	f96015d69b09e4f1cf501d7588c056801b20023b95391e3a9d5a0bccb0437e05
+script	postgresql-common	all	postgresql-common.triggers	644	292	60056ac8cdf6dfc959f5786e95d809ea42a532ba82a33182f9467c61cc3bba5d
+script	python3-twisted	all	python3-twisted.postinst	755	788	6824e11ed742238b77cf17bd0964698ae74cbafbf538618ce7d71ed74e270995
+script	python3-twisted	all	python3-twisted.postrm	755	321	dba8633fe340ce873d9192746f3bf89030e3d08e01080e4e96e6dae733412a6d
+script	python3-twisted	all	python3-twisted.prerm	755	378	7733c59d7f5e9416d82b3a9c7bcedb167e9c226740423241e82f7aaa54dda304
+script	python3-twisted	all	python3-twisted.triggers	644	31	32d07364df4251a196873eacb31dc7832503a68e91cbfdd4b25cfb05534dfcd9
+script	rsyslog	amd64	rsyslog.postinst	755	5472	9310f2ff4678d8473cd25770b3983e257ea59ebfaef01e42c9e02b798e70f417
+script	rsyslog	amd64	rsyslog.postrm	755	1925	e08838aba283da2c67cb8afb4f053645389df0ec93be71cce164fde47d3ec9fa
+script	rsyslog	amd64	rsyslog.preinst	755	423	c1210bf92c9d8ea791a7f8f415abe5be5adf99c18d4c483710a5bf9daa40423a
+script	rsyslog	amd64	rsyslog.prerm	755	699	c2c42ffcab1018be3b506b85629cb55d81b0970dabc8ebd5704ec73db93764ea
+script	rsyslog	amd64	rsyslog.triggers	644	32	f17865c683da670ebbcc14ab8c39f083b1d971bf7262c53dbb0484d88b04af8b
+script	sgml-base	all	sgml-base.postinst	755	3243	fb88241046aa91f20d5b15a09ebad287ab57d1c6ed79b306712bed2040314751
+script	sgml-base	all	sgml-base.postrm	755	1157	9fb82b24f62afdc75a2b9ad4265fd71ba6c4d2fa13e3a4ceb89969c27687fd27
+script	sgml-base	all	sgml-base.preinst	755	669	51367368485dd9334bbd1a48580094303ac820eb01e7695bba8525df1b6ec4dc
+script	sgml-base	all	sgml-base.prerm	755	1187	dbb8f16e295a6301da3eec411d50d601fa777ae27a849cadab096cb2dbee10ae
+script	sgml-base	all	sgml-base.triggers	644	96	0b5387ec66c07c32079d7eedf7c17aea877ae9a85bb06fd757e8db489037d4bb
+script	shared-mime-info	amd64	shared-mime-info.postinst	755	271	11b79cea265df417fa802a95c035444403e41d622effc1f89039b313f598499e
+script	shared-mime-info	amd64	shared-mime-info.postrm	755	202	17190079405fb129a1d02e1f7f26d0e798bf0f536f902555af7883b2149b8a1e
+script	shared-mime-info	amd64	shared-mime-info.triggers	644	42	6cbc2ec6b6317793e2c661a18d454f198b12797ef116dbefe08a5d79242452d4
+script	shim-signed	amd64	shim-signed.postinst	755	5674	ab6073d0e512a020c12ec34b96eb4df02c57f72c3acef163073427307645834a
+script	shim-signed	amd64	shim-signed.postrm	755	283	0f1a9626aa65822d971c85a1d6f1252fec03c7273ebc2c5207340ea417d15e12
+script	shim-signed	amd64	shim-signed.triggers	644	75	a73a420e175cff1fb4d9931466c03a2575e697c38e48b58a13f111c1f9a6f38b
+script	systemd	amd64	systemd.postinst	755	3977	6a749d73600be82a6636c0132746eeb36b3e3e05e27d1c0aeb6768d29c6c3dc8
+script	systemd	amd64	systemd.postrm	755	1391	5c39382b853cc939620732ff2420f029fa199d6a42937892101ae4a83f79e80a
+script	systemd	amd64	systemd.preinst	755	1563	b15d38420cc92e252514a50d457076a834b36efa0cf3127f0cbcce3689fddaa6
+script	systemd	amd64	systemd.prerm	755	449	cf47ff28c41c8e218c1c4d11604783915503ab0aabeb8e8c6a6d346f114cc3a5
+script	systemd	amd64	systemd.triggers	644	77	53bab45a9732a751101d50d712615b53917fc4739598b3697124a1473ee24735
+script	tex-common	all	tex-common.postinst	755	13991	0d1ded8e3833ec37a3600bdcf8abd00b60b78346f076e2199c4063fddfc39824
+script	tex-common	all	tex-common.postrm	755	2485	e2fd7c15760803358f8e1b650ca80910d83858fc72e1b2af7ebc405f8442b587
+script	tex-common	all	tex-common.preinst	755	1594	e27c90f0a5ff2e8655ce70e24d734c01ba48f013f3ad84bbdf5464550744f9af
+script	tex-common	all	tex-common.prerm	755	211	8e35d7143c324e0b063378fa873b2676e46800c5b36e82cc5ae6bc35c2786ffb
+script	tex-common	all	tex-common.triggers	644	212	58f23e6d11bf9acf13f461f61fdf822859d1c68ebbd93c081de520364be74236
+script	udev	amd64	udev.postinst	755	1695	091f8e3fb2658d9b8fd59d13353a74f2db2d81ba11c8ab5741b2ba7d4e4aa832
+script	udev	amd64	udev.postrm	755	622	7bcf330c30e09cafeb5b917a714c83efbfaafae54bafb4aeecf1f8c1648ec456
+script	udev	amd64	udev.preinst	755	1550	a8312ad8920e49ca0127166ce7cc8b2bb06b4f2b466bc08abbc2c03e282514e7
+script	udev	amd64	udev.prerm	755	424	ec89ada668d70438b797dc5f75eff66fdc76dee50c3dac11399394d25f55411b
+script	udev	amd64	udev.triggers	644	268	6ce796939ebf05d422cf37a938bcfb8ccb03ba0350c695ee457473be01185b74
+script	ufw	all	ufw.postinst	755	5698	781518236186c9bec9e358d518dd0b0dad8b6d560352a008a4807c4a4d0b26d2
+script	ufw	all	ufw.postrm	755	2169	0ab025a9d2abe0e988c0c2cdfbf044d53675108066dd0084d519af64374b1588
+script	ufw	all	ufw.preinst	755	1404	458812b562034d63a439466d7e8425720fbc00d16a93069c1934bbf0dca93f45
+script	ufw	all	ufw.prerm	755	797	ef0d3516b72e29e66a303eba91d1af183ff5bd56d115de153bbd7c70a85cd2ac
+script	ufw	all	ufw.triggers	644	41	09b6e3d33ccdc6f850ae54c5347907f13a1bedac4af3daa9bee00d1ca1180e5a
+script	update-notifier-common	all	update-notifier-common.postinst	755	3597	3945c4619e1973c30e825b9eaef5daac9d3d054d3c1245d9aff1732914c432d5
+script	update-notifier-common	all	update-notifier-common.postrm	755	875	0cec944d7e6d0d449c4d1fc75f884c114a4523316f2fe058127a68db602b871f
+script	update-notifier-common	all	update-notifier-common.preinst	755	387	278bfc9b7faca5479bf0d094d0e449a6af28a17529583651e893146e8e676cca
+script	update-notifier-common	all	update-notifier-common.prerm	755	739	a40afdb7dae43065592afd1ddcb9b6933b694204cd06d16d2d7e0f75e190a281
+script	update-notifier-common	all	update-notifier-common.triggers	644	51	442c8ab6d9a09c91781d61988a4c80642468cef1812d6ca5e79c4a0f3e3cb3c5

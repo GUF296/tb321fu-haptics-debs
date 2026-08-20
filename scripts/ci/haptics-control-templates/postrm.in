@@ -4,6 +4,7 @@ umask 022
 
 KERNEL_RELEASE=@KERNEL_RELEASE@
 MANAGED_WANT_TARGET=/usr/lib/systemd/system/tb321fu-haptics.service
+MANAGED_WANT_STATE_MAX_BYTES=256
 
 die()
 {
@@ -46,13 +47,8 @@ remove_managed_want()
 	want=$(root_path "/etc/systemd/system/multi-user.target.wants/$1")
 	state=$(root_path /var/lib/tb321fu-haptics/managed-want)
 	[ -e "$state" ] || [ -L "$state" ] || return 0
-	[ -f "$state" ] && [ ! -L "$state" ] ||
-		die "managed systemd-want state is not a regular file: $state"
-	target=$(cat "$state")
-	[ -n "$target" ] && [ "$(wc -l < "$state")" -eq 1 ] ||
-		die "managed systemd-want state is malformed: $state"
-	[ "$target" = "$MANAGED_WANT_TARGET" ] ||
-		die "managed systemd-want state has an unexpected target: $state"
+	read_managed_want_state "$state"
+	target=$managed_want_state_target
 	if [ -L "$want" ]; then
 		current_target=$(readlink "$want") ||
 			die "cannot read package-managed systemd want: $want"
@@ -66,6 +62,35 @@ remove_managed_want()
 		printf '%s\n' "tb321fu-haptics postrm: preserving non-symlink systemd want: $want" >&2
 	fi
 	rm -f -- "$state" || die "cannot remove managed systemd-want state: $state"
+}
+
+read_managed_want_state()
+{
+	managed_want_state=$1
+	managed_want_state_target=
+	[ -f "$managed_want_state" ] && [ ! -L "$managed_want_state" ] ||
+		die "managed systemd-want state is not a regular file: $managed_want_state"
+	state_sample=$(mktemp "$(dirname -- "$managed_want_state")/.managed-want-state.XXXXXX") ||
+		die "cannot create bounded managed systemd-want state sample"
+	if ! dd if="$managed_want_state" of="$state_sample" bs=1 \
+		count=$((MANAGED_WANT_STATE_MAX_BYTES + 1)) 2>/dev/null; then
+		rm -f -- "$state_sample"
+		die "cannot read managed systemd-want state: $managed_want_state"
+	fi
+	state_bytes=$(wc -c < "$state_sample") || {
+		rm -f -- "$state_sample"
+		die "cannot measure managed systemd-want state: $managed_want_state"
+	}
+	if [ "$state_bytes" -gt "$MANAGED_WANT_STATE_MAX_BYTES" ]; then
+		rm -f -- "$state_sample"
+		die "managed systemd-want state exceeds the size limit: $managed_want_state"
+	fi
+	if ! printf '%s\n' "$MANAGED_WANT_TARGET" | cmp -s "$state_sample" -; then
+		rm -f -- "$state_sample"
+		die "managed systemd-want state is malformed or has an unexpected target: $managed_want_state"
+	fi
+	rm -f -- "$state_sample"
+	managed_want_state_target=$MANAGED_WANT_TARGET
 }
 
 reload_systemd_if_running()
@@ -96,6 +121,11 @@ case "${1:-}" in
 	remove|purge) ;;
 	*) exit 0 ;;
 esac
+
+require_command cmp
+require_command dd
+require_command mktemp
+require_command dirname
 
 remove_managed_want tb321fu-haptics.service
 reload_systemd_if_running

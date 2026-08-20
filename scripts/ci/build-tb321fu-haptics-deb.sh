@@ -23,6 +23,7 @@ if [ "${HAPTICS_BUILDER_CLEAN_ENV:-}" != 1 ] || [ -z "${BASH_VERSION:-}" ]; then
     KERNEL_BUNDLE_METADATA="${KERNEL_BUNDLE_METADATA-}" \
     KERNEL_BUNDLE_METADATA_SHA256="${KERNEL_BUNDLE_METADATA_SHA256-}" \
     KERNEL_SDK_MANIFEST="${KERNEL_SDK_MANIFEST-}" \
+    KERNEL_TOOLCHAIN_MANIFEST="${KERNEL_TOOLCHAIN_MANIFEST-}" \
     EXPECTED_KERNEL_SOURCE_COMMIT="${EXPECTED_KERNEL_SOURCE_COMMIT-}" \
     HAPTICS_STRIP="${HAPTICS_STRIP-}" \
     HAPTICS_RELEASE_MODE="${HAPTICS_RELEASE_MODE-}" \
@@ -65,6 +66,7 @@ haptics_enter_clean_environment HAPTICS_BUILDER_CLEAN_ENV "$SCRIPT_PATH" \
   KERNEL_BUNDLE_METADATA \
   KERNEL_BUNDLE_METADATA_SHA256 \
   KERNEL_SDK_MANIFEST \
+  KERNEL_TOOLCHAIN_MANIFEST \
   EXPECTED_KERNEL_SOURCE_COMMIT \
   HAPTICS_STRIP \
   HAPTICS_RELEASE_MODE \
@@ -102,11 +104,12 @@ Environment inputs:
   KERNEL_BUNDLE_METADATA     optional KERNEL-BUNDLE.tsv path or HTTPS URL
   KERNEL_BUNDLE_METADATA_SHA256
   KERNEL_SDK_MANIFEST        external KERNEL-SDK-MANIFEST.tsv path or HTTPS URL
+  KERNEL_TOOLCHAIN_MANIFEST  external KERNEL-TOOLCHAIN.tsv path or HTTPS URL
   EXPECTED_KERNEL_SOURCE_COMMIT
                               optional exact 40-hex source identity
   HAPTICS_RELEASE_MODE        1 requires a portable, archive-bound release candidate;
                               0 permits a nonportable local KERNEL_BUILD_DIR build
-  SOURCE_DATE_EPOCH          reproducible build timestamp
+  SOURCE_DATE_EPOCH          kernel/package reproducible build timestamp
   HAPTICS_STRIP              strip binaries/modules after build, default: 0
 USAGE
 }
@@ -134,6 +137,7 @@ KERNEL_GIT_DIR=${KERNEL_GIT_DIR:-}
 KERNEL_BUNDLE_METADATA=${KERNEL_BUNDLE_METADATA:-}
 KERNEL_BUNDLE_METADATA_SHA256=${KERNEL_BUNDLE_METADATA_SHA256:-}
 KERNEL_SDK_MANIFEST=${KERNEL_SDK_MANIFEST:-}
+KERNEL_TOOLCHAIN_MANIFEST=${KERNEL_TOOLCHAIN_MANIFEST:-}
 EXPECTED_KERNEL_SOURCE_COMMIT=${EXPECTED_KERNEL_SOURCE_COMMIT:-}
 HAPTICS_STRIP=${HAPTICS_STRIP:-0}
 HAPTICS_RELEASE_MODE=${HAPTICS_RELEASE_MODE:-0}
@@ -146,18 +150,23 @@ kernel_bundle_id=unbound
 kernel_bundle_config_sha256=unbound
 kernel_bundle_sdk_archive_sha256=unbound
 kernel_bundle_sdk_manifest_sha256=unbound
+kernel_bundle_toolchain_manifest_sha256=unbound
 kernel_kbuild_timestamp=
 kernel_kbuild_user=
 kernel_kbuild_host=
 kernel_kbuild_version=
 kernel_sdk_manifest_path=
+kernel_toolchain_manifest_path=
+kernel_bundle_canonical_path=
 haptics_source_lock_schema=
 haptics_output_mode=
 build_tools_manifest_sha256=
 
 [ "$ARCH" = arm64 ] || ci_die "unsupported ARCH=$ARCH; only arm64 is supported"
 [[ $HAPTICS_DEB_VERSION =~ ^[0-9][0-9A-Za-z.+~_-]{0,63}$ ]] || ci_die "unsafe HAPTICS_DEB_VERSION"
-[[ $SOURCE_DATE_EPOCH =~ ^[0-9]{1,10}$ ]] || ci_die "invalid SOURCE_DATE_EPOCH"
+haptics_epoch_is_valid "$SOURCE_DATE_EPOCH" || ci_die "invalid SOURCE_DATE_EPOCH"
+haptics_epoch_roundtrips "$SOURCE_DATE_EPOCH" ||
+  ci_die "SOURCE_DATE_EPOCH cannot be represented exactly on the build filesystem"
 [[ $EXPECTED_HAPTICS_PRODUCER_COMMIT =~ ^[0-9a-f]{40}$ ]] ||
   ci_die "EXPECTED_HAPTICS_PRODUCER_COMMIT must be 40 lowercase hex characters"
 haptics_capture_build_tools
@@ -171,12 +180,13 @@ haptics_validate_kernel_build_input_contract \
   "$KERNEL_BUILD_DIR" \
   "$KERNEL_BUNDLE_METADATA" \
   "$KERNEL_BUNDLE_METADATA_SHA256" \
-  "$KERNEL_SDK_MANIFEST"
+  "$KERNEL_SDK_MANIFEST" \
+  "$KERNEL_TOOLCHAIN_MANIFEST"
 if [ "$HAPTICS_RELEASE_MODE" = 1 ]; then
-  haptics_source_lock_schema=tb321fu.haptics-source-lock/v3
+  haptics_source_lock_schema=tb321fu.haptics-source-lock/v4
   haptics_output_mode=release-candidate
 else
-  haptics_source_lock_schema=tb321fu.haptics-source-lock/v3-local
+  haptics_source_lock_schema=tb321fu.haptics-source-lock/v4-local
   haptics_output_mode=local
 fi
 if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
@@ -186,6 +196,7 @@ fi
 export SOURCE_DATE_EPOCH
 haptics_producer_commit=
 haptics_producer_state=
+haptics_producer_epoch=
 haptics_driver_source_sha256=
 haptics_build_source_sha256=
 haptics_ram_firmware_sha256=
@@ -345,7 +356,7 @@ load_kernel_bundle_metadata() {
   local -a verify_args
 
   [ -n "$KERNEL_BUNDLE_METADATA" ] || return 0
-  ci_download "$KERNEL_BUNDLE_METADATA" "$metadata" "$KERNEL_BUNDLE_METADATA_SHA256"
+  ci_download "$KERNEL_BUNDLE_METADATA" "$metadata" "$KERNEL_BUNDLE_METADATA_SHA256" 65536
   verify_args=("$metadata" --emit-tsv)
   if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
     verify_args+=(--expect "kernel-source-commit=$EXPECTED_KERNEL_SOURCE_COMMIT")
@@ -353,6 +364,7 @@ load_kernel_bundle_metadata() {
   haptics_run_isolated_tool python3 \
     "$SCRIPT_DIR/verify-kernel-bundle.py" "${verify_args[@]}" > "$canonical" ||
     ci_die "invalid KERNEL-BUNDLE.tsv"
+  kernel_bundle_canonical_path=$canonical
 
   kernel_bundle_value() {
     local key=$1 value count
@@ -368,6 +380,7 @@ load_kernel_bundle_metadata() {
   kernel_bundle_config_sha256=$(kernel_bundle_value kernel-config-sha256)
   kernel_bundle_sdk_archive_sha256=$(kernel_bundle_value kernel-sdk-archive-sha256)
   kernel_bundle_sdk_manifest_sha256=$(kernel_bundle_value kernel-sdk-manifest-sha256)
+  kernel_bundle_toolchain_manifest_sha256=$(kernel_bundle_value kernel-toolchain-manifest-sha256)
   kernel_bundle_epoch=$(kernel_bundle_value source-date-epoch)
   kernel_kbuild_timestamp=$(kernel_bundle_value kbuild-build-timestamp)
   kernel_kbuild_user=$(kernel_bundle_value kbuild-build-user)
@@ -381,7 +394,40 @@ load_kernel_bundle_metadata() {
     EXPECTED_KERNEL_SOURCE_COMMIT=$kernel_bundle_commit
   fi
   SOURCE_DATE_EPOCH=$kernel_bundle_epoch
+  haptics_epoch_roundtrips "$SOURCE_DATE_EPOCH" ||
+    ci_die "kernel SOURCE_DATE_EPOCH cannot be represented exactly on the build filesystem"
   export SOURCE_DATE_EPOCH
+}
+
+verify_kernel_toolchain_identity() {
+  local phase=$1
+
+  [ -n "$kernel_bundle_canonical_path" ] && [ -n "$kernel_toolchain_manifest_path" ] ||
+    ci_die "kernel toolchain identity was not loaded $phase"
+  haptics_run_isolated_tool python3 "$SCRIPT_DIR/verify-kernel-bundle.py" \
+    "$kernel_bundle_canonical_path" \
+    --toolchain "$kernel_toolchain_manifest_path" \
+    --verify-live-toolchain >/dev/null ||
+    ci_die "kernel toolchain identity differs $phase"
+  ci_log "kernel toolchain identity verified $phase"
+}
+
+load_kernel_toolchain_manifest() {
+  if [ "$HAPTICS_RELEASE_MODE" != 1 ]; then
+    kernel_bundle_toolchain_manifest_sha256=unbound
+    kernel_toolchain_manifest_path=
+    return 0
+  fi
+  [ "$kernel_bundle_id" != unbound ] ||
+    ci_die "release build lacks a verified kernel bundle identity"
+  [ -n "$KERNEL_TOOLCHAIN_MANIFEST" ] ||
+    ci_die "KERNEL-BUNDLE.tsv requires KERNEL_TOOLCHAIN_MANIFEST"
+  [[ $kernel_bundle_toolchain_manifest_sha256 =~ ^[0-9a-f]{64}$ ]] ||
+    ci_die "KERNEL-BUNDLE.tsv lacks a valid kernel-toolchain-manifest-sha256"
+  kernel_toolchain_manifest_path="$work_dir/KERNEL-TOOLCHAIN.tsv"
+  ci_download "$KERNEL_TOOLCHAIN_MANIFEST" "$kernel_toolchain_manifest_path" \
+    "$kernel_bundle_toolchain_manifest_sha256" 65536
+  verify_kernel_toolchain_identity "before kernel SDK download"
 }
 
 prepare_kernel_kbuild_identity() {
@@ -430,6 +476,7 @@ prepare_inputs() {
   fi
 
   load_kernel_bundle_metadata
+  load_kernel_toolchain_manifest
   prepare_kernel_kbuild_identity
   if [ -n "$KERNEL_BUILD_DIR" ]; then
     kernel_build_root=$(copy_kernel_build_dir_private \
@@ -452,7 +499,7 @@ prepare_inputs() {
         ci_die "KERNEL-BUNDLE.tsv requires KERNEL_SDK_MANIFEST for an SDK archive"
       kernel_sdk_manifest_path="$work_dir/KERNEL-SDK-MANIFEST.tsv"
       ci_download "$KERNEL_SDK_MANIFEST" "$kernel_sdk_manifest_path" \
-        "$kernel_bundle_sdk_manifest_sha256"
+        "$kernel_bundle_sdk_manifest_sha256" 16777216
     fi
     if [ -n "$kernel_sdk_manifest_path" ]; then
       haptics_run_isolated_tool python3 "$SCRIPT_DIR/verify-kernel-sdk.py" --archive-only \
@@ -495,14 +542,29 @@ prepare_inputs() {
 }
 
 verify_haptics_producer_state() {
-  local phase=$1 actual
+  local phase=$1 actual epoch git_dir
 
   actual=$(ci_verify_clean_git_commit \
     "$haptics_root" "$EXPECTED_HAPTICS_PRODUCER_COMMIT" "$HAPTICS_GIT_DIR")
   [ "$actual" = "$EXPECTED_HAPTICS_PRODUCER_COMMIT" ] ||
     ci_die "haptics producer changed $phase"
+  if [ -n "$HAPTICS_GIT_DIR" ]; then
+    git_dir=$(realpath -e -- "$HAPTICS_GIT_DIR") ||
+      ci_die "cannot resolve the haptics producer Git directory"
+    epoch=$(ci_git --git-dir="$git_dir" show -s --format=%ct "$actual^{commit}") ||
+      ci_die "cannot read the haptics producer commit epoch"
+  else
+    epoch=$(ci_git -C "$haptics_root" show -s --format=%ct "$actual^{commit}") ||
+      ci_die "cannot read the haptics producer commit epoch"
+  fi
+  haptics_epoch_is_valid "$epoch" ||
+    ci_die "haptics producer commit has an invalid epoch"
+  if [ -n "$haptics_producer_epoch" ] && [ "$epoch" != "$haptics_producer_epoch" ]; then
+    ci_die "haptics producer commit epoch changed $phase"
+  fi
   haptics_producer_commit=$actual
   haptics_producer_state=clean
+  haptics_producer_epoch=$epoch
   ci_log "haptics producer state verified $phase: $actual"
 }
 
@@ -678,6 +740,9 @@ kernel_make() {
     make_env+=("GIT_DIR=$KERNEL_GIT_DIR" "GIT_WORK_TREE=$kernel_source_root")
   fi
   haptics_verify_build_tools_unchanged "before Kbuild invocation"
+  if [ -n "$kernel_toolchain_manifest_path" ]; then
+    verify_kernel_toolchain_identity "before Kbuild invocation"
+  fi
   haptics_verify_kbuild_tool_path "$haptics_kbuild_path"
   if "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[env]}" -i "${make_env[@]}" \
       "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[make]}" -C "$kernel_source_root" "$@" \
@@ -695,7 +760,7 @@ kernel_make() {
       HOSTAR="$haptics_kbuild_path/ar" \
       CROSS_COMPILE= \
       CC="$haptics_kbuild_path/aarch64-linux-gnu-gcc" \
-      CPP="$haptics_kbuild_path/aarch64-linux-gnu-cpp" \
+      CPP="$haptics_kbuild_path/aarch64-linux-gnu-gcc -E" \
       AS="$haptics_kbuild_path/aarch64-linux-gnu-as" \
       LD="$haptics_kbuild_path/aarch64-linux-gnu-ld" \
       AR="$haptics_kbuild_path/aarch64-linux-gnu-ar" \
@@ -710,6 +775,9 @@ kernel_make() {
   fi
   haptics_verify_kbuild_tool_path "$haptics_kbuild_path"
   haptics_verify_build_tools_unchanged "after Kbuild invocation"
+  if [ -n "$kernel_toolchain_manifest_path" ]; then
+    verify_kernel_toolchain_identity "after Kbuild invocation"
+  fi
   return "$status"
 }
 
@@ -744,8 +812,8 @@ verify_kernel_host_tools_unchanged() {
 
 prepare_kernel_host_tools() {
   # Kernel build output archives can contain host tools from the machine that
-  # prepared the SDK. Rebuild them on the current runner before external module
-  # compilation so the SDK works on both x86_64 and arm64 hosts.
+  # prepared the SDK. Rebuild them on the canonical x86_64 host before external
+  # module compilation; the state gate below rejects host/compiler probe drift.
   rm -f \
     "$kernel_build_root/scripts/basic/fixdep" \
     "$kernel_build_root/scripts/mod/modpost"
@@ -1205,12 +1273,13 @@ write_haptics_source_lock() {
     printf 'aw86937-module-sha256\t%s\n' "$haptics_module_sha256"
     printf 'haptic-test-helper-binary-sha256\t%s\n' "$haptics_test_helper_binary_sha256"
     printf 'kernel-bundle-id\t%s\n' "$kernel_bundle_id"
+    printf 'kernel-toolchain-manifest-sha256\t%s\n' "$kernel_bundle_toolchain_manifest_sha256"
     printf 'kernel-release\t%s\n' "$kernel_release"
     printf 'kernel-source-commit\t%s\n' "${EXPECTED_KERNEL_SOURCE_COMMIT:-unverified-local-source}"
     printf 'kernel-config-sha256\t%s\n' "$kernel_bundle_config_sha256"
     printf 'kernel-build-input\t%s\n' "$kernel_build_input"
     printf 'kernel-build-archive-sha256\t%s\n' "$kernel_build_archive_identity"
-    printf 'source-date-epoch\t%s\n' "$SOURCE_DATE_EPOCH"
+    printf 'source-date-epoch\t%s\n' "$haptics_producer_epoch"
   } > "$OUTPUT_DIR/HAPTICS-SOURCE-LOCK.tsv"
 }
 

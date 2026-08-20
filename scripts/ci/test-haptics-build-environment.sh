@@ -151,8 +151,17 @@ require_failure 'invalid HAPTICS_PRODUCER_COMMIT' \
 [ ! -e "$bash_env_marker" ] || fail "SDK-wrapper entry sourced hostile BASH_ENV"
 
 haptics_capture_build_tools
-[[ $HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256 =~ ^[0-9a-f]{64}$ ]] ||
-  fail "environment-policy digest is not SHA-256"
+[ "$HAPTICS_BUILD_ENVIRONMENT_POLICY_SHA256" = \
+  4ff7d79a3d0f3513ccb2a58ee6ba68a066c5c75079b17235721be911cf7fcfb5 ] ||
+  fail "environment-policy digest does not bind the reviewed metadata contract"
+policy_output=$(haptics_build_environment_policy)
+for policy_line in \
+  'source-date-epoch=explicit,range=0..15032385535,filesystem-roundtrip-required' \
+  'tool-metadata=target:regular-file,mode-0755,nlink-1;command:regular-file-mode-0755-or-symlink-mode-0777,nlink-1;under-/usr-or-/bin-or-/sbin:uid-0,gid-0' \
+  'tool-identity=absolute-command-path,absolute-realpath,sha256,version,target-and-command-mode-uid-gid-nlink-type,pre-and-post-use-verification'; do
+  [ "$(grep -Fxc -- "$policy_line" <<<"$policy_output")" -eq 1 ] ||
+    fail "environment policy omits the exact metadata contract: $policy_line"
+done
 [[ $HAPTICS_BUILD_TOOLSET_SHA256 =~ ^[0-9a-f]{64}$ ]] ||
   fail "build-toolset digest is not SHA-256"
 expected_build_tool_count=${#HAPTICS_REQUIRED_BUILD_TOOLS[@]}
@@ -283,6 +292,8 @@ kernel_kbuild_timestamp='2026-07-22 20:36:37 UTC'
 kernel_kbuild_user=tb321fu-ci
 kernel_kbuild_host=tb321fu-builder
 kernel_kbuild_version=1
+kernel_bundle_id=3333333333333333333333333333333333333333333333333333333333333333
+kernel_toolchain_manifest_path=
 mkdir -p "$kernel_source_root"
 export ARCH=x86_64
 export CROSS_COMPILE=/tmp/hostile-
@@ -388,7 +399,7 @@ expected_make_arguments=(
   "HOSTLD=$haptics_kbuild_path/ld" \
   "HOSTAR=$haptics_kbuild_path/ar" \
   "CC=$haptics_kbuild_path/aarch64-linux-gnu-gcc" \
-  "CPP=$haptics_kbuild_path/aarch64-linux-gnu-cpp" \
+  "CPP=$haptics_kbuild_path/aarch64-linux-gnu-gcc -E" \
   "AS=$haptics_kbuild_path/aarch64-linux-gnu-as" \
   "LD=$haptics_kbuild_path/aarch64-linux-gnu-ld" \
   "AR=$haptics_kbuild_path/aarch64-linux-gnu-ar" \
@@ -437,6 +448,65 @@ cmp -s "$tmp/fixture-a.deb" "$tmp/fixture-b.deb" ||
   fail "fixed dpkg-deb policy did not produce byte-identical fixture packages"
 
 (
+  fixture_target="$tmp/fixture-initial-target-mode"
+  cp -- /usr/bin/true "$fixture_target"
+  chmod 0750 "$fixture_target"
+  require_failure 'build-tool target metadata is unsafe: fixture' \
+    haptics_record_build_tool fixture "$fixture_target"
+)
+(
+  fixture_target="$tmp/fixture-initial-target-type"
+  mkdir -m 0755 -- "$fixture_target"
+  require_failure 'build tool is not an absolute regular executable: fixture' \
+    haptics_record_build_tool fixture "$fixture_target"
+)
+(
+  fixture_target="$tmp/fixture-initial-target-nlink"
+  fixture_target_link="$tmp/fixture-initial-target-nlink-copy"
+  cp -- /usr/bin/true "$fixture_target"
+  chmod 0755 "$fixture_target"
+  ln -- "$fixture_target" "$fixture_target_link"
+  require_failure 'build-tool target metadata is unsafe: fixture' \
+    haptics_record_build_tool fixture "$fixture_target"
+)
+(
+  fixture_target="$tmp/fixture-initial-command-nlink-target"
+  fixture_command="$tmp/fixture-initial-command-nlink"
+  fixture_command_link="$tmp/fixture-initial-command-nlink-copy"
+  cp -- /usr/bin/true "$fixture_target"
+  chmod 0755 "$fixture_target"
+  ln -s -- "$fixture_target" "$fixture_command"
+  ln -P -- "$fixture_command" "$fixture_command_link"
+  require_failure 'build-tool command metadata is unsafe: fixture' \
+    haptics_record_build_tool fixture "$fixture_command"
+)
+
+require_failure 'build-tool command metadata is unsafe: fixture' \
+  haptics_require_build_tool_metadata fixture command "$tmp/fixture-command-mode" \
+  '1:2:3:4:755:1000:1000:1:symbolic link'
+require_failure 'build-tool command metadata is unsafe: fixture' \
+  haptics_require_build_tool_metadata fixture command "$tmp/fixture-command-type" \
+  '1:2:3:4:777:1000:1000:1:directory'
+require_failure 'build-tool command metadata is unsafe: fixture' \
+  haptics_require_build_tool_metadata fixture command "$tmp/fixture-command-nlink" \
+  '1:2:3:4:777:1000:1000:2:symbolic link'
+
+for role in target command; do
+  case "$role" in
+    target) safe_mode=755; safe_type='regular file' ;;
+    command) safe_mode=777; safe_type='symbolic link' ;;
+  esac
+  for system_path in /usr/bin/fixture /bin/fixture /sbin/fixture; do
+    require_failure "system build-tool $role is not root-owned: fixture" \
+      haptics_require_build_tool_metadata fixture "$role" "$system_path" \
+      "1:2:3:4:$safe_mode:1:0:1:$safe_type"
+    require_failure "system build-tool $role is not root-owned: fixture" \
+      haptics_require_build_tool_metadata fixture "$role" "$system_path" \
+      "1:2:3:4:$safe_mode:0:1:1:$safe_type"
+  done
+done
+
+(
   fixture_target="$tmp/fixture-target"
   fixture_command="$tmp/fixture-command"
   cp -- /usr/bin/true "$fixture_target"
@@ -474,6 +544,112 @@ cmp -s "$tmp/fixture-a.deb" "$tmp/fixture-b.deb" ||
   ln -s -- "$fixture_false" "$fixture_command"
   require_failure 'build-tool command path changed after fixture retarget: fixture' \
     haptics_verify_recorded_build_tool fixture "$fixture_command" 'after fixture retarget'
+)
+(
+  fixture_target="$tmp/fixture-metadata-target"
+  fixture_command="$tmp/fixture-metadata-command"
+  fixture_target_link="$tmp/fixture-metadata-target-link"
+  fixture_command_link="$tmp/fixture-metadata-command-link"
+  cp -- /usr/bin/true "$fixture_target"
+  chmod 0755 "$fixture_target"
+  ln -s -- "$fixture_target" "$fixture_command"
+  HAPTICS_BUILD_TOOL_PATHS=()
+  HAPTICS_BUILD_TOOL_COMMAND_PATHS=()
+  HAPTICS_BUILD_TOOL_SHA256=()
+  HAPTICS_BUILD_TOOL_VERSIONS=()
+  HAPTICS_BUILD_TOOL_STATES=()
+  HAPTICS_BUILD_TOOL_COMMAND_STATES=()
+  HAPTICS_BUILD_TOOL_RECORDS=()
+  haptics_record_build_tool fixture "$fixture_command"
+
+  chmod 4755 "$fixture_target"
+  require_failure 'build-tool target state changed after setuid drift: fixture' \
+    haptics_verify_recorded_build_tool fixture "$fixture_command" 'after setuid drift'
+  chmod 0755 "$fixture_target"
+
+  chmod 0775 "$fixture_target"
+  require_failure 'build-tool target state changed after writable-mode drift: fixture' \
+    haptics_verify_recorded_build_tool fixture "$fixture_command" 'after writable-mode drift'
+  chmod 0755 "$fixture_target"
+
+  ln -- "$fixture_target" "$fixture_target_link"
+  require_failure 'build-tool target state changed after target link-count drift: fixture' \
+    haptics_verify_recorded_build_tool fixture "$fixture_command" 'after target link-count drift'
+  rm -- "$fixture_target_link"
+
+  ln -P -- "$fixture_command" "$fixture_command_link"
+  require_failure 'build-tool command path changed after command link-count drift: fixture' \
+    haptics_verify_recorded_build_tool fixture "$fixture_command" 'after command link-count drift'
+)
+(
+  fixture_target="$tmp/fixture-capture-target"
+  cat > "$fixture_target" <<'EOF_MUTATING_TARGET'
+#!/bin/bash
+if [ "${1:-}" = --version ]; then
+  printf '\n# capture drift\n' >> "$0"
+fi
+printf 'fixture target 1.0\n'
+EOF_MUTATING_TARGET
+  chmod 0755 "$fixture_target"
+  HAPTICS_BUILD_TOOL_PATHS=()
+  HAPTICS_BUILD_TOOL_COMMAND_PATHS=()
+  HAPTICS_BUILD_TOOL_SHA256=()
+  HAPTICS_BUILD_TOOL_VERSIONS=()
+  HAPTICS_BUILD_TOOL_STATES=()
+  HAPTICS_BUILD_TOOL_COMMAND_STATES=()
+  HAPTICS_BUILD_TOOL_RECORDS=()
+  require_failure 'build-tool target changed while it was captured: fixture' \
+    haptics_record_build_tool fixture "$fixture_target"
+)
+(
+  fixture_target="$tmp/fixture-capture-same-state-target"
+  cat > "$fixture_target" <<'EOF_SAME_STATE_TARGET'
+#!/bin/bash
+if [ "${1:-}" = --version ]; then
+  original_mtime=$(/usr/bin/stat -c '%Y' -- "$0")
+  original_size=$(/usr/bin/stat -c '%s' -- "$0")
+  printf 'B' | /usr/bin/dd of="$0" bs=1 seek=$((original_size - 2)) \
+    conv=notrunc status=none
+  /usr/bin/touch -d "@$original_mtime" -- "$0"
+fi
+printf 'fixture target 1.0\n'
+# A
+EOF_SAME_STATE_TARGET
+  chmod 0755 "$fixture_target"
+  HAPTICS_BUILD_TOOL_PATHS=()
+  HAPTICS_BUILD_TOOL_COMMAND_PATHS=()
+  HAPTICS_BUILD_TOOL_SHA256=()
+  HAPTICS_BUILD_TOOL_VERSIONS=()
+  HAPTICS_BUILD_TOOL_STATES=()
+  HAPTICS_BUILD_TOOL_COMMAND_STATES=()
+  HAPTICS_BUILD_TOOL_RECORDS=()
+  require_failure 'build-tool target bytes changed while it was captured: fixture' \
+    haptics_record_build_tool fixture "$fixture_target"
+)
+(
+  fixture_original="$tmp/fixture-capture-command-original"
+  fixture_next="$tmp/fixture-capture-command-next"
+  fixture_command="$tmp/fixture-capture-command"
+  cat > "$fixture_original" <<EOF_MUTATING_COMMAND
+#!/bin/bash
+if [ "\${1:-}" = --version ]; then
+  /usr/bin/rm -- "\$0"
+  /usr/bin/ln -s -- "$fixture_next" "\$0"
+fi
+printf 'fixture command 1.0\n'
+EOF_MUTATING_COMMAND
+  printf '#!/bin/bash\nprintf "fixture next 1.0\\n"\n' > "$fixture_next"
+  chmod 0755 "$fixture_original" "$fixture_next"
+  ln -s -- "$fixture_original" "$fixture_command"
+  HAPTICS_BUILD_TOOL_PATHS=()
+  HAPTICS_BUILD_TOOL_COMMAND_PATHS=()
+  HAPTICS_BUILD_TOOL_SHA256=()
+  HAPTICS_BUILD_TOOL_VERSIONS=()
+  HAPTICS_BUILD_TOOL_STATES=()
+  HAPTICS_BUILD_TOOL_COMMAND_STATES=()
+  HAPTICS_BUILD_TOOL_RECORDS=()
+  require_failure 'build-tool command changed while it was captured: fixture' \
+    haptics_record_build_tool fixture "$fixture_command"
 )
 (
   fixture_target="$tmp/fixture-disappear-target"

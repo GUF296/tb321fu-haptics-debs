@@ -4,6 +4,7 @@ umask 022
 
 KERNEL_RELEASE=@KERNEL_RELEASE@
 MANAGED_WANT_TARGET=/usr/lib/systemd/system/tb321fu-haptics.service
+MANAGED_WANT_STATE_MAX_BYTES=256
 
 die()
 {
@@ -96,23 +97,45 @@ legacy_payload_present()
 	return 1
 }
 
+read_managed_want_state()
+{
+	managed_want_state=$1
+	managed_want_target=
+	if [ -e "$managed_want_state" ] || [ -L "$managed_want_state" ]; then
+		[ -f "$managed_want_state" ] && [ ! -L "$managed_want_state" ] ||
+			die "managed systemd-want state is not a regular file: $managed_want_state"
+		state_sample=$(mktemp "$(dirname -- "$managed_want_state")/.managed-want-state.XXXXXX") ||
+			die "cannot create bounded managed systemd-want state sample"
+		if ! dd if="$managed_want_state" of="$state_sample" bs=1 \
+			count=$((MANAGED_WANT_STATE_MAX_BYTES + 1)) 2>/dev/null; then
+			rm -f -- "$state_sample"
+			die "cannot read managed systemd-want state: $managed_want_state"
+		fi
+		state_bytes=$(wc -c < "$state_sample") || {
+			rm -f -- "$state_sample"
+			die "cannot measure managed systemd-want state: $managed_want_state"
+		}
+		if [ "$state_bytes" -gt "$MANAGED_WANT_STATE_MAX_BYTES" ]; then
+			rm -f -- "$state_sample"
+			die "managed systemd-want state exceeds the size limit: $managed_want_state"
+		fi
+		if ! printf '%s\n' "$MANAGED_WANT_TARGET" | cmp -s "$state_sample" -; then
+			rm -f -- "$state_sample"
+			die "managed systemd-want state is malformed or has an unexpected target: $managed_want_state"
+		fi
+		rm -f -- "$state_sample"
+		managed_want_target=$MANAGED_WANT_TARGET
+	fi
+}
+
 record_managed_want_state()
 {
 	managed_want=$1
 	managed_want_state=$(root_path /var/lib/tb321fu-haptics/managed-want)
-	managed_want_target=
 	managed_want_preexisting=0
 	managed_want_owned=0
 	managed_want_created=0
-	if [ -e "$managed_want_state" ] || [ -L "$managed_want_state" ]; then
-		[ -f "$managed_want_state" ] && [ ! -L "$managed_want_state" ] ||
-			die "managed systemd-want state is not a regular file: $managed_want_state"
-		managed_want_target=$(cat "$managed_want_state")
-		[ -n "$managed_want_target" ] && [ "$(wc -l < "$managed_want_state")" -eq 1 ] ||
-			die "managed systemd-want state is malformed: $managed_want_state"
-		[ "$managed_want_target" = "$MANAGED_WANT_TARGET" ] ||
-			die "managed systemd-want state has an unexpected target: $managed_want_state"
-	fi
+	read_managed_want_state "$managed_want_state"
 	if [ -L "$managed_want" ]; then
 		current_target=$(readlink "$managed_want") ||
 			die "cannot read existing systemd want: $managed_want"
@@ -142,18 +165,32 @@ record_managed_want_state()
 record_owned_managed_want()
 {
 	managed_want_target=$(readlink "$managed_want") ||
-		die "cannot read package-managed systemd want: $managed_want"
+		{ printf '%s\n' "tb321fu-haptics postinst: cannot read package-managed systemd want: $managed_want" >&2; return 1; }
 	[ "$managed_want_target" = "$MANAGED_WANT_TARGET" ] ||
-		die "package-managed systemd want has an unexpected target: $managed_want"
-	install -d -m 0755 "$(dirname -- "$managed_want_state")" ||
-		die "cannot create managed systemd-want state directory"
-	tmp_state="$managed_want_state.tmp.$$"
-	( umask 077; printf '%s\n' "$managed_want_target" > "$tmp_state" ) ||
-		die "cannot write managed systemd-want state: $managed_want_state"
-	chmod 0644 "$tmp_state" ||
-		die "cannot set managed systemd-want state mode: $managed_want_state"
-	mv -f -- "$tmp_state" "$managed_want_state" ||
-		die "cannot install managed systemd-want state: $managed_want_state"
+		{ printf '%s\n' "tb321fu-haptics postinst: package-managed systemd want has an unexpected target: $managed_want" >&2; return 1; }
+	if ! install -d -m 0755 "$(dirname -- "$managed_want_state")"; then
+		printf '%s\n' 'tb321fu-haptics postinst: cannot create managed systemd-want state directory' >&2
+		return 1
+	fi
+	tmp_state=$(mktemp "$managed_want_state.tmp.XXXXXX") || {
+		printf '%s\n' "tb321fu-haptics postinst: cannot create managed systemd-want state temporary file: $managed_want_state" >&2
+		return 1
+	}
+	if ! ( umask 077; printf '%s\n' "$managed_want_target" > "$tmp_state" ); then
+		rm -f -- "$tmp_state"
+		printf '%s\n' "tb321fu-haptics postinst: cannot write managed systemd-want state: $managed_want_state" >&2
+		return 1
+	fi
+	if ! chmod 0644 "$tmp_state"; then
+		rm -f -- "$tmp_state"
+		printf '%s\n' "tb321fu-haptics postinst: cannot set managed systemd-want state mode: $managed_want_state" >&2
+		return 1
+	fi
+	if ! mv -f -- "$tmp_state" "$managed_want_state"; then
+		rm -f -- "$tmp_state"
+		printf '%s\n' "tb321fu-haptics postinst: cannot install managed systemd-want state: $managed_want_state" >&2
+		return 1
+	fi
 }
 
 rollback_new_managed_want()
@@ -185,6 +222,10 @@ esac
 require_command depmod
 require_command modinfo
 require_command systemctl
+require_command cmp
+require_command dd
+require_command mktemp
+require_command dirname
 verify_target_module
 if legacy_payload_present; then
 	die 'legacy Y700 haptics payload remains; install the matching migrated daily package before tb321fu-haptics'
@@ -207,5 +248,8 @@ if ! run_systemctl is-enabled --quiet tb321fu-haptics.service; then
 	die 'tb321fu-haptics.service is not enabled after enablement'
 fi
 if [ "$managed_want_preexisting" = 0 ] || [ "$managed_want_owned" = 1 ]; then
-	record_owned_managed_want
+	if ! record_owned_managed_want; then
+		rollback_new_managed_want
+		die 'cannot persist managed systemd-want state'
+	fi
 fi

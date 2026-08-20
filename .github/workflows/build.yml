@@ -1,61 +1,75 @@
 name: Build TB321FU Haptics Debs
+run-name: haptics-dispatch-${{ inputs.dispatch_id }}
 
 on:
   workflow_dispatch:
     inputs:
+      dispatch_id:
+        description: Unique 128-bit lowercase-hex trusted dispatch identity.
+        required: true
+        type: string
       release_tag:
-        description: Release tag to create/upload. Empty disables release upload.
+        description: Release tag to validate and stage. Empty disables release staging.
         required: false
         default: ""
         type: string
       prerelease:
-        description: Publish a non-empty release tag as a prerelease without changing latest.
+        description: Require the staged release contract to remain prerelease-only.
         required: true
         default: true
         type: boolean
       haptics_deb_version:
         description: Debian package version
         required: true
-        default: 20260715.1
+        default: "20260730.2"
         type: string
       kernel_source_commit:
         description: Exact 40-hex GUF296/linux commit paired with the kernel SDK.
         required: true
-        default: 5df8e852ea722929f5359a5ef28ebcec0c4443fd
+        default: 570b90203d97f67321fa0fb2d0af73c31d7111af
         type: string
       kernel_build_archive:
         description: Kernel build SDK archive URL
         required: true
-        default: https://github.com/GUF296/tb321fu-haptics-debs/releases/download/kernel-sdk-7.1.1-g5df8e852ea72/tb321fu-kernel-build-sdk-7.1.1-g5df8e852ea72.tar.gz
+        default: https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-570b90203d97-20260729.4/tb321fu-kernel-build-sdk-7.1.1-00009-g570b90203d97.tar.gz
         type: string
       kernel_build_archive_sha256:
         description: SHA-256 of the exact kernel build SDK archive.
         required: true
-        default: 75703c4cf2ed10777905d79c57103ce1a9e50a02d09507c4aa15eb81b27c845a
+        default: 7f9b12bd02c1155c9900a33c823d088e1a9f72689dea28c8ee582a31304c7c49
         type: string
       kernel_bundle_metadata:
         description: HTTPS KERNEL-BUNDLE.tsv v2 URL paired with the source and SDK archive.
         required: true
-        default: ""
+        default: https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-570b90203d97-20260729.4/KERNEL-BUNDLE.tsv
         type: string
       kernel_bundle_metadata_sha256:
         description: SHA-256 of the paired KERNEL-BUNDLE.tsv v2.
         required: true
-        default: ""
+        default: 9b11d12fab79eb4f10acb7eddf9c5e11e3f4242f2877658627ff3b11dd231998
         type: string
       kernel_sdk_manifest:
         description: HTTPS KERNEL-SDK-MANIFEST.tsv URL paired with the kernel SDK archive.
         required: true
-        default: ""
+        default: https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-570b90203d97-20260729.4/KERNEL-SDK-MANIFEST.tsv
+        type: string
+      kernel_toolchain_manifest:
+        description: HTTPS KERNEL-TOOLCHAIN.tsv v2 URL bound by KERNEL-BUNDLE.tsv.
+        required: true
+        default: https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-570b90203d97-20260729.4/KERNEL-TOOLCHAIN.tsv
         type: string
 
 concurrency:
-  group: release-${{ github.repository }}-${{ inputs.release_tag != '' && inputs.release_tag || github.run_id }}
+  group: release-${{ github.repository }}-${{ inputs.release_tag != '' && inputs.release_tag || inputs.dispatch_id }}
   cancel-in-progress: false
+
+defaults:
+  run:
+    shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
 
 jobs:
   build:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     timeout-minutes: 90
@@ -69,33 +83,74 @@ jobs:
       - name: Install dependencies
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            ca-certificates git curl tar gzip xz-utils zstd unzip rsync \
-            make flex bison gcc binutils gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu kmod dpkg-dev \
-            python3-yaml
+          /usr/bin/sudo /bin/bash -p scripts/ci/test-haptics-dpkg-host-rejection.sh \
+            scripts/ci/HAPTICS-BUILD-PACKAGES.tsv
+          /usr/bin/sudo /bin/bash -p scripts/ci/install-haptics-build-dependencies.sh \
+            scripts/ci/HAPTICS-BUILD-PACKAGES.tsv \
+            scripts/ci/HAPTICS-BUILD-TOOLS-REFERENCE.tsv \
+            scripts/ci/HAPTICS-RELEASE-REFERENCE.tsv \
+            scripts/ci/HAPTICS-DPKG-HOST-REFERENCE.tsv
+          /usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-sandbox.py
+          /usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-hook.py
+          /usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-eipp-canary.py
 
       - name: Validate workflow and lifecycle boundaries
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PATH: /usr/sbin:/usr/bin:/sbin:/bin
         run: |
           set -euo pipefail
-          python3 scripts/ci/check-workflow-input-boundaries.py --self-test
-          python3 scripts/ci/check-workflow-input-boundaries.py .github/workflows/build.yml
-          python3 scripts/ci/check-action-pins.py --self-test
-          python3 scripts/ci/check-action-pins.py .github/workflows/build.yml
-          python3 scripts/ci/test-kernel-bundle-metadata.py
-          python3 scripts/ci/test-kernel-sdk-verifier.py
-          python3 scripts/ci/test-safe-extract-archive.py
-          python3 scripts/ci/test-haptics-release-job-isolation.py --self-test
-          python3 scripts/ci/test-haptics-release-job-isolation.py .github/workflows/build.yml
-          bash scripts/ci/test-haptics-lifecycle.sh
-          bash scripts/ci/test-haptics-provenance.sh
-          bash scripts/ci/test-haptics-build-environment.sh
-          bash scripts/ci/test-haptics-deb-contract.sh
-          bash scripts/ci/test-haptics-kernel-sdk-contract.sh
-          bash scripts/ci/test-release-publication.sh
+          /usr/bin/python3 -I -B scripts/ci/check-workflow-input-boundaries.py --self-test
+          /usr/bin/python3 -I -B scripts/ci/check-workflow-input-boundaries.py .github/workflows/build.yml
+          /usr/bin/python3 -I -B scripts/ci/check-action-pins.py --self-test
+          /usr/bin/python3 -I -B scripts/ci/check-action-pins.py .github/workflows/build.yml
+          /usr/bin/python3 -I -B scripts/ci/test-kernel-bundle-metadata.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-release-reference.py
+          /usr/bin/python3 -I -B scripts/ci/verify-haptics-build-packages.py --self-test
+          /usr/bin/python3 -I -B scripts/ci/verify-haptics-build-packages.py \
+            scripts/ci/HAPTICS-BUILD-PACKAGES.tsv
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-dpkg-configuration.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-package-transaction.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-transaction.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-preparation.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-dpkg-state.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-dpkg-host-reference-workflow.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-archive.py
+          /usr/bin/python3 -I -B scripts/ci/test-run-haptics-workflow-dispatch-bootstrap.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-workflow-dispatch-gate.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-workflow-dispatch-bootstrap.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-publication-snapshot.py
+          /bin/bash -p scripts/ci/test-haptics-release-archive.sh
+          /usr/bin/python3 -I -B scripts/ci/test-kernel-sdk-verifier.py
+          /usr/bin/python3 -I -B scripts/ci/test-safe-extract-archive.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-release-job-isolation.py --self-test
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-release-job-isolation.py .github/workflows/build.yml
+          /bin/bash -p -n scripts/ci/install-haptics-build-dependencies.sh
+          /bin/bash -p -n scripts/ci/test-haptics-dpkg-host-rejection.sh
+          /bin/bash -p -n scripts/ci/verify-haptics-compat-package.sh
+          /bin/bash -p scripts/ci/test-haptics-compat-package.sh
+          /bin/bash -p -n scripts/ci/verify-haptics-live-build-tools.sh
+          /bin/bash -p scripts/ci/test-haptics-live-build-tools.sh
+          /bin/bash -p -n scripts/ci/stage-haptics-release-assets.sh
+          /bin/bash -p scripts/ci/test-haptics-lifecycle.sh
+          /bin/bash -p scripts/ci/test-haptics-provenance.sh
+          /bin/bash -p scripts/ci/test-haptics-build-environment.sh
+          /bin/bash -p scripts/ci/test-haptics-epoch-contract.sh
+          /bin/bash -p scripts/ci/test-haptics-deb-contract.sh
+          /bin/bash -p scripts/ci/test-haptics-kernel-sdk-contract.sh
+          /usr/bin/python3 -I -B scripts/ci/run-bounded-publication-fixture.py --self-test
+          /usr/bin/python3 -I -B scripts/ci/run-bounded-publication-fixture.py
+          python_residue=$(/usr/bin/find scripts/ci \
+            \( -type d -name __pycache__ -o -type f -name '*.py[co]' \) \
+            -print -quit)
+          [ -z "$python_residue" ] || {
+            echo "workflow validation left Python cache residue: $python_residue" >&2
+            exit 1
+          }
 
       - name: Validate build inputs
         env:
+          INPUT_DISPATCH_ID: ${{ inputs.dispatch_id }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
           INPUT_PRERELEASE: ${{ inputs.prerelease && '1' || '0' }}
           INPUT_HAPTICS_DEB_VERSION: ${{ inputs.haptics_deb_version }}
@@ -105,9 +160,14 @@ jobs:
           INPUT_KERNEL_BUNDLE_METADATA: ${{ inputs.kernel_bundle_metadata }}
           INPUT_KERNEL_BUNDLE_METADATA_SHA256: ${{ inputs.kernel_bundle_metadata_sha256 }}
           INPUT_KERNEL_SDK_MANIFEST: ${{ inputs.kernel_sdk_manifest }}
+          INPUT_KERNEL_TOOLCHAIN_MANIFEST: ${{ inputs.kernel_toolchain_manifest }}
         run: |
           set -euo pipefail
           . scripts/ci/common.sh
+          [[ "$INPUT_DISPATCH_ID" =~ ^[0-9a-f]{32}$ ]] || {
+            echo 'dispatch_id must be exactly 32 lowercase hex characters' >&2
+            exit 1
+          }
           if [ -n "$INPUT_RELEASE_TAG" ] && [ "$INPUT_PRERELEASE" != 1 ]; then
             echo 'Remediation releases must set prerelease=true.' >&2
             exit 1
@@ -141,6 +201,29 @@ jobs:
             echo 'kernel_sdk_manifest must be a bounded HTTPS URL' >&2
             exit 1
           }
+          [[ "$INPUT_KERNEL_TOOLCHAIN_MANIFEST" =~ ^https://[^[:space:]]{1,2048}$ ]] || {
+            echo 'kernel_toolchain_manifest must be a bounded HTTPS URL' >&2
+            exit 1
+          }
+          if [ -n "$INPUT_RELEASE_TAG" ]; then
+            [[ "$INPUT_HAPTICS_DEB_VERSION" =~ ^[0-9][0-9A-Za-z._-]{0,63}$ ]] || {
+              echo 'tagged haptics_deb_version contains a release-tag-unsafe character' >&2
+              exit 1
+            }
+            /usr/bin/python3 -I -B scripts/ci/verify-haptics-release-reference.py \
+              scripts/ci/HAPTICS-RELEASE-REFERENCE.tsv
+            reference_version=$(awk -F '\t' \
+              '$1 == "package-version" { print $2 }' \
+              scripts/ci/HAPTICS-RELEASE-REFERENCE.tsv)
+            [ "$INPUT_HAPTICS_DEB_VERSION" = "$reference_version" ] || {
+              echo 'tagged package version differs from the trusted release reference' >&2
+              exit 1
+            }
+            [ "$INPUT_RELEASE_TAG" = "tb321fu-haptics-debs-$INPUT_HAPTICS_DEB_VERSION" ] || {
+              echo 'release_tag must equal tb321fu-haptics-debs-<haptics_deb_version>' >&2
+              exit 1
+            }
+          fi
           printf 'HAPTICS_DEB_VERSION=%s\n' "$INPUT_HAPTICS_DEB_VERSION" >> "$GITHUB_ENV"
           printf 'KERNEL_SOURCE_COMMIT=%s\n' "$INPUT_KERNEL_SOURCE_COMMIT" >> "$GITHUB_ENV"
           printf 'KERNEL_BUILD_ARCHIVE=%s\n' "$INPUT_KERNEL_BUILD_ARCHIVE" >> "$GITHUB_ENV"
@@ -148,6 +231,7 @@ jobs:
           printf 'KERNEL_BUNDLE_METADATA=%s\n' "$INPUT_KERNEL_BUNDLE_METADATA" >> "$GITHUB_ENV"
           printf 'KERNEL_BUNDLE_METADATA_SHA256=%s\n' "${INPUT_KERNEL_BUNDLE_METADATA_SHA256,,}" >> "$GITHUB_ENV"
           printf 'KERNEL_SDK_MANIFEST=%s\n' "$INPUT_KERNEL_SDK_MANIFEST" >> "$GITHUB_ENV"
+          printf 'KERNEL_TOOLCHAIN_MANIFEST=%s\n' "$INPUT_KERNEL_TOOLCHAIN_MANIFEST" >> "$GITHUB_ENV"
           printf 'SOURCE_DATE_EPOCH=%s\n' "$(ci_git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
 
       - name: Build haptics deb
@@ -175,84 +259,35 @@ jobs:
             KERNEL_BUNDLE_METADATA="$KERNEL_BUNDLE_METADATA" \
             KERNEL_BUNDLE_METADATA_SHA256="$KERNEL_BUNDLE_METADATA_SHA256" \
             KERNEL_SDK_MANIFEST="$KERNEL_SDK_MANIFEST" \
+            KERNEL_TOOLCHAIN_MANIFEST="$KERNEL_TOOLCHAIN_MANIFEST" \
             SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
             /bin/bash scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh
 
-      - name: Upload workflow artifact
+      - name: Upload diagnostic build output
+        if: ${{ inputs.release_tag == '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: tb321fu-haptics-debs-${{ inputs.haptics_deb_version }}-arm64
+          name: diagnostic-tb321fu-haptics-${{ inputs.haptics_deb_version }}-arm64-${{ github.run_attempt }}
           path: out/tb321fu-haptics-debs/*
+          if-no-files-found: error
 
       - name: Stage release assets
         if: ${{ inputs.release_tag != '' }}
         run: |
           set -euo pipefail
-          release_stage=out/tb321fu-haptics-release/release-staging
-          release_dir="$release_stage/assets"
-          notes="$release_dir/BUILD-PARAMETERS.md"
-          compiled=out/tb321fu-haptics-debs/HAPTICS-COMPILED-DIGESTS.env
-          source_lock=out/tb321fu-haptics-debs/HAPTICS-SOURCE-LOCK.tsv
-          package_checksums=out/tb321fu-haptics-debs/SHA256SUMS-tb321fu-haptics-debs.txt
-          haptics_deb=out/tb321fu-haptics-debs/tb321fu-haptics_${HAPTICS_DEB_VERSION}_arm64.deb
-          for evidence in "$compiled" "$source_lock" "$package_checksums" "$haptics_deb"; do
-            [ -f "$evidence" ] && [ ! -L "$evidence" ]
-          done
-          module_sha256=$(awk -F= '$1 == "HAPTICS_MODULE_SHA256" { print $2 }' "$compiled")
-          helper_sha256=$(awk -F= '$1 == "HAPTICS_HELPER_BINARY_SHA256" { print $2 }' "$compiled")
-          archive_sha256=$(awk -F= '$1 == "HAPTICS_ARCHIVE_SHA256" { print $2 }' "$compiled")
-          compiled_deb_sha256=$(awk -F= '$1 == "HAPTICS_DEB_SHA256" { print $2 }' "$compiled")
-          kernel_bundle_id=$(awk -F '\t' '$1 == "kernel-bundle-id" { print $2 }' "$source_lock")
-          manifest_deb_sha256=$(awk -v name="./tb321fu-haptics_${HAPTICS_DEB_VERSION}_arm64.deb" \
-            '$2 == name { print $1 }' "$package_checksums")
-          haptics_deb_sha256=$(sha256sum -- "$haptics_deb" | awk '{ print $1 }')
-          source_lock_sha256=$(sha256sum -- "$source_lock" | awk '{ print $1 }')
-          [[ "$module_sha256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$helper_sha256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$compiled_deb_sha256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$kernel_bundle_id" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$manifest_deb_sha256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$haptics_deb_sha256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$source_lock_sha256" =~ ^[0-9a-f]{64}$ ]]
-          [ "$compiled_deb_sha256" = "$haptics_deb_sha256" ]
-          [ "$manifest_deb_sha256" = "$haptics_deb_sha256" ]
-          mkdir -p "$release_dir"
-          {
-            echo '# TB321FU Haptics Debs'
-            echo
-            echo "- Package version: $HAPTICS_DEB_VERSION"
-            echo "- Kernel source commit: $KERNEL_SOURCE_COMMIT"
-            echo "- Kernel SDK: $KERNEL_BUILD_ARCHIVE"
-            echo "- Kernel SDK SHA-256: $KERNEL_BUILD_ARCHIVE_SHA256"
-            echo "- Kernel bundle metadata: $KERNEL_BUNDLE_METADATA"
-            echo "- Kernel bundle metadata SHA-256: $KERNEL_BUNDLE_METADATA_SHA256"
-            echo "- Kernel bundle ID: $kernel_bundle_id"
-            echo "- Kernel SDK manifest: $KERNEL_SDK_MANIFEST"
-            echo "- Commit: $GITHUB_SHA"
-            echo "- Workflow run: $GITHUB_RUN_ID"
-            echo "- Haptics archive SHA-256: $archive_sha256"
-            echo "- Haptics DEB SHA-256: $haptics_deb_sha256"
-            echo "- Haptics source lock SHA-256: $source_lock_sha256"
-            echo "- Candidate HAPTICS_MODULE_SHA256: $module_sha256"
-            echo "- Candidate HAPTICS_HELPER_BINARY_SHA256: $helper_sha256"
-            echo
-            echo 'Static CI verifies package/lifecycle behavior; stop/suspend/resume remains a device gate.'
-            echo 'Compiled digests require a byte-identical second trusted build and independent consumer pinning.'
-          } > "$notes"
-          install -m 0644 \
-            "out/tb321fu-haptics-debs/tb321fu-haptics-debs_${HAPTICS_DEB_VERSION}_arm64.tar.gz" \
-            out/tb321fu-haptics-debs/HAPTICS-SOURCE-LOCK.tsv \
-            out/tb321fu-haptics-debs/SHA256SUMS-tb321fu-haptics-debs.txt \
-            "$release_dir/"
-          (
-            cd "$release_dir"
-            sha256sum -- \
-              "tb321fu-haptics-debs_${HAPTICS_DEB_VERSION}_arm64.tar.gz" \
-              HAPTICS-SOURCE-LOCK.tsv \
-              SHA256SUMS-tb321fu-haptics-debs.txt \
-              BUILD-PARAMETERS.md > SHA256SUMS.txt
-          )
+          /bin/bash -p scripts/ci/stage-haptics-release-assets.sh \
+            out/tb321fu-haptics-debs \
+            out/tb321fu-haptics-release/release-staging \
+            "$HAPTICS_DEB_VERSION" \
+            "$KERNEL_SOURCE_COMMIT" \
+            "$KERNEL_BUILD_ARCHIVE" \
+            "$KERNEL_BUILD_ARCHIVE_SHA256" \
+            "$KERNEL_BUNDLE_METADATA" \
+            "$KERNEL_BUNDLE_METADATA_SHA256" \
+            "$KERNEL_SDK_MANIFEST" \
+            "$KERNEL_TOOLCHAIN_MANIFEST" \
+            "$GITHUB_SHA" \
+            "$GITHUB_RUN_ID"
 
       - name: Upload staged release payload
         if: ${{ inputs.release_tag != '' }}
@@ -261,41 +296,3 @@ jobs:
           name: release-staging-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/tb321fu-haptics-release/release-staging
           if-no-files-found: error
-
-  publish:
-    if: ${{ inputs.release_tag != '' }}
-    needs: build
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: write
-    timeout-minutes: 30
-    steps:
-      - name: Checkout exact release source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Download staged release payload
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-staging-${{ github.run_id }}-${{ github.run_attempt }}
-          path: release-staging
-
-      - name: Publish immutable prerelease
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          PRERELEASE: ${{ inputs.prerelease && '1' || '0' }}
-        run: |
-          set -euo pipefail
-          [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || {
-            echo 'checked-out source does not match the workflow commit' >&2
-            exit 1
-          }
-          release_dir=release-staging/assets
-          notes=release-staging/assets/BUILD-PARAMETERS.md
-          [ -d "$release_dir" ]
-          [ -f "$notes" ]
-          find "$release_dir" -maxdepth 1 -type f -print -quit | grep -q .
-          bash scripts/ci/publish-release.sh "$RELEASE_TAG" "$release_dir" "$notes"

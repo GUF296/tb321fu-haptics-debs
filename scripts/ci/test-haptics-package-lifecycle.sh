@@ -297,6 +297,20 @@ assert_log_absent uname
   /usr/lib/systemd/system/tb321fu-haptics.service ] ||
   fail 'postinst recorded an unexpected service want target'
 
+prepare_fixture preexisting-state-directory
+install -d -m 0755 "$root/var/lib/tb321fu-haptics"
+clear_log
+run_postinst configure
+[ -f "$root/var/lib/tb321fu-haptics/managed-want" ] ||
+  fail 'postinst did not record ownership in a pre-existing state directory'
+clear_log
+run_postrm remove
+[ -d "$root/var/lib/tb321fu-haptics" ] ||
+  fail 'postrm removed a pre-existing administrator-owned state directory'
+[ ! -e "$root/var/lib/tb321fu-haptics/managed-want" ] && \
+  [ ! -L "$root/var/lib/tb321fu-haptics/managed-want" ] ||
+  fail 'postrm left package-owned state in the pre-existing directory'
+
 prepare_fixture preexisting-user-want
 install -d -m 0755 "$root/etc/systemd/system/multi-user.target.wants"
 ln -s /usr/lib/systemd/system/tb321fu-haptics.service \
@@ -354,6 +368,25 @@ expect_failure hostile-managed-state-postrm run_postrm remove
   fail 'postrm removed hostile managed-want state'
 [ -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
   fail 'postrm removed a hostile state-owned systemd want'
+
+prepare_fixture oversized-managed-state
+install -d -m 0755 \
+  "$root/etc/systemd/system/multi-user.target.wants" \
+  "$root/var/lib/tb321fu-haptics"
+ln -s /usr/lib/systemd/system/tb321fu-haptics.service \
+  "$root/etc/systemd/system/multi-user.target.wants/$service"
+dd if=/dev/zero bs=512 count=2 2>/dev/null | tr '\000' x > \
+  "$root/var/lib/tb321fu-haptics/managed-want"
+clear_log
+expect_failure oversized-managed-state run_postinst configure
+[ -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
+  fail 'postinst modified an oversized managed-want state fixture'
+clear_log
+expect_failure oversized-managed-state-postrm run_postrm remove
+[ -f "$root/var/lib/tb321fu-haptics/managed-want" ] ||
+  fail 'postrm removed an oversized managed-want state fixture'
+[ -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
+  fail 'postrm modified a want after rejecting oversized state'
 
 prepare_fixture legacy-payload
 install_legacy_payload
@@ -461,6 +494,19 @@ assert_log_absent "systemctl <--root=$root> <is-enabled> <--quiet> <$service>"
 [ ! -e "$root/etc/systemd/system/multi-user.target.wants/$service" ] &&
   [ ! -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
   fail 'partial enable failure left a newly created service want behind'
+
+prepare_fixture state-persistence-failure
+install -d -m 0755 "$root/var/lib"
+printf 'state directory blocker\n' > "$root/var/lib/tb321fu-haptics"
+clear_log
+expect_failure state-persistence-failure run_postinst configure
+assert_log_contains "systemctl <--root=$root> <enable> <$service>"
+assert_log_contains "systemctl <--root=$root> <is-enabled> <--quiet> <$service>"
+[ ! -e "$root/etc/systemd/system/multi-user.target.wants/$service" ] &&
+  [ ! -L "$root/etc/systemd/system/multi-user.target.wants/$service" ] ||
+  fail 'state persistence failure left a newly created service want behind'
+[ -f "$root/var/lib/tb321fu-haptics" ] ||
+  fail 'state persistence failure removed the state-directory blocker'
 
 prepare_fixture enable-verification-failure
 clear_log
