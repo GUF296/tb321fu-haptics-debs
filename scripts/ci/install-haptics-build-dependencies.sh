@@ -41,7 +41,7 @@ trap 'exit 143' TERM
 prepare_reviewed_dpkg_config() {
   local config_root="$work_dir/reviewed-dpkg"
 
-  /usr/bin/mkdir -m 0755 -- "$config_root/etc" \
+  /usr/bin/mkdir -m 0755 -p -- "$config_root/etc" \
     "$config_root/etc/dpkg.cfg.d"
   /usr/bin/chmod 0755 -- "$config_root" "$config_root/etc"
   /usr/bin/tee "$config_root/etc/dpkg.cfg" >/dev/null <<'DPKG_CFG'
