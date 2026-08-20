@@ -18,16 +18,14 @@ UPLOAD = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
 CAPTURE_RUN = "\n".join(
     (
         "set -euo pipefail",
-        "reference=HAPTICS-DPKG-HOST-REFERENCE.tsv",
-        "checksum=HAPTICS-DPKG-HOST-REFERENCE.sha256",
-        "[ ! -e \"$reference\" ] && [ ! -L \"$reference\" ] &&",
-        "  [ ! -e \"$checksum\" ] && [ ! -L \"$checksum\" ]",
+        'reference=\"$RUNNER_TEMP/HAPTICS-DPKG-HOST-REFERENCE.tsv\"',
+        'checksum=\"$RUNNER_TEMP/HAPTICS-DPKG-HOST-REFERENCE.sha256\"',
         "sudo python3 -I -B scripts/ci/verify-haptics-dpkg-state.py \\",
         "  --capture-host-reference /var/lib/dpkg 0 0 > \"$reference\"",
         "chmod 0600 \"$reference\"",
         "sudo chown 0:0 \"$reference\"",
         "sudo python3 -I -B scripts/ci/verify-haptics-dpkg-state.py \\",
-        "  --verify-host-reference /var/lib/dpkg 0 0 \"$PWD/$reference\"",
+        "  --verify-host-reference /var/lib/dpkg 0 0 \"$reference\"",
         "sudo chown \"$(id -u):$(id -g)\" \"$reference\"",
         "sha256sum -- \"$reference\" | \\",
         "  sed 's#  .*#  HAPTICS-DPKG-HOST-REFERENCE.tsv#' > \"$checksum\"",
@@ -104,7 +102,7 @@ def main() -> None:
         "uses": UPLOAD,
         "with": {
             "name": "haptics-dpkg-host-reference",
-            "path": "HAPTICS-DPKG-HOST-REFERENCE.*",
+            "path": "${{ runner.temp }}/HAPTICS-DPKG-HOST-REFERENCE.*",
             "if-no-files-found": "error",
             "retention-days": 7,
             "compression-level": 0,
