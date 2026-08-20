@@ -1,7 +1,7 @@
 schema	tb321fu.haptics-dpkg-host-reference/v1
 state-file	diversions	644	1814	71854c408023395866dbe9a81192b0264ec8f885f379bf5fa32b031e4214e48f
 state-file	statoverride	644	285	b4877b6f62b29484b52d373a5b3ae25465c8ba0423f4b441ec6849554400453b
-state-file	triggers/File	644	2038	3d930b09cc102d0b31273ca7dfc469d941382ff129104bd4e0a42da8be53d14c
+state-file	triggers/File	644	2038	cd35807ae48807f1d087e4b555748ca123a617ea7b31b2d09c905da5e9eac39b
 state-file	triggers/aspell-autobuildhash	644	28	b2eb5757b46fc925e6f149607f3aa9ae31755735a438fd9ae3effabab0ebf2ed
 state-file	triggers/google-cloud-cli-postprocess	644	17	ffc5cff07578c1474169bb2ef86293d0450ed653ae5bf94d13820d5e86fbeb60
 state-file	triggers/ispell-autobuildhash	644	28	b2eb5757b46fc925e6f149607f3aa9ae31755735a438fd9ae3effabab0ebf2ed
@@ -9,7 +9,7 @@ state-file	triggers/ldconfig	644	9	e1919c8b2afb858bd2aadc7ccb27c847b3b687ed9dffe
 state-file	triggers/lib32	644	19	026e8827dbb154c92f39202a5e12557b8531536c0d675b670cdf71d9c858c418
 state-file	triggers/libo32	644	19	026e8827dbb154c92f39202a5e12557b8531536c0d675b670cdf71d9c858c418
 state-file	triggers/libx32	644	19	026e8827dbb154c92f39202a5e12557b8531536c0d675b670cdf71d9c858c418
-state-file	triggers/linux-update-6.17.0-1020-azure	644	30	1561fc6e4542c9f4a1470da987563ad47cf4cd9702b167214eadcfc1e2f445fd
+state-file	triggers/linux-update-6.17.0-1022-azure	644	30	9aac046fd9d614f60260a5e81334b8abd37bd0188b994984eabfaaef305b0c6d
 state-file	triggers/nginx-reload	644	14	62089e47c006446d9c46ba91f95dd1f7356314ccd0ef3442e0e97cd8dfd5720c
 state-file	triggers/shim-kernel-check	644	20	b9db8762472d2570272518f276cbfa4f4df2d604b4cfd699455fae91ffd21d25
 state-file	triggers/shim-secureboot-policy	644	20	b9db8762472d2570272518f276cbfa4f4df2d604b4cfd699455fae91ffd21d25
@@ -77,7 +77,7 @@ trigger	explicit:ldconfig	libc-bin	amd64	await
 trigger	explicit:lib32	base-files	amd64	noawait
 trigger	explicit:libo32	base-files	amd64	noawait
 trigger	explicit:libx32	base-files	amd64	noawait
-trigger	explicit:linux-update-6.17.0-1020-azure	linux-image-6.17.0-1020-azure	amd64	await
+trigger	explicit:linux-update-6.17.0-1022-azure	linux-image-6.17.0-1022-azure	amd64	await
 trigger	explicit:nginx-reload	nginx	amd64	noawait
 trigger	explicit:shim-kernel-check	shim-signed	amd64	noawait
 trigger	explicit:shim-secureboot-policy	shim-signed	amd64	noawait
@@ -98,32 +98,32 @@ handler	dbus	amd64	1.14.10-4ubuntu4.1	install ok installed
 handler	debianutils	amd64	5.17build1	install ok installed
 handler	dictionaries-common	all	1.29.7	install ok installed
 handler	fontconfig	amd64	2.15.0-1.1ubuntu2	install ok installed
-handler	google-cloud-cli	amd64	576.0.0-0	install ok installed
+handler	google-cloud-cli	amd64	580.0.0-0	install ok installed
 handler	hicolor-icon-theme	all	0.17-2	install ok installed
 handler	initramfs-tools	all	0.142ubuntu25.8	install ok installed
 handler	install-info	amd64	7.1-3build2	install ok installed
-handler	libc-bin	amd64	2.39-0ubuntu8.7	install ok installed
-handler	libc6-i386	amd64	2.39-0ubuntu8.7	install ok installed
+handler	libc-bin	amd64	2.39-0ubuntu8.8	install ok installed
+handler	libc6-i386	amd64	2.39-0ubuntu8.8	install ok installed
 handler	libgdk-pixbuf-2.0-0	amd64	2.42.10+dfsg-3ubuntu3.3	install ok installed
 handler	libglib2.0-0t64	amd64	2.80.0-6ubuntu3.8	install ok installed
 handler	libgtk-3-0t64	amd64	3.24.41-4ubuntu1.3	install ok installed
-handler	linux-image-6.17.0-1020-azure	amd64	6.17.0-1020.20~24.04.1	install ok installed
+handler	linux-image-6.17.0-1022-azure	amd64	6.17.0-1022.22	install ok installed
 handler	man-db	amd64	2.12.0-4build2	install ok installed
-handler	nginx	amd64	1.24.0-2ubuntu7.13	install ok installed
-handler	php8.3-cgi	amd64	8.3.6-0ubuntu0.24.04.9	install ok installed
-handler	php8.3-cli	amd64	8.3.6-0ubuntu0.24.04.9	install ok installed
-handler	php8.3-fpm	amd64	8.3.6-0ubuntu0.24.04.9	install ok installed
-handler	php8.3-phpdbg	amd64	8.3.6-0ubuntu0.24.04.9	install ok installed
+handler	nginx	amd64	1.24.0-2ubuntu7.15	install ok installed
+handler	php8.3-cgi	amd64	8.3.6-0ubuntu0.24.04.10	install ok installed
+handler	php8.3-cli	amd64	8.3.6-0ubuntu0.24.04.10	install ok installed
+handler	php8.3-fpm	amd64	8.3.6-0ubuntu0.24.04.10	install ok installed
+handler	php8.3-phpdbg	amd64	8.3.6-0ubuntu0.24.04.10	install ok installed
 handler	plymouth-theme-ubuntu-text	amd64	24.004.60-1ubuntu7.2	install ok installed
 handler	postgresql-common	all	293.pgdg24.04+1	install ok installed
 handler	python3-twisted	all	24.3.0-1ubuntu0.2	install ok installed
-handler	rsyslog	amd64	8.2312.0-3ubuntu9.2	install ok installed
+handler	rsyslog	amd64	8.2312.0-3ubuntu9.3	install ok installed
 handler	sgml-base	all	1.31	install ok installed
 handler	shared-mime-info	amd64	2.4-4	install ok installed
 handler	shim-signed	amd64	1.58+15.8-0ubuntu1	install ok installed
-handler	systemd	amd64	255.4-1ubuntu8.16	install ok installed
+handler	systemd	amd64	255.4-1ubuntu8.17	install ok installed
 handler	tex-common	all	6.18	install ok installed
-handler	udev	amd64	255.4-1ubuntu8.16	install ok installed
+handler	udev	amd64	255.4-1ubuntu8.17	install ok installed
 handler	ufw	all	0.36.2-6	install ok installed
 handler	update-notifier-common	all	3.192.68.2	install ok installed
 diversion	/bin	/bin.usr-is-merged	base-files
@@ -216,11 +216,11 @@ script	libgtk-3-0t64	amd64	libgtk-3-0t64:amd64.postinst	755	475	1fdb6efcc83add44
 script	libgtk-3-0t64	amd64	libgtk-3-0t64:amd64.postrm	755	438	8f97f2daa68cb90ceece3142a27d209e96761a65cd6f74aaa1bdbb4dba9d2ed6
 script	libgtk-3-0t64	amd64	libgtk-3-0t64:amd64.preinst	755	1353	0ebbd35f9e6c1b4f25052e0e9089484ce3742aea269a30098f3a014cc7f5ade5
 script	libgtk-3-0t64	amd64	libgtk-3-0t64:amd64.triggers	644	142	6a1ea56d65af0d4b85a9ba7741604af0069b1cf50ee16ea39582cfa7a8f644aa
-script	linux-image-6.17.0-1020-azure	amd64	linux-image-6.17.0-1020-azure.postinst	755	2175	4a16c702073a999e43394b9d086234ba8b5addb7f7394350c7e32ae33e306de1
-script	linux-image-6.17.0-1020-azure	amd64	linux-image-6.17.0-1020-azure.postrm	755	1435	d5842abd840c99f59502e49b1d5fa2965a39f0aa46a0a4d08401fe682403b29e
-script	linux-image-6.17.0-1020-azure	amd64	linux-image-6.17.0-1020-azure.preinst	755	454	d143b9e87a8d479751284ed8b766d2e3f0ab6ce80add169f51eb4689cb26762d
-script	linux-image-6.17.0-1020-azure	amd64	linux-image-6.17.0-1020-azure.prerm	755	322	6ab0bb1d3c9d845687baeb606ece5921f83fb7325a7d5911da691253bab6e33b
-script	linux-image-6.17.0-1020-azure	amd64	linux-image-6.17.0-1020-azure.triggers	644	40	b85d174e00f36ac1827ad537a069d40a7468b6150fbb8084557d562ddcf1b8b5
+script	linux-image-6.17.0-1022-azure	amd64	linux-image-6.17.0-1022-azure.postinst	755	2175	006d1ef92d4c5dfac5a0008e5af5fc9533e32356ae64583540785df129768f0b
+script	linux-image-6.17.0-1022-azure	amd64	linux-image-6.17.0-1022-azure.postrm	755	1435	8c81d8d81ffd6b40f57edd8e427e135f91666f608ba1325d1fa0884ef97801ab
+script	linux-image-6.17.0-1022-azure	amd64	linux-image-6.17.0-1022-azure.preinst	755	454	9534d41851041b6ce5d42735a0165432c4afc5c3d37728a7d145b19ecb39d3d3
+script	linux-image-6.17.0-1022-azure	amd64	linux-image-6.17.0-1022-azure.prerm	755	322	d4bca137d95a6b92a850bcaaedeff11de4be98a293076e09197c81752aa26afb
+script	linux-image-6.17.0-1022-azure	amd64	linux-image-6.17.0-1022-azure.triggers	644	40	263223d99a8721431e7f7440460ff9632b4b9f98dc44489661ba95024a9156ce
 script	man-db	amd64	man-db.postinst	755	4940	591a58ad4e6d2df6746382af57b4b14b96aa4b7558d679f4fef75ebdf18eed53
 script	man-db	amd64	man-db.postrm	755	1650	0f8fb8ccb8e087702b4267c2f0572b9f80edf6e908c327a0636ba66fc44cea3f
 script	man-db	amd64	man-db.prerm	755	273	9f93dd4357cb6ae71c41157733d81fc98b564be38abe3d0b9f6afa153b638704
@@ -258,8 +258,8 @@ script	python3-twisted	all	python3-twisted.postinst	755	788	6824e11ed742238b77cf
 script	python3-twisted	all	python3-twisted.postrm	755	321	dba8633fe340ce873d9192746f3bf89030e3d08e01080e4e96e6dae733412a6d
 script	python3-twisted	all	python3-twisted.prerm	755	378	7733c59d7f5e9416d82b3a9c7bcedb167e9c226740423241e82f7aaa54dda304
 script	python3-twisted	all	python3-twisted.triggers	644	31	32d07364df4251a196873eacb31dc7832503a68e91cbfdd4b25cfb05534dfcd9
-script	rsyslog	amd64	rsyslog.postinst	755	5472	9310f2ff4678d8473cd25770b3983e257ea59ebfaef01e42c9e02b798e70f417
-script	rsyslog	amd64	rsyslog.postrm	755	1925	e08838aba283da2c67cb8afb4f053645389df0ec93be71cce164fde47d3ec9fa
+script	rsyslog	amd64	rsyslog.postinst	755	5459	88c6faeb717244bf60e75084393bbb8592b4d39202673f0bb0c0c43b2243673b
+script	rsyslog	amd64	rsyslog.postrm	755	1912	c1b602b0184952f1b5498ffeb3c6635465d14ba2c2c1025197a37abc2c8e05ee
 script	rsyslog	amd64	rsyslog.preinst	755	423	c1210bf92c9d8ea791a7f8f415abe5be5adf99c18d4c483710a5bf9daa40423a
 script	rsyslog	amd64	rsyslog.prerm	755	699	c2c42ffcab1018be3b506b85629cb55d81b0970dabc8ebd5704ec73db93764ea
 script	rsyslog	amd64	rsyslog.triggers	644	32	f17865c683da670ebbcc14ab8c39f083b1d971bf7262c53dbb0484d88b04af8b

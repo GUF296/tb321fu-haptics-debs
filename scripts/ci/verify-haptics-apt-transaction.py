@@ -35,7 +35,7 @@ DEBIAN_MULTIARCH = {"same", "foreign", "allowed", "no"}
 HEX_BYTE = re.compile(r"[0-9A-Fa-f]{2}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 EXPECTED_HOST_REFERENCE_SHA256 = (
-    "bba8b447a81ad12326706c7fa56c171fcd890c37cde79c31a20047e2ccaf18f5"
+    "59b743bc1fc980f06f86dab9f122255b55b09010c844e32e44342d5bd87e3823"
 )
 UNSIGNED = re.compile(r"0|[1-9][0-9]{0,19}")
 CONTROL_FIELD_NAME = re.compile(r"(?!#)[\x21-\x39\x3b-\x7e]+")
