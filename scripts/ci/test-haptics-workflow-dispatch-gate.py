@@ -49,6 +49,7 @@ SAFE_WORKFLOW = "name: trusted\non: workflow_dispatch\njobs: {}\n"
 TEST_REPOSITORY = "GUF296/tb321fu-haptics-debs"
 TEST_REF = "codex/trusted-gate-test"
 TEST_DISPATCH_ID = "0123456789abcdef0123456789abcdef"
+TEST_AUTHENTICATED_LOGIN = "fixture-user"
 FIXTURE_PROCESS_TIMEOUT_SECONDS = 10.0
 FIXTURE_PROCESS_OUTPUT_BYTES = 1024 * 1024
 FIXTURE_PROCESS_TABLE_LIMIT = 131072
@@ -7459,6 +7460,38 @@ def remote_ref_arguments() -> list[str]:
     ]
 
 
+def authenticated_login_arguments() -> list[str]:
+    return [
+        "/usr/bin/gh",
+        "api",
+        "--method",
+        "GET",
+        "user",
+        "--jq",
+        "{login:.login}",
+    ]
+
+
+def workflow_run_ownership_arguments(run_id: int) -> list[str]:
+    return [
+        "/usr/bin/gh",
+        "api",
+        "--method",
+        "GET",
+        f"repos/{TEST_REPOSITORY}/actions/runs/{run_id}",
+        "--jq",
+        (
+            "{runId:.id,headBranch:.head_branch,headSha:.head_sha,"
+            "event:.event,path:.path,displayTitle:.display_title,"
+            "workflowName:.name,workflowId:.workflow_id,"
+            "actorLogin:.actor.login,"
+            "triggeringActorLogin:.triggering_actor.login,"
+            "repositoryFullName:.repository.full_name,"
+            "headRepositoryFullName:.head_repository.full_name}"
+        ),
+    ]
+
+
 def branch_protection_arguments() -> list[str]:
     return [
         "/usr/bin/gh",
@@ -8859,6 +8892,14 @@ class FakeGhRunner:
         preexisting_matching_title: bool = False,
         competing_after_dispatch: bool = False,
         duplicate_matching_after_dispatch: bool = False,
+        authenticated_login: str = TEST_AUTHENTICATED_LOGIN,
+        actor_login: str = TEST_AUTHENTICATED_LOGIN,
+        triggering_actor_login: str | None = None,
+        run_path: str = ".github/workflows/build.yml",
+        run_workflow_name: str = "Build TB321FU Haptics Debs",
+        run_workflow_id: int = 7,
+        run_repository: str = TEST_REPOSITORY,
+        run_head_repository: str = TEST_REPOSITORY,
     ) -> None:
         self.candidate_commit = candidate_commit
         self.fail_after_dispatch = fail_after_dispatch
@@ -8878,6 +8919,18 @@ class FakeGhRunner:
         self.duplicate_matching_after_dispatch = (
             duplicate_matching_after_dispatch
         )
+        self.authenticated_login = authenticated_login
+        self.actor_login = actor_login
+        self.triggering_actor_login = (
+            actor_login
+            if triggering_actor_login is None
+            else triggering_actor_login
+        )
+        self.run_path = run_path
+        self.run_workflow_name = run_workflow_name
+        self.run_workflow_id = run_workflow_id
+        self.run_repository = run_repository
+        self.run_head_repository = run_head_repository
         self.ref_target = candidate_commit
         self.ref_query_count = 0
         self.protection_query_count = 0
@@ -8888,11 +8941,55 @@ class FakeGhRunner:
         self.transcript: list[tuple[tuple[str, ...], str | None]] = []
         self.deadlines: list[float] = []
 
+    def run_detail(self, run_id: int) -> dict[str, object]:
+        if run_id == 42:
+            title = f"haptics-dispatch-{self.dispatch_id}"
+        elif run_id == 41:
+            title = f"haptics-dispatch-{TEST_DISPATCH_ID}"
+        else:
+            title = "haptics-dispatch-" + "e" * 32
+        return {
+            "runId": run_id,
+            "headBranch": self.run_branch,
+            "headSha": self.candidate_commit,
+            "event": "workflow_dispatch",
+            "path": self.run_path,
+            "displayTitle": title,
+            "workflowName": self.run_workflow_name,
+            "workflowId": self.run_workflow_id,
+            "actorLogin": self.actor_login,
+            "triggeringActorLogin": self.triggering_actor_login,
+            "repositoryFullName": self.run_repository,
+            "headRepositoryFullName": self.run_head_repository,
+        }
+
     def __call__(
         self, arguments: list[str], input_text: str | None, deadline: float
     ) -> subprocess.CompletedProcess[str]:
         self.transcript.append((tuple(arguments), input_text))
         self.deadlines.append(deadline)
+        if arguments == authenticated_login_arguments():
+            if input_text is not None:
+                return subprocess.CompletedProcess(
+                    arguments, 1, "", "unexpected authenticated-user input"
+                )
+            return subprocess.CompletedProcess(
+                arguments,
+                0,
+                json.dumps({"login": self.authenticated_login}),
+                "",
+            )
+        if arguments == workflow_run_ownership_arguments(42):
+            if input_text is not None:
+                return subprocess.CompletedProcess(
+                    arguments, 1, "", "unexpected workflow-run detail input"
+                )
+            return subprocess.CompletedProcess(
+                arguments,
+                0,
+                json.dumps(self.run_detail(42)),
+                "",
+            )
         if arguments == branch_protection_arguments():
             self.protection_query_count += 1
             if input_text is not None:
@@ -9032,6 +9129,13 @@ def test_competing_full_main_dispatches(
     class FileGhRunner:
         def __call__(self, arguments, input_text, deadline):
             del deadline
+            if arguments == authenticated_login_arguments():
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    json.dumps({"login": TEST_AUTHENTICATED_LOGIN}),
+                    "",
+                )
             if arguments == remote_ref_arguments():
                 return subprocess.CompletedProcess(
                     arguments,
@@ -9082,6 +9186,28 @@ def test_competing_full_main_dispatches(
                     )
                 return subprocess.CompletedProcess(
                     arguments, 0, json.dumps(runs), ""
+                )
+            if arguments == workflow_run_ownership_arguments(42):
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    json.dumps(
+                        {
+                            "runId": 42,
+                            "headBranch": TEST_REF,
+                            "headSha": candidate,
+                            "event": "workflow_dispatch",
+                            "path": ".github/workflows/build.yml",
+                            "displayTitle": f"haptics-dispatch-{dispatch_id_path.read_text(encoding='ascii').strip()}",
+                            "workflowName": gate_module.WORKFLOW_NAME,
+                            "workflowId": 7,
+                            "actorLogin": TEST_AUTHENTICATED_LOGIN,
+                            "triggeringActorLogin": TEST_AUTHENTICATED_LOGIN,
+                            "repositoryFullName": TEST_REPOSITORY,
+                            "headRepositoryFullName": TEST_REPOSITORY,
+                        }
+                    ),
+                    "",
                 )
             if arguments == workflow_dispatch_arguments():
                 inputs = json.loads(input_text)
@@ -9777,6 +9903,7 @@ def _main() -> None:
             expected_inputs, sort_keys=True, separators=(",", ":")
         )
         expected_first_transcript = (
+            (tuple(authenticated_login_arguments()), None),
             (tuple(remote_ref_arguments()), None),
             (tuple(branch_protection_arguments()), None),
             (tuple(workflow_inventory_arguments(good)), None),
@@ -9784,6 +9911,7 @@ def _main() -> None:
             (tuple(branch_protection_arguments()), None),
             (tuple(workflow_dispatch_arguments()), expected_json),
             (tuple(workflow_inventory_arguments(good)), None),
+            (tuple(workflow_run_ownership_arguments(42)), None),
             (tuple(remote_ref_arguments()), None),
             (tuple(branch_protection_arguments()), None),
         )
@@ -9821,12 +9949,14 @@ def _main() -> None:
         ):
             raise SystemExit("production dispatch main replay was not exactly-once")
         expected_replay_transcript = (
+            (tuple(authenticated_login_arguments()), None),
             (tuple(remote_ref_arguments()), None),
             (tuple(branch_protection_arguments()), None),
             (tuple(workflow_inventory_arguments(good)), None),
             (tuple(remote_ref_arguments()), None),
             (tuple(branch_protection_arguments()), None),
             (tuple(workflow_inventory_arguments(good)), None),
+            (tuple(workflow_run_ownership_arguments(42)), None),
             (tuple(remote_ref_arguments()), None),
             (tuple(branch_protection_arguments()), None),
         )
@@ -9896,6 +10026,7 @@ def _main() -> None:
             separators=(",", ":"),
         )
         expected_release_first_transcript = (
+            (tuple(authenticated_login_arguments()), None),
             (tuple(remote_ref_arguments()), None),
             (tuple(branch_protection_arguments()), None),
             (tuple(workflow_inventory_arguments(good)), None),
@@ -9903,6 +10034,7 @@ def _main() -> None:
             (tuple(branch_protection_arguments()), None),
             (tuple(workflow_dispatch_arguments()), release_json),
             (tuple(workflow_inventory_arguments(good)), None),
+            (tuple(workflow_run_ownership_arguments(42)), None),
             (tuple(remote_ref_arguments()), None),
             (tuple(branch_protection_arguments()), None),
         )
@@ -10195,18 +10327,124 @@ def _main() -> None:
         else:
             raise SystemExit("trusted gate accepted a same-SHA run from another branch")
         applied_failure_gh = FakeGhRunner(good, fail_after_dispatch=True)
-        reconciled = gate_module.dispatch_candidate(
+        applied_failure_state = state_directory / "applied-failure.tsv"
+        try:
+            gate_module.dispatch_candidate(
+                TEST_REPOSITORY,
+                TEST_REF,
+                good,
+                "",
+                applied_failure_state,
+                applied_failure_gh,
+                evidence=direct_evidence,
+                dispatch_id_factory=lambda: TEST_DISPATCH_ID,
+            )
+        except gate_module.WorkflowGateError as exc:
+            expected = (
+                "workflow dispatch failed; refusing to reconcile an unowned run: "
+                "workflow dispatch failed: simulated applied transport failure"
+            )
+            if str(exc) != expected:
+                raise SystemExit(
+                    f"applied dispatch failure escaped at the wrong boundary: {exc}"
+                ) from exc
+        else:
+            raise SystemExit("trusted gate reconciled a dispatch after a nonzero POST")
+        if applied_failure_gh.dispatch_count != 1:
+            raise SystemExit("trusted gate retried a failed dispatch POST")
+        dispatch_positions = [
+            index
+            for index, (arguments, _input) in enumerate(applied_failure_gh.transcript)
+            if arguments[1:3] == ("workflow", "run")
+        ]
+        if len(dispatch_positions) != 1 or any(
+            arguments[1:3] == ("run", "list")
+            for arguments, _input in applied_failure_gh.transcript[dispatch_positions[0] + 1 :]
+        ):
+            raise SystemExit(
+                "trusted gate queried workflow runs after a nonzero dispatch POST"
+            )
+        replayed_after_failure = gate_module.dispatch_candidate(
             TEST_REPOSITORY,
             TEST_REF,
             good,
             "",
-            state_directory / "applied-failure.tsv",
+            applied_failure_state,
             applied_failure_gh,
             evidence=direct_evidence,
-            dispatch_id_factory=lambda: TEST_DISPATCH_ID,
+            dispatch_id_factory=lambda: (_ for _ in ()).throw(
+                AssertionError("failed-POST replay regenerated its dispatch id")
+            ),
         )
-        if reconciled.run_id != 42 or applied_failure_gh.dispatch_count != 1:
-            raise SystemExit("trusted gate did not reconcile an applied dispatch once")
+        if (
+            replayed_after_failure.run_id != 42
+            or applied_failure_gh.dispatch_count != 1
+        ):
+            raise SystemExit(
+                "failed-POST replay did not use the authenticated run attestation"
+            )
+
+        for label, ownership_options in (
+            ("actor", {"actor_login": "different-user"}),
+            (
+                "triggering actor",
+                {"triggering_actor_login": "different-user"},
+            ),
+            ("run repository", {"run_repository": "GUF296/other-repository"}),
+            (
+                "head repository",
+                {"run_head_repository": "GUF296/other-repository"},
+            ),
+        ):
+            forged_gh = FakeGhRunner(
+                good,
+                fail_after_dispatch=True,
+                **ownership_options,
+            )
+            forged_state = state_directory / f"failed-post-{label.replace(' ', '-')}.tsv"
+            try:
+                gate_module.dispatch_candidate(
+                    TEST_REPOSITORY,
+                    TEST_REF,
+                    good,
+                    "",
+                    forged_state,
+                    forged_gh,
+                    evidence=direct_evidence,
+                    dispatch_id_factory=lambda: TEST_DISPATCH_ID,
+                )
+            except gate_module.WorkflowGateError as exc:
+                if not str(exc).startswith(
+                    "workflow dispatch failed; refusing to reconcile an unowned run:"
+                ):
+                    raise SystemExit(
+                        f"{label} failed-POST fixture crossed the wrong first boundary: {exc}"
+                    ) from exc
+            else:
+                raise SystemExit(f"{label} failed-POST fixture unexpectedly succeeded")
+            try:
+                gate_module.dispatch_candidate(
+                    TEST_REPOSITORY,
+                    TEST_REF,
+                    good,
+                    "",
+                    forged_state,
+                    forged_gh,
+                    evidence=direct_evidence,
+                    dispatch_id_factory=lambda: (_ for _ in ()).throw(
+                        AssertionError(f"{label} replay regenerated its dispatch id")
+                    ),
+                )
+            except gate_module.WorkflowGateError as exc:
+                if str(exc) != "workflow-run ownership details do not prove this dispatch":
+                    raise SystemExit(
+                        f"{label} failed-POST replay failed at the wrong boundary: {exc}"
+                    ) from exc
+            else:
+                raise SystemExit(f"{label} forged failed-POST replay was accepted")
+            if forged_gh.dispatch_count != 1:
+                raise SystemExit(f"{label} failed-POST replay issued a second POST")
+
         interrupted_gh = FakeGhRunner(
             good, fail_inventory_after_dispatch_once=True
         )

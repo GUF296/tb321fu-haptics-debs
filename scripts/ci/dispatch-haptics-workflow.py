@@ -32,6 +32,9 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
 REMOTE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
 DISPATCH_ID = re.compile(r"[0-9a-f]{32}")
+GITHUB_LOGIN = re.compile(
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?"
+)
 MAX_WORKFLOW_BYTES = 1024 * 1024
 MAX_VALIDATOR_BYTES = 2 * 1024 * 1024
 MAX_GH_OUTPUT_BYTES = 1024 * 1024
@@ -2598,6 +2601,127 @@ def require_locked_remote_ref(
         )
 
 
+def require_github_login(value: object, label: str) -> str:
+    if type(value) is not str or not GITHUB_LOGIN.fullmatch(value):
+        raise WorkflowGateError(f"{label} is not a canonical GitHub login")
+    return value
+
+
+def query_authenticated_login(
+    runner: GhRunner,
+    deadline: float,
+) -> str:
+    value = gh_json(
+        runner,
+        [
+            "/usr/bin/gh",
+            "api",
+            "--method",
+            "GET",
+            "user",
+            "--jq",
+            "{login:.login}",
+        ],
+        "authenticated GitHub-user query",
+        deadline,
+    )
+    if not isinstance(value, dict) or set(value) != {"login"}:
+        raise WorkflowGateError(
+            "authenticated GitHub-user response has unexpected fields"
+        )
+    return require_github_login(value.get("login"), "authenticated GitHub login")
+
+
+def verify_workflow_run_ownership(
+    runner: GhRunner,
+    repository: str,
+    record: DispatchRecord,
+    authenticated_login: str,
+    deadline: float,
+) -> None:
+    if type(record) is not DispatchRecord:
+        raise WorkflowGateError("workflow-run ownership record is not canonical")
+    authenticated_login = require_github_login(
+        authenticated_login,
+        "authenticated GitHub login",
+    )
+    value = gh_json(
+        runner,
+        [
+            "/usr/bin/gh",
+            "api",
+            "--method",
+            "GET",
+            f"repos/{repository}/actions/runs/{record.run_id}",
+            "--jq",
+            (
+                "{runId:.id,headBranch:.head_branch,headSha:.head_sha,"
+                "event:.event,path:.path,displayTitle:.display_title,"
+                "workflowName:.name,workflowId:.workflow_id,"
+                "actorLogin:.actor.login,"
+                "triggeringActorLogin:.triggering_actor.login,"
+                "repositoryFullName:.repository.full_name,"
+                "headRepositoryFullName:.head_repository.full_name}"
+            ),
+        ],
+        "workflow-run ownership query",
+        deadline,
+    )
+    expected_keys = {
+        "runId",
+        "headBranch",
+        "headSha",
+        "event",
+        "path",
+        "displayTitle",
+        "workflowName",
+        "workflowId",
+        "actorLogin",
+        "triggeringActorLogin",
+        "repositoryFullName",
+        "headRepositoryFullName",
+    }
+    if not isinstance(value, dict) or set(value) != expected_keys:
+        raise WorkflowGateError(
+            "workflow-run ownership response has unexpected fields"
+        )
+    run_id = value.get("runId")
+    workflow_id = value.get("workflowId")
+    actor_login = value.get("actorLogin")
+    triggering_actor_login = value.get("triggeringActorLogin")
+    repository_full_name = value.get("repositoryFullName")
+    head_repository_full_name = value.get("headRepositoryFullName")
+    if (
+        type(run_id) is not int
+        or run_id != record.run_id
+        or run_id <= 0
+        or run_id > MAX_GITHUB_DATABASE_ID
+        or type(workflow_id) is not int
+        or workflow_id <= 0
+        or workflow_id > MAX_GITHUB_DATABASE_ID
+        or value.get("headBranch") != record.head_branch
+        or value.get("headSha") != record.head_sha
+        or value.get("event") != "workflow_dispatch"
+        or value.get("path") != WORKFLOW_PATH
+        or value.get("displayTitle") != record.display_title
+        or value.get("workflowName") != WORKFLOW_NAME
+        or type(actor_login) is not str
+        or type(triggering_actor_login) is not str
+        or actor_login != authenticated_login
+        or triggering_actor_login != authenticated_login
+        or repository_full_name != repository
+        or head_repository_full_name != repository
+    ):
+        raise WorkflowGateError(
+            "workflow-run ownership details do not prove this dispatch"
+        )
+    require_github_login(actor_login, "workflow-run actor login")
+    require_github_login(
+        triggering_actor_login,
+        "workflow-run triggering actor login",
+    )
+
+
 def list_workflow_runs(
     runner: GhRunner,
     repository: str,
@@ -2687,6 +2811,7 @@ def dispatch_candidate(
     gh_runner: GhRunner,
     *,
     evidence: VerificationEvidence,
+    authenticated_login: str | None = None,
     deadline: float | None = None,
     dispatch_id_factory: Callable[[], str] = lambda: secrets.token_hex(16),
     timeout_seconds: float = 120.0,
@@ -2731,6 +2856,13 @@ def dispatch_candidate(
         or deadline - started > GATE_TIMEOUT_SECONDS
     ):
         raise WorkflowGateError("dispatch absolute deadline is outside its bound")
+    if authenticated_login is None:
+        authenticated_login = query_authenticated_login(gh_runner, deadline)
+    else:
+        authenticated_login = require_github_login(
+            authenticated_login,
+            "authenticated GitHub login",
+        )
     if query_remote_ref(gh_runner, repository, remote_ref, deadline) != candidate_commit:
         raise WorkflowGateError("remote ref does not target the candidate commit before dispatch")
     require_locked_remote_ref(gh_runner, repository, remote_ref, deadline)
@@ -2755,7 +2887,6 @@ def dispatch_candidate(
     inputs = dict(CANONICAL_INPUTS)
     inputs["dispatch_id"] = dispatch_id
     inputs["release_tag"] = release_tag
-    dispatch_error = ""
     if should_submit:
         dispatch = require_gh_result(
             gh_runner(
@@ -2775,11 +2906,15 @@ def dispatch_candidate(
             ),
             "workflow dispatch",
         )
-        dispatch_error = (
-            gh_failure_message(dispatch, "workflow dispatch")
-            if dispatch.returncode
-            else ""
-        )
+        if dispatch.returncode:
+            # A dispatch POST has no response-side run identity.  Once the
+            # transport/authentication result is non-zero, a later run with
+            # matching public metadata cannot be attributed to this request.
+            # Do not poll and adopt an indistinguishable run.
+            raise WorkflowGateError(
+                "workflow dispatch failed; refusing to reconcile an unowned run: "
+                f"{gh_failure_message(dispatch, 'workflow dispatch')}"
+            )
 
     selected: DispatchRecord | None = None
     while selected is None:
@@ -2805,6 +2940,13 @@ def dispatch_candidate(
             raise WorkflowGateError("workflow dispatch produced an ambiguous run set")
         if matching:
             selected = matching[0]
+            verify_workflow_run_ownership(
+                gh_runner,
+                repository,
+                selected,
+                authenticated_login,
+                deadline,
+            )
             break
         current_time = monotonic()
         if (
@@ -2814,11 +2956,6 @@ def dispatch_candidate(
         ):
             raise WorkflowGateError("dispatch monotonic clock returned an invalid value")
         if current_time >= deadline:
-            if dispatch_error:
-                raise WorkflowGateError(
-                    "workflow dispatch failed and no applied run appeared: "
-                    f"{dispatch_error}"
-                )
             raise WorkflowGateError("workflow dispatch run did not appear before the timeout")
         sleeper(min(2.0, deadline - current_time))
     if query_remote_ref(gh_runner, repository, remote_ref, deadline) != candidate_commit:

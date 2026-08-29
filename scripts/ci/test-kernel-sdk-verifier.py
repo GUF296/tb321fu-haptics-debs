@@ -26,7 +26,15 @@ REQUIRED = {
 RELEASE = "7.1.1-fixture"
 
 
-def add_directory(archive: tarfile.TarFile, name: str, mode: int = 0o755) -> None:
+def add_directory(
+    archive: tarfile.TarFile,
+    name: str,
+    mode: int = 0o755,
+    *,
+    trailing_slash: bool = False,
+) -> None:
+    if trailing_slash and name not in {"", ".", "./"} and not name.endswith("/"):
+        name += "/"
     info = tarfile.TarInfo(name)
     info.type = tarfile.DIRTYPE
     info.mode = mode
@@ -103,13 +111,52 @@ def write_archive(
     deep_path: bool = False,
     extra_directory: bool = False,
     omit_directory: str | None = None,
+    optional_empty_directories: bool = False,
+    parent_payload: bool = False,
+    directory_trailing_slash: bool = False,
+    noncanonical_directory: bool = False,
 ) -> None:
     file_modes = file_modes or {}
     with tarfile.open(path, compression, format=tarfile.GNU_FORMAT) as archive:
-        add_directory(archive, "./", directory_mode)
+        add_directory(archive, "./", directory_mode, trailing_slash=directory_trailing_slash)
         for directory in ("include", "include/config", "include/generated"):
             if directory != omit_directory:
-                add_directory(archive, f"./{prefix}{directory}", directory_mode)
+                add_directory(
+                    archive,
+                    f"./{prefix}{directory}",
+                    directory_mode,
+                    trailing_slash=directory_trailing_slash,
+                )
+        if optional_empty_directories:
+            for directory in (
+                "./arch",
+                "./arch/arm64",
+                "./arch/arm64/tools",
+                "./scripts",
+                "./scripts/kconfig",
+                "./scripts/kconfig/lxdialog",
+            ):
+                add_directory(
+                    archive,
+                    directory,
+                    directory_mode,
+                    trailing_slash=directory_trailing_slash,
+                )
+        if parent_payload:
+            add_directory(
+                archive,
+                "./arch/arm",
+                directory_mode,
+                trailing_slash=directory_trailing_slash,
+            )
+            add_directory(
+                archive,
+                "./arch/arm/xen",
+                directory_mode,
+                trailing_slash=directory_trailing_slash,
+            )
+        if noncanonical_directory:
+            add_directory(archive, "./include//", directory_mode)
         for name, data in required.items():
             archive_name = f"./{prefix}{name[2:]}"
             if noncanonical_member and name == "./.config":
@@ -144,6 +191,29 @@ def write_parent_symlink_archive(path: pathlib.Path) -> None:
         add_directory(archive, "./")
         add_directory(archive, "./other")
         add_symlink(archive, "./include", "other")
+        for name, data in REQUIRED.items():
+            add_regular(archive, name, data)
+        add_symlink(archive, "./include/generated/autoconf-link", "autoconf.h")
+
+
+def write_oversized_extension_archive(path: pathlib.Path) -> None:
+    with tarfile.open(path, "w:gz", format=tarfile.GNU_FORMAT) as archive:
+        info = tarfile.TarInfo("./@LongLink")
+        info.type = tarfile.GNUTYPE_LONGNAME
+        info.size = 1 * 1024 * 1024 + 1
+        archive.addfile(info, io.BytesIO(b"x" * info.size))
+
+
+def write_optional_directory_archive(path: pathlib.Path, *, regular: bool) -> None:
+    with tarfile.open(path, "w:gz", format=tarfile.GNU_FORMAT) as archive:
+        add_directory(archive, "./")
+        if regular:
+            add_regular(archive, "./arch/arm64/tools", b"unexpected\n")
+        else:
+            add_directory(archive, "./arch/arm64/tools")
+            add_regular(archive, "./arch/arm64/tools/unexpected", b"unexpected\n")
+        for directory in ("include", "include/config", "include/generated"):
+            add_directory(archive, f"./{directory}")
         for name, data in REQUIRED.items():
             add_regular(archive, name, data)
         add_symlink(archive, "./include/generated/autoconf-link", "autoconf.h")
@@ -206,6 +276,74 @@ def main() -> None:
         write_archive(good_archive)
         write_manifest(good_manifest, manifest_records())
         validate_fixture(root / "good", good_archive, good_manifest)
+
+        optional_archive = root / "optional-empty.tar.gz"
+        optional_manifest = root / "optional-empty.tsv"
+        write_archive(optional_archive, optional_empty_directories=True)
+        write_manifest(optional_manifest, manifest_records())
+        validate_fixture(root / "optional-empty", optional_archive, optional_manifest)
+
+        parent_required = dict(REQUIRED)
+        parent_required["./arch/arm/xen/fixture"] = b"arch parent payload\n"
+        parent_required["./scripts/kconfig/fixture"] = b"kconfig parent payload\n"
+        parent_archive = root / "optional-parent-payload.tar.gz"
+        parent_manifest = root / "optional-parent-payload.tsv"
+        write_archive(
+            parent_archive,
+            required=parent_required,
+            optional_empty_directories=True,
+            parent_payload=True,
+            directory_trailing_slash=True,
+        )
+        write_manifest(parent_manifest, manifest_records(required=parent_required))
+        validate_fixture(root / "optional-parent-payload", parent_archive, parent_manifest)
+
+        noncanonical_directory_archive = root / "noncanonical-directory.tar.gz"
+        write_archive(noncanonical_directory_archive, noncanonical_directory=True)
+        require_rejected(
+            run(noncanonical_directory_archive, good_manifest, "--archive-only"),
+            "noncanonical directory member",
+        )
+
+        trailing_archive = root / "trailing.tar.gz"
+        trailing_archive.write_bytes(good_archive.read_bytes() + b"TRAILING")
+        require_rejected(
+            run(trailing_archive, good_manifest, "--archive-only"),
+            "trailing compressed archive bytes",
+        )
+
+        oversized_extension_archive = root / "oversized-extension.tar.gz"
+        write_oversized_extension_archive(oversized_extension_archive)
+        require_rejected(
+            run(oversized_extension_archive, good_manifest, "--archive-only"),
+            "oversized GNU extension payload",
+        )
+
+        optional_file_archive = root / "optional-file.tar.gz"
+        optional_file_manifest = root / "optional-file.tsv"
+        write_optional_directory_archive(optional_file_archive, regular=True)
+        optional_file_records = manifest_records()
+        optional_file_records.append(
+            ("file", hashlib.sha256(b"unexpected\n").hexdigest(), 0o644, "./arch/arm64/tools")
+        )
+        write_manifest(optional_file_manifest, sorted(optional_file_records, key=lambda record: record[3]))
+        require_rejected(
+            run(optional_file_archive, optional_file_manifest, "--archive-only"),
+            "optional empty directory replaced by a regular file",
+        )
+
+        optional_nonempty_archive = root / "optional-nonempty.tar.gz"
+        optional_nonempty_manifest = root / "optional-nonempty.tsv"
+        write_optional_directory_archive(optional_nonempty_archive, regular=False)
+        optional_nonempty_records = manifest_records()
+        optional_nonempty_records.append(
+            ("file", hashlib.sha256(b"unexpected\n").hexdigest(), 0o644, "./arch/arm64/tools/unexpected")
+        )
+        write_manifest(optional_nonempty_manifest, sorted(optional_nonempty_records, key=lambda record: record[3]))
+        require_rejected(
+            run(optional_nonempty_archive, optional_nonempty_manifest, "--archive-only"),
+            "optional empty directory contains a descendant",
+        )
 
         require_rejected(
             run(good_archive, good_manifest, "--archive-only", "--kernel-release", "7.1.1-wrong"),

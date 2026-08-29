@@ -25,8 +25,8 @@ APT_MODULE_PATH = SCRIPT_DIR / "verify-haptics-apt-transaction.py"
 DPKG_MODULE_PATH = SCRIPT_DIR / "verify-haptics-dpkg-state.py"
 PACKAGE_MODULE_PATH = SCRIPT_DIR / "verify-haptics-build-packages.py"
 HOOK_COMMAND = (
-    "/usr/bin/python3 -I -B /tmp/private/verify-haptics-apt-transaction.py "
-    "--verify-hook /tmp/private/expected.tsv /tmp/private/hook.ok"
+    "/usr/bin/python3 -I -B /tmp/transaction/verify-haptics-apt-transaction.py "
+    "--verify-hook /tmp/transaction/expected.tsv /tmp/transaction/hook.ok"
 )
 
 
@@ -1501,12 +1501,96 @@ def prove_partial_marker_signal_handoff(
             raise SystemExit("APT hook signal oracle could not restore caller mask")
 
 
+def hook_command_for_arguments(arguments: list[str]) -> str:
+    if arguments and arguments[0] == "--verify-hook" and len(arguments) == 3:
+        return (
+            f"/usr/bin/python3 -I -B {APT_MODULE_PATH} --verify-hook "
+            f"{arguments[1]} {arguments[2]}"
+        )
+    if (
+        arguments
+        and arguments[0] == "--verify-hook-disposable"
+        and len(arguments) == 6
+    ):
+        return (
+            f"/usr/bin/python3 -I -B {APT_MODULE_PATH} "
+            f"--verify-hook-disposable {' '.join(arguments[1:])}"
+        )
+    return ""
+
+
+def rewrite_manifest_hook(module, manifest_path: pathlib.Path, hook_command: str):
+    """Temporarily align a fixture manifest with the argv under test."""
+    if not hook_command or not manifest_path.is_file() or manifest_path.is_symlink():
+        return None
+    original_raw = manifest_path.read_bytes()
+    original_mode = stat.S_IMODE(manifest_path.stat().st_mode)
+    try:
+        transaction = module.parse_expected_transaction_bytes(original_raw)
+    except BaseException:
+        return None
+    configuration = tuple(
+        (
+            key,
+            hook_command if key == "DPkg::Pre-Install-Pkgs::" else value,
+        )
+        for key, value in transaction.configuration
+    )
+    if configuration == transaction.configuration:
+        return None
+    rewritten = module.ExpectedTransaction(
+        transaction.package_state_sha256,
+        transaction.dpkg_state_sha256,
+        transaction.host_reference_sha256,
+        configuration,
+        transaction.actions,
+        transaction.archives,
+    )
+    write_file(manifest_path, module.serialize_expected_transaction(rewritten), original_mode)
+    return original_raw, original_mode
+
+
 def run_hook_main(module, eipp_path: pathlib.Path, arguments: list[str]):
     original_argv = sys.argv
     original_info_fd = os.environ.get("APT_HOOK_INFO_FD")
     output = io.StringIO()
     caught = None
-    with eipp_path.open("rb") as stream:
+    raw_eipp = eipp_path.read_bytes()
+    hook_command = hook_command_for_arguments(arguments)
+    manifest_path = None
+    if arguments and arguments[0] == "--verify-hook" and len(arguments) == 3:
+        manifest_path = pathlib.Path(arguments[1])
+    elif (
+        arguments
+        and arguments[0] == "--verify-hook-disposable"
+        and len(arguments) == 6
+    ):
+        manifest_path = pathlib.Path(arguments[4])
+    if hook_command:
+        encoded = hook_command.replace(" ", "%20").encode("ascii")
+        prefix = b"DPkg::Pre-Install-Pkgs::="
+        lines = raw_eipp.splitlines(keepends=True)
+        replaced = False
+        for index, line in enumerate(lines):
+            if line.startswith(prefix):
+                newline = b"\n" if line.endswith(b"\n") else b""
+                lines[index] = prefix + encoded + newline
+                replaced = True
+                break
+        if not replaced:
+            raise SystemExit(
+                "APT hook fixture EIPP stream has no hook record to rewrite"
+            )
+        raw_eipp = b"".join(lines)
+    manifest_backup = (
+        rewrite_manifest_hook(module, manifest_path, hook_command)
+        if manifest_path is not None
+        else None
+    )
+    stream = tempfile.TemporaryFile()
+    stream.write(raw_eipp)
+    stream.seek(0)
+    try:
         eipp_descriptor = stream.fileno()
         try:
             saved_descriptor = os.dup(21)
@@ -1531,6 +1615,10 @@ def run_hook_main(module, eipp_path: pathlib.Path, arguments: list[str]):
                 os.close(saved_descriptor)
             else:
                 os.close(21)
+    finally:
+        stream.close()
+        if manifest_backup is not None and manifest_path is not None:
+            write_file(manifest_path, manifest_backup[0], manifest_backup[1])
     return caught, output.getvalue()
 
 
@@ -2067,6 +2155,34 @@ def main() -> None:
             "VERSION 3\n"
             "APT::Architecture=amd64\n"
             "APT::Architectures::=amd64\n"
+            "Acquire::Languages=none\n"
+            "Acquire::AllowDowngradeToInsecureRepositories=0\n"
+            "Acquire::AllowInsecureRepositories=0\n"
+            "Acquire::AllowWeakRepositories=0\n"
+            "Acquire::Check-Valid-Until=0\n"
+            "Acquire::https::Verify-Host=1\n"
+            "Acquire::https::Verify-Peer=1\n"
+            "APT::Get::AllowUnauthenticated=0\n"
+            "APT::Get::List-Cleanup=0\n"
+            "APT::Sandbox::User=_apt\n"
+            "Dir::State::lists=/tmp/lists\n"
+            "Dir::State::extended_states=/tmp/state/extended_states\n"
+            "Dir::State::status=/var/lib/dpkg/status\n"
+            "Dir::Cache=/tmp/cache\n"
+            "Dir::Cache::archives=/tmp/cache/archives\n"
+            "Dir::Cache::srcpkgcache=/tmp/cache/srcpkgcache.bin\n"
+            "Dir::Cache::pkgcache=/tmp/cache/pkgcache.bin\n"
+            "Dir::Etc::sourcelist=/tmp/ubuntu-snapshot.sources\n"
+            "Dir::Etc::sourceparts=/tmp/source-parts\n"
+            "Dir::Etc::main=/tmp/empty.conf\n"
+            "Dir::Etc::parts=/tmp/config-parts\n"
+            "Dir::Etc::netrc=/tmp/empty.conf\n"
+            "Dir::Etc::netrcparts=/tmp/auth-parts\n"
+            "Dir::Etc::preferences=/tmp/empty.conf\n"
+            "Dir::Etc::preferencesparts=/tmp/preferences-parts\n"
+            "Dir::Etc::trusted=/dev/null\n"
+            "Dir::Etc::trustedparts=/tmp/trusted-parts\n"
+            "Dir::Log=/tmp/log\n"
             "Dir::Bin::dpkg=/usr/bin/dpkg\n"
             "DPkg::ConfigurePending=1\n"
             "DPkg::Path=/usr/sbin:/usr/bin:/sbin:/bin\n"
@@ -2337,6 +2453,34 @@ def main() -> None:
             "VERSION 3\n"
             "APT::Architecture=amd64\n"
             "APT::Architectures::=amd64\n"
+            "Acquire::Languages=none\n"
+            "Acquire::AllowDowngradeToInsecureRepositories=0\n"
+            "Acquire::AllowInsecureRepositories=0\n"
+            "Acquire::AllowWeakRepositories=0\n"
+            "Acquire::Check-Valid-Until=0\n"
+            "Acquire::https::Verify-Host=1\n"
+            "Acquire::https::Verify-Peer=1\n"
+            "APT::Get::AllowUnauthenticated=0\n"
+            "APT::Get::List-Cleanup=0\n"
+            "APT::Sandbox::User=_apt\n"
+            f"Dir::State::lists={private / 'lists'}\n"
+            f"Dir::State::extended_states={private / 'state/extended_states'}\n"
+            f"Dir::State::status={admin / 'status'}\n"
+            f"Dir::Cache={private / 'cache'}\n"
+            f"Dir::Cache::archives={private / 'cache/archives'}\n"
+            f"Dir::Cache::srcpkgcache={private / 'cache/srcpkgcache.bin'}\n"
+            f"Dir::Cache::pkgcache={private / 'cache/pkgcache.bin'}\n"
+            f"Dir::Etc::sourcelist={private / 'ubuntu-snapshot.sources'}\n"
+            f"Dir::Etc::sourceparts={private / 'source-parts'}\n"
+            f"Dir::Etc::main={private / 'empty.conf'}\n"
+            f"Dir::Etc::parts={private / 'config-parts'}\n"
+            f"Dir::Etc::netrc={private / 'empty.conf'}\n"
+            f"Dir::Etc::netrcparts={private / 'auth-parts'}\n"
+            f"Dir::Etc::preferences={private / 'empty.conf'}\n"
+            f"Dir::Etc::preferencesparts={private / 'preferences-parts'}\n"
+            "Dir::Etc::trusted=/dev/null\n"
+            f"Dir::Etc::trustedparts={private / 'trusted-parts'}\n"
+            f"Dir::Log={private / 'log'}\n"
             "Dir::Bin::dpkg=/usr/bin/dpkg\n"
             "DPkg::ConfigurePending=1\n"
             "DPkg::Path=/usr/sbin:/usr/bin:/sbin:/bin\n"
@@ -3690,8 +3834,11 @@ def main() -> None:
         finally:
             root.chmod(0o755)
 
-        native_manifest_path = private / "native-expected.tsv"
-        native_marker_path = private / "native-hook.ok"
+        native_transaction_dir = private / "transaction"
+        native_transaction_dir.mkdir()
+        native_transaction_dir.chmod(0o700)
+        native_manifest_path = native_transaction_dir / "expected.tsv"
+        native_marker_path = native_transaction_dir / "hook.ok"
         native_eipp_path = private / "native-eipp.raw"
         native_hook_command = (
             f"/usr/bin/python3 -I -B {APT_MODULE_PATH} --verify-hook "
@@ -3702,6 +3849,34 @@ def main() -> None:
             "VERSION 3\n"
             "APT::Architecture=amd64\n"
             "APT::Architectures::=amd64\n"
+            "Acquire::Languages=none\n"
+            "Acquire::AllowDowngradeToInsecureRepositories=0\n"
+            "Acquire::AllowInsecureRepositories=0\n"
+            "Acquire::AllowWeakRepositories=0\n"
+            "Acquire::Check-Valid-Until=0\n"
+            "Acquire::https::Verify-Host=1\n"
+            "Acquire::https::Verify-Peer=1\n"
+            "APT::Get::AllowUnauthenticated=0\n"
+            "APT::Get::List-Cleanup=0\n"
+            "APT::Sandbox::User=_apt\n"
+            f"Dir::State::lists={private / 'lists'}\n"
+            f"Dir::State::extended_states={private / 'state/extended_states'}\n"
+            "Dir::State::status=/var/lib/dpkg/status\n"
+            f"Dir::Cache={private / 'cache'}\n"
+            f"Dir::Cache::archives={private / 'cache/archives'}\n"
+            f"Dir::Cache::srcpkgcache={private / 'cache/srcpkgcache.bin'}\n"
+            f"Dir::Cache::pkgcache={private / 'cache/pkgcache.bin'}\n"
+            f"Dir::Etc::sourcelist={private / 'ubuntu-snapshot.sources'}\n"
+            f"Dir::Etc::sourceparts={private / 'source-parts'}\n"
+            f"Dir::Etc::main={private / 'empty.conf'}\n"
+            f"Dir::Etc::parts={private / 'config-parts'}\n"
+            f"Dir::Etc::netrc={private / 'empty.conf'}\n"
+            f"Dir::Etc::netrcparts={private / 'auth-parts'}\n"
+            f"Dir::Etc::preferences={private / 'empty.conf'}\n"
+            f"Dir::Etc::preferencesparts={private / 'preferences-parts'}\n"
+            "Dir::Etc::trusted=/dev/null\n"
+            f"Dir::Etc::trustedparts={private / 'trusted-parts'}\n"
+            f"Dir::Log={private / 'log'}\n"
             "Dir::Bin::dpkg=/usr/bin/dpkg\n"
             "DPkg::ConfigurePending=1\n"
             "DPkg::Path=/usr/sbin:/usr/bin:/sbin:/bin\n"
@@ -3742,6 +3917,11 @@ def main() -> None:
                 str(native_marker_path),
             ],
         )
+        if native_result.returncode or native_result.stdout != b"HAPTICS_APT_HOOK=PASS\n" or native_result.stderr:
+            raise SystemExit(
+                "production native APT hook invocation failed before marker inspection: "
+                + native_result.stderr[:8192].decode("utf-8", errors="replace")
+            )
         native_marker_metadata = native_marker_path.stat()
         if (
             native_result.returncode

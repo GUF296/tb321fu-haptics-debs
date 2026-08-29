@@ -539,12 +539,48 @@ def verify_bounded_command_process_group_ownership(*verifiers) -> None:
                 Popen = FakePopen
 
             class FakeSelect:
+                POLLIN = original_select.POLLIN
+                POLLPRI = original_select.POLLPRI
+                POLLHUP = original_select.POLLHUP
+                POLLERR = original_select.POLLERR
+                POLLNVAL = original_select.POLLNVAL
+
                 @staticmethod
                 def select(readable, writable, exceptional, timeout):
                     del writable, exceptional, timeout
                     if scenario == "timeout":
                         return [], [], []
                     return list(readable), [], []
+
+                @staticmethod
+                def poll():
+                    class FakePoll:
+                        def __init__(self):
+                            self.descriptors = []
+
+                        def register(self, descriptor, event_mask):
+                            if event_mask != FakeSelect.POLLIN:
+                                raise SystemExit(
+                                    "bounded command registered an unexpected poll event"
+                                )
+                            self.descriptors.append(descriptor)
+
+                        def unregister(self, descriptor):
+                            try:
+                                self.descriptors.remove(descriptor)
+                            except ValueError as exc:
+                                raise OSError("poll descriptor was not registered") from exc
+
+                        def poll(self, timeout):
+                            del timeout
+                            if scenario == "timeout":
+                                return []
+                            return [
+                                (descriptor, FakeSelect.POLLIN)
+                                for descriptor in tuple(self.descriptors)
+                            ]
+
+                    return FakePoll()
 
             class OwnershipOS:
                 def __getattr__(self, name):
@@ -605,10 +641,21 @@ def verify_bounded_command_process_group_ownership(*verifiers) -> None:
                             raise SystemExit(
                                 "bounded command replaced the timeout ownership sentinel"
                             ) from exc
-                    elif exc is not read_sentinel:
-                        raise SystemExit(
-                            "bounded command replaced the read ownership sentinel"
-                        ) from exc
+                    else:
+                        preserved = exc is read_sentinel
+                        if not preserved:
+                            transaction_error = getattr(
+                                verifier, "AptTransactionError", ()
+                            )
+                            preserved = (
+                                bool(transaction_error)
+                                and isinstance(exc, transaction_error)
+                                and exc.__cause__ is read_sentinel
+                            )
+                        if not preserved:
+                            raise SystemExit(
+                                "bounded command replaced the read ownership sentinel"
+                            ) from exc
                 else:
                     if scenario != "normal" or result != (0, b"", b""):
                         raise SystemExit(

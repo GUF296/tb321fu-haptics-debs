@@ -86,6 +86,13 @@ standalone=$(/bin/bash -p "$VERIFY" "$archive" - "$VERSION" "$root/standalone-ex
 cmp -s -- "$standalone" "$producer/$DEB" ||
   fail "standalone verified embedded DEB bytes differ"
 
+trailing_archive="$root/trailing.tar.gz"
+cp -- "$archive" "$trailing_archive"
+printf 'TRAILING' >> "$trailing_archive"
+chmod 0644 "$trailing_archive"
+require_failure 'trailing compressed bytes' \
+  /bin/bash -p "$VERIFY" "$trailing_archive" "$producer" "$VERSION" "$root/trailing-extract"
+
 mismatch="$root/mismatch"
 cp -a -- "$producer" "$mismatch"
 printf 'different embedded DEB\n' > "$mismatch/$DEB"

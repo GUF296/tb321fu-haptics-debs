@@ -449,7 +449,7 @@ manifest_names=$(awk '
   length($1) != 64 || $1 !~ /^[0-9a-fA-F]+$/ { exit 2 }
   {
     name = substr($0, 67)
-    sub(/^\\*/, "", name)
+    sub(/^\*/, "", name)
     if (name == "" || name == "SHA256SUMS.txt") exit 3
     print name
   }
@@ -469,7 +469,7 @@ manifest_names=$(awk '
 for asset in "${assets[@]}"; do
   asset_name=${asset##*/}
   [ "$asset_name" = SHA256SUMS.txt ] && continue
-  printf '%s\n' "$manifest_names" | grep -Fxq -- "$asset_name" || {
+  grep -Fxq -- "$asset_name" <<< "$manifest_names" || {
     printf 'asset is missing from SHA256SUMS.txt: %s\n' "$asset_name" >&2
     exit 1
   }
@@ -477,6 +477,20 @@ done
 (cd "$release_dir" && sha256sum --strict -c SHA256SUMS.txt)
 
 local_asset_records=$(
+total_asset_bytes=0
+for asset in "${assets[@]}"; do
+  local_size=$(stat -c '%s' -- "$asset")
+  [[ $local_size =~ ^[0-9]+$ ]] || {
+    printf 'invalid release asset size: %s\n' "${asset##*/}" >&2
+    exit 1
+  }
+  total_asset_bytes=$((total_asset_bytes + local_size))
+  [ "$total_asset_bytes" -le $((128 * 1024 * 1024)) ] || {
+    printf 'haptics release asset payload exceeds the 128 MiB aggregate limit\n' >&2
+    exit 1
+  }
+done
+
   for asset in "${assets[@]}"; do
     asset_name=${asset##*/}
     local_size=$(stat -c '%s' "$asset")
@@ -495,17 +509,28 @@ fetch_release_snapshot() {
   local release_id=$1
 
   github_api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq \
-    '(["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets | sort_by(.name)[] | ["asset", .name, (.size | tostring), (.digest // ""), .state])) | @tsv'
+    '["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv'
+  github_api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
+    --paginate --jq '.[] | ["asset", .name, (.size | tostring), (.digest // ""), .state] | @tsv'
 }
 
 fetch_release_snapshots_by_tag() {
-  local query
+  local query release_list
 
   printf -v query \
-    '.[] | select(.tag_name == "%s") | (["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets | sort_by(.name)[] | ["asset", .name, (.size | tostring), (.digest // ""), .state])) | @tsv' \
+    '.[] | select(.tag_name == "%s") | .id' \
     "$release_tag"
-  github_api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-    --paginate --jq "$query"
+  release_list=$(github_api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+    --paginate --jq "$query") || return 1
+  matching_release_ids=()
+  if [ -n "$release_list" ]; then
+    mapfile -t matching_release_ids <<< "$release_list"
+  fi
+  local release_id
+  for release_id in "${matching_release_ids[@]}"; do
+    [[ $release_id =~ ^[1-9][0-9]{0,19}$ ]] || return 1
+    fetch_release_snapshot "$release_id"
+  done
 }
 
 verify_release_snapshot() {
@@ -615,7 +640,7 @@ existing_release_tags=$(github_api "repos/$GITHUB_REPOSITORY/releases?per_page=1
   printf 'cannot establish the existing release set\n' >&2
   exit 1
 }
-if printf '%s\n' "$existing_release_tags" | grep -Fxq -- "$release_tag"; then
+if grep -Fxq -- "$release_tag" <<< "$existing_release_tags"; then
   printf 'refusing to modify an existing release or draft: %s\n' "$release_tag" >&2
   exit 1
 fi
@@ -625,7 +650,7 @@ matching_tag_refs=$(github_api \
   printf 'cannot establish the existing tag set\n' >&2
   exit 1
 }
-if printf '%s\n' "$matching_tag_refs" | grep -Fxq -- "refs/tags/$release_tag"; then
+if grep -Fxq -- "refs/tags/$release_tag" <<< "$matching_tag_refs"; then
   printf 'refusing to publish through an existing tag: %s\n' "$release_tag" >&2
   exit 1
 fi
@@ -663,8 +688,10 @@ if [ "$create_status" -eq 0 ] &&
   fi
 fi
 if [ "$create_status" -ne 0 ] || ! $create_response_valid; then
-  printf 'draft-create POST returned status %s or an unusable response; reconciling exact tag %s without retry\n' \
+  printf 'draft-create POST returned status %s for tag %s or an unusable response; refusing to take over an unowned remote object\n' \
     "$create_status" "$release_tag" >&2
+  [ ! -s "$remote_write_stderr" ] || /usr/bin/cat "$remote_write_stderr" >&2
+  fail_remote_write 'draft-create ownership proof failed; no takeover'
 fi
 
 create_reconciled=false
@@ -677,8 +704,7 @@ for attempt in $(seq 1 4); do
       '$1 == "release" { print $2; found++ } END { if (found != 1) exit 1 }') ||
       candidate_release_id=
     if [[ $candidate_release_id =~ ^[1-9][0-9]{0,19}$ ]] &&
-       { [ -z "$response_release_id" ] ||
-         [ "$candidate_release_id" = "$response_release_id" ]; } &&
+       [ "$candidate_release_id" = "$response_release_id" ] &&
        verify_release_snapshot "$tag_snapshot" "$candidate_release_id" true false \
          "$release_target_commitish" "$publish_prerelease" "$release_title" \
          "$notes_body_b64" &&
@@ -710,10 +736,6 @@ if ! $create_reconciled; then
   [ ! -s "$remote_write_stderr" ] || /usr/bin/cat "$remote_write_stderr" >&2
   [ -z "$tag_snapshot" ] || printf '%s\n' "$tag_snapshot" >&2
   fail_remote_write 'indeterminate or non-matching; failed closed'
-fi
-if [ "$create_status" -ne 0 ]; then
-  printf 'draft-create POST transport failure reconciled to exact release ID %s\n' \
-    "$release_id" >&2
 fi
 finish_remote_write "unique complete empty draft ID $release_id"
 

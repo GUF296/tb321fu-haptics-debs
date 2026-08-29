@@ -244,6 +244,9 @@ PACKAGE_MUTATION = re.compile(
     r"(?:\s-i\b|\s--install\b|\s--remove\b|\s--purge\b)|"
     r"(?<![A-Za-z0-9_.-])(?:/usr/bin/)?(?:snap|apt-mark|update-alternatives)\b)"
 )
+ALLOWED_VALIDATION_PRIVILEGE = (
+    "/usr/bin/sudo /bin/bash -p scripts/ci/test-haptics-live-build-tools.sh"
+)
 EXPECTED_EXPRESSIONS = Counter({
     "github.repository": 1,
     "inputs.release_tag!=''&&inputs.release_tag||inputs.dispatch_id": 1,
@@ -333,7 +336,7 @@ CANONICAL_PROFILE_DEFAULTS = {
 }
 REVIEWED_RUN_SHA256 = {
     "Validate workflow and lifecycle boundaries": (
-        "cb67a5e54b751041fa0fda91d0ff9a66466d6f877f3a9a56ea41adbbc1cea5d8"
+        "54dbe5df5342c60ae73ea3176fbf6a966c5f1e56efaa01a49ef220af8ed03a0b"
     ),
     "Validate build inputs": (
         "53620abb19b0354f1740f33345439bfa5f14d70aedd8f8587680bdfdff5b9fdc"
@@ -419,6 +422,7 @@ VALIDATION_RUN_FIXTURE = "\n".join((
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-workflow-dispatch-gate.py",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-workflow-dispatch-bootstrap.py",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-publication-snapshot.py",
+    "/usr/bin/python3 -I -B scripts/ci/test-bounded-file-readers.py",
     "/bin/bash -p scripts/ci/test-haptics-release-archive.sh",
     "/usr/bin/python3 -I -B scripts/ci/test-kernel-sdk-verifier.py",
     "/usr/bin/python3 -I -B scripts/ci/test-safe-extract-archive.py",
@@ -429,7 +433,7 @@ VALIDATION_RUN_FIXTURE = "\n".join((
     "/bin/bash -p -n scripts/ci/verify-haptics-compat-package.sh",
     "/bin/bash -p scripts/ci/test-haptics-compat-package.sh",
     "/bin/bash -p -n scripts/ci/verify-haptics-live-build-tools.sh",
-    "/bin/bash -p scripts/ci/test-haptics-live-build-tools.sh",
+    "/usr/bin/sudo /bin/bash -p scripts/ci/test-haptics-live-build-tools.sh",
     "/bin/bash -p -n scripts/ci/stage-haptics-release-assets.sh",
     "/bin/bash -p scripts/ci/test-haptics-lifecycle.sh",
     "/bin/bash -p scripts/ci/test-haptics-provenance.sh",
@@ -964,7 +968,10 @@ def validate(data: dict) -> None:
     for step in build_steps:
         if step is dependencies or not isinstance(step.get("run"), str):
             continue
-        if PACKAGE_MUTATION.search(step["run"]):
+        run_text = step["run"]
+        if step is validation:
+            run_text = run_text.replace(ALLOWED_VALIDATION_PRIVILEGE, "")
+        if PACKAGE_MUTATION.search(run_text):
             fail(f"unreviewed package or privilege mutation in step: {step['name']}")
     generic_upload = named_step(build_steps, "Upload diagnostic build output")
     require_pinned_action(generic_upload, UPLOAD, "general workflow artifact upload")

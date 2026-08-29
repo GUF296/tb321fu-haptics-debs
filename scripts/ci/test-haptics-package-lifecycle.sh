@@ -112,6 +112,9 @@ case "$command" in
       exit 52
     fi
     ;;
+  start)
+    [ "${1:-}" = tb321fu-haptics.service ] || exit 54
+    ;;
   disable)
     [ "${1:-}" = y700-aw86937-haptics.service ] || exit 48
     rm -f -- "$root/etc/systemd/system/multi-user.target.wants/y700-aw86937-haptics.service"
@@ -281,6 +284,18 @@ grep -Fxq "KERNEL_RELEASE=$kernel_release" "$hostile_output/DEBIAN/postinst" ||
 grep -Fq 'tb321fu-haptics postinst:' "$hostile_output/DEBIAN/postinst" ||
   fail 'generated postinst did not come from the producer-owned template'
 
+render_sentinel="$tmp/render-sentinel"
+render_link="$tmp/render-link"
+printf 'preserve this target\n' > "$render_sentinel"
+ln -s "$(basename "$render_sentinel")" "$render_link"
+if haptics_render_maintainer_template \
+    "$SCRIPT_DIR/haptics-control-templates/postinst.in" \
+    "$render_link" "$kernel_release" >/dev/null 2>&1; then
+  fail 'maintainer renderer accepted a symlink destination'
+fi
+[ "$(cat "$render_sentinel")" = 'preserve this target' ] ||
+  fail 'maintainer renderer followed a symlink destination'
+
 prepare_fixture install
 clear_log
 run_postinst configure
@@ -430,6 +445,18 @@ run_prerm upgrade 2
 clear_log
 run_postrm upgrade 2
 [ ! -s "$log" ] || fail 'upgrade postrm performed removal actions'
+
+prepare_fixture failed-upgrade-recovery
+clear_log
+run_prerm failed-upgrade 2
+[ ! -s "$log" ] || fail 'offline failed-upgrade prerm contacted a systemd manager'
+clear_log
+run_postinst abort-upgrade 2
+assert_log_contains "depmod <-b> <$root> <-a> <$kernel_release>"
+assert_log_contains "systemctl <--root=$root> <enable> <$service>"
+clear_log
+run_postrm failed-upgrade 2
+assert_log_contains "depmod <-b> <$root> <-a> <$kernel_release>"
 
 prepare_fixture upgrade
 clear_log

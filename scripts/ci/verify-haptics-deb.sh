@@ -7,9 +7,11 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 . "$SCRIPT_DIR/common.sh"
 . "$SCRIPT_DIR/haptics-maintainer-scripts.sh"
 
-[ "$#" -eq 7 ] || ci_die \
-  "usage: verify-haptics-deb.sh PACKAGE_TREE DEB KERNEL_RELEASE RAM_SHA256 CLICK_SHA256 MODULE_SHA256 HELPER_SHA256"
+[ "$#" -ge 7 ] && [ "$#" -le 10 ] || ci_die \
+  "usage: verify-haptics-deb.sh PACKAGE_TREE DEB KERNEL_RELEASE RAM_SHA256 CLICK_SHA256 MODULE_SHA256 HELPER_SHA256 [EXPECTED_PACKAGE] [EXPECTED_VERSION] [EXPECTED_ARCH]"
 
+[ -e "$1" ] && [ ! -L "$1" ] || ci_die "package tree is not a regular directory path"
+[ -e "$2" ] && [ ! -L "$2" ] || ci_die "DEB input must not be a symlink"
 pkg=$(realpath -e -- "$1")
 package_deb=$(realpath -e -- "$2")
 kernel_release=$3
@@ -17,9 +19,20 @@ haptics_ram_firmware_sha256=$4
 haptics_click_firmware_sha256=$5
 haptics_module_sha256=$6
 haptics_test_helper_binary_sha256=$7
+expected_package=${8:-tb321fu-haptics}
+expected_version=${9:-}
+expected_arch=${10:-arm64}
 
 [ -d "$pkg" ] || ci_die "package tree is not a directory"
 [ -f "$package_deb" ] && [ ! -L "$package_deb" ] || ci_die "DEB is not a regular file"
+[[ $expected_package =~ ^[a-z0-9][a-z0-9+.-]{0,127}$ ]] ||
+  ci_die "expected package name is invalid"
+[[ $expected_arch =~ ^[A-Za-z0-9][A-Za-z0-9+.-]{0,30}$ ]] ||
+  ci_die "expected package architecture is invalid"
+if [ -n "$expected_version" ]; then
+  [[ $expected_version =~ ^[0-9][0-9A-Za-z.+~_-]{0,63}$ ]] ||
+    ci_die "expected package version is invalid"
+fi
 [[ $kernel_release =~ ^[0-9A-Za-z][0-9A-Za-z._+~-]{0,127}$ ]] ||
   ci_die "unsafe kernel release"
 for digest in \
@@ -43,6 +56,34 @@ data_tar="$verify_work/data.tar"
 data_root="$verify_work/data"
 control_tar="$verify_work/control.tar"
 control_root="$verify_work/control"
+
+control_file="$pkg/DEBIAN/control"
+[ -f "$control_file" ] && [ ! -L "$control_file" ] ||
+  ci_die "package tree lacks a regular DEBIAN/control file"
+tree_package=$(awk -F': ' '$1 == "Package" { print $2 }' "$control_file")
+tree_version=$(awk -F': ' '$1 == "Version" { print $2 }' "$control_file")
+tree_arch=$(awk -F': ' '$1 == "Architecture" { print $2 }' "$control_file")
+[ "$tree_package" = "$expected_package" ] ||
+  ci_die "package-tree Package field differs from the expected identity"
+[ "$tree_arch" = "$expected_arch" ] ||
+  ci_die "package-tree Architecture field differs from the expected identity"
+if [ -z "$expected_version" ]; then
+  expected_version=$tree_version
+fi
+[ -n "$expected_version" ] || ci_die "package-tree Version field is empty"
+[[ $expected_version =~ ^[0-9][0-9A-Za-z.+~_-]{0,63}$ ]] ||
+  ci_die "package-tree Version field is invalid"
+actual_package=$(dpkg-deb -f "$package_deb" Package) || ci_die "cannot read DEB Package field"
+actual_version=$(dpkg-deb -f "$package_deb" Version) || ci_die "cannot read DEB Version field"
+actual_arch=$(dpkg-deb -f "$package_deb" Architecture) || ci_die "cannot read DEB Architecture field"
+[ "$actual_package" = "$expected_package" ] ||
+  ci_die "DEB Package field differs: expected $expected_package, got $actual_package"
+[ -n "$actual_version" ] || ci_die "DEB Version field is empty"
+if [ -n "$expected_version" ] && [ "$actual_version" != "$expected_version" ]; then
+  ci_die "DEB Version field differs: expected $expected_version, got $actual_version"
+fi
+[ "$actual_arch" = "$expected_arch" ] ||
+  ci_die "DEB Architecture field differs: expected $expected_arch, got $actual_arch"
 expected_data=(
   etc/modprobe.d/tb321fu-haptics.conf
   etc/skel/.config/plasmakeyboardrc
@@ -122,6 +163,9 @@ bad_member=$(find "$data_root" ! -type d ! -type f -print -quit)
 bad_directory=$(find "$data_root" -mindepth 1 -type d ! -perm 0755 -print -quit)
 [ -z "$bad_directory" ] ||
   ci_die "final haptics DEB data contains a non-0755 directory: ${bad_directory#"$data_root"/}"
+bad_empty_directory=$(find "$data_root" -mindepth 1 -type d -empty -print -quit)
+[ -z "$bad_empty_directory" ] ||
+  ci_die "final haptics DEB data contains an unexpected empty directory: ${bad_empty_directory#"$data_root"/}"
 mapfile -t actual_data < <(find "$data_root" -type f -printf '%P\n' | sort)
 [ "${#actual_data[@]}" -eq "${#expected_data[@]}" ] ||
   ci_die "final haptics DEB data has an unexpected file count"
@@ -159,6 +203,9 @@ bad_member=$(find "$control_root" ! -type d ! -type f -print -quit)
 bad_directory=$(find "$control_root" -mindepth 1 -type d ! -perm 0755 -print -quit)
 [ -z "$bad_directory" ] ||
   ci_die "final haptics DEB control contains a non-0755 directory: ${bad_directory#"$control_root"/}"
+bad_empty_directory=$(find "$control_root" -mindepth 1 -type d -empty -print -quit)
+[ -z "$bad_empty_directory" ] ||
+  ci_die "final haptics DEB control contains an unexpected empty directory: ${bad_empty_directory#"$control_root"/}"
 mapfile -t actual_control < <(find "$control_root" -type f -printf '%P\n' | sort)
 [ "${#actual_control[@]}" -eq "${#expected_control[@]}" ] ||
   ci_die "final haptics DEB control has an unexpected file count"

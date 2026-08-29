@@ -5,6 +5,7 @@ export LC_ALL=C
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 builder="$SCRIPT_DIR/build-tb321fu-haptics-deb.sh"
+kernel_release=test-kernel-release
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/tb321fu-haptics-bind.XXXXXX")
 
 cleanup() {
@@ -33,7 +34,7 @@ require_failure() {
 bind_script="$tmp/bind-aw86937"
 udev_rules="$tmp/90-tb321fu-haptics.rules"
 modprobe_rules="$tmp/tb321fu-haptics.conf"
-python3 - "$builder" "$bind_script" "$udev_rules" "$modprobe_rules" <<'PY'
+python3 - "$builder" "$bind_script" "$udev_rules" "$modprobe_rules" "$kernel_release" <<'PY'
 from pathlib import Path
 import sys
 
@@ -46,7 +47,10 @@ for marker, destination in (
     start_token = f"<<'{marker}'\n"
     start = source.index(start_token) + len(start_token)
     end = source.index(f"\n{marker}\n", start)
-    Path(destination).write_text(source[start:end] + "\n")
+    rendered = source[start:end] + "\n"
+    if marker == "EOF_BIND":
+        rendered = rendered.replace("@KERNEL_RELEASE@", sys.argv[5])
+    Path(destination).write_text(rendered)
 PY
 chmod 0755 "$bind_script"
 dash -n "$bind_script"
@@ -90,8 +94,11 @@ sysfs="$tmp/sys"
 mockbin="$tmp/mockbin"
 modprobe_log="$tmp/modprobe.log"
 bind_log="$tmp/bind.log"
+module_root="$tmp/modules"
+module_path="$module_root/$kernel_release/extra/aw86937-haptics.ko"
 install -d -m 0755 "$mockbin" "$sysfs/bus/i2c/devices" \
-  "$sysfs/bus/i2c/drivers/aw86937-haptics"
+  "$sysfs/bus/i2c/drivers/aw86937-haptics" "$(dirname "$module_path")"
+printf 'fixture module\n' > "$module_path"
 : > "$modprobe_log"
 : > "$bind_log"
 : > "$sysfs/bus/i2c/drivers/aw86937-haptics/bind"
@@ -103,13 +110,28 @@ printf 'Module Size Used by\n'
 if [ "${MOCK_LEGACY_MODULE:-0}" = 1 ]; then
   printf 'aw86937_y700 1 0\n'
 fi
+if [ "${MOCK_CURRENT_MODULE:-0}" = 1 ]; then
+  printf 'aw86937_haptics 1 0\n'
+fi
 EOF_LSMOD
-cat > "$mockbin/modprobe" <<'EOF_MODPROBE'
+cat > "$mockbin/insmod" <<'EOF_INSMOD'
 #!/bin/sh
 set -eu
-[ "$#" -eq 1 ] && [ "$1" = aw86937_haptics ] || exit 70
+[ "$#" -eq 1 ] && [ "$1" = "$EXPECTED_MODULE_PATH" ] || exit 70
 printf '%s\n' "$1" >> "$MOCK_MODPROBE_LOG"
-EOF_MODPROBE
+EOF_INSMOD
+cat > "$mockbin/uname" <<'EOF_UNAME'
+#!/bin/sh
+set -eu
+[ "$#" -eq 1 ] && [ "$1" = -r ] || exit 71
+printf '%s\n' "${MOCK_RUNNING_RELEASE:-$EXPECTED_KERNEL_RELEASE}"
+EOF_UNAME
+cat > "$mockbin/modinfo" <<'EOF_MODINFO'
+#!/bin/sh
+set -eu
+[ "$#" -eq 2 ] && [ "$1" = -n ] && [ "$2" = aw86937_haptics ] || exit 72
+printf '%s\n' "${MOCK_MODINFO_PATH:-$EXPECTED_MODULE_PATH}"
+EOF_MODINFO
 cat > "$mockbin/sleep" <<'EOF_SLEEP'
 #!/bin/sh
 set -eu
@@ -122,7 +144,7 @@ if [ -s "$bind" ]; then
     ln -s "$driver" "$TB321FU_HAPTICS_SYSFS_ROOT/bus/i2c/devices/$device/driver"
 fi
 EOF_SLEEP
-chmod 0755 "$mockbin/lsmod" "$mockbin/modprobe" "$mockbin/sleep"
+chmod 0755 "$mockbin/lsmod" "$mockbin/insmod" "$mockbin/uname" "$mockbin/modinfo" "$mockbin/sleep"
 
 write_client() {
   local name=$1 compatible_a=$2 compatible_b=$3
@@ -140,9 +162,15 @@ run_bind() {
   env \
     PATH="$mockbin:$PATH" \
     TB321FU_HAPTICS_SYSFS_ROOT="$sysfs" \
+    TB321FU_HAPTICS_MODULE_ROOT="$module_root" \
     MOCK_MODPROBE_LOG="$modprobe_log" \
     MOCK_BIND_LOG="$bind_log" \
     MOCK_LEGACY_MODULE="${MOCK_LEGACY_MODULE:-0}" \
+    MOCK_CURRENT_MODULE="${MOCK_CURRENT_MODULE:-0}" \
+    MOCK_RUNNING_RELEASE="${MOCK_RUNNING_RELEASE:-$kernel_release}" \
+    MOCK_MODINFO_PATH="${MOCK_MODINFO_PATH:-$module_path}" \
+    EXPECTED_KERNEL_RELEASE="$kernel_release" \
+    EXPECTED_MODULE_PATH="$module_path" \
     "$bind_script"
 }
 
@@ -153,8 +181,8 @@ ln -s "$sysfs/bus/i2c/drivers/aw86937-haptics" \
 ln -s "$sysfs/bus/i2c/drivers/aw86937-haptics" \
   "$sysfs/bus/i2c/devices/42-005b/driver"
 run_bind
-grep -Fxq aw86937_haptics "$modprobe_log" ||
-  fail 'valid DT pair did not explicitly load the current module'
+grep -Fxq "$module_path" "$modprobe_log" ||
+  fail 'valid DT pair did not load the exact packaged module path'
 [ "$(wc -l < "$modprobe_log")" -eq 1 ] ||
   fail 'valid DT pair loaded an unexpected number of modules'
 
@@ -182,6 +210,20 @@ write_client 42-005a lenovo,tb321fu-aw86937 awinic,aw86937
 MOCK_LEGACY_MODULE=1 require_failure 'legacy aw86937_y700 module is already loaded' run_bind
 [ ! -s "$modprobe_log" ] ||
   fail 'loaded legacy module fixture invoked a fallback module load'
+
+: > "$modprobe_log"
+MOCK_RUNNING_RELEASE=wrong-kernel require_failure \
+  'differs from packaged release' run_bind
+[ ! -s "$modprobe_log" ] ||
+  fail 'wrong-kernel fixture loaded a module'
+
+shadow_module="$tmp/shadow/aw86937-haptics.ko"
+install -D -m 0644 /dev/null "$shadow_module"
+: > "$modprobe_log"
+MOCK_CURRENT_MODULE=1 MOCK_MODINFO_PATH="$shadow_module" require_failure \
+  'already-loaded AW86937 haptics module is not the packaged module' run_bind
+[ ! -s "$modprobe_log" ] ||
+  fail 'shadow-module fixture loaded another module'
 
 require_failure 'TB321FU_HAPTICS_SYSFS_ROOT must be an absolute path' \
   env PATH="$mockbin:$PATH" TB321FU_HAPTICS_SYSFS_ROOT=relative "$bind_script"

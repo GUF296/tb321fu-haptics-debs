@@ -262,6 +262,247 @@ def verify_descriptor_cleanup(verifier) -> None:
         verifier.os.close = original_close
 
 
+def verify_disposable_hook_path_binding(verifier) -> None:
+    """Ensure disposable hook argv cannot name a different manifest/marker."""
+    script = pathlib.Path(verifier.__file__).resolve()
+    admin = pathlib.Path("/tmp/dpkg")
+    manifest = pathlib.Path("/tmp/caller/expected.tsv")
+    marker = pathlib.Path("/tmp/caller/hook.ok")
+    command = (
+        f"/usr/bin/python3 -I -B {script} --verify-hook-disposable "
+        f"{admin} 0 0 /tmp/other/expected.tsv /tmp/other/hook.ok"
+    )
+    require_rejected(
+        verifier,
+        lambda: verifier.validate_runtime_hook_binding(
+            command,
+            manifest_path=manifest,
+            marker_path=marker,
+            dpkg_admin=admin,
+            expected_uid=0,
+            expected_gid=0,
+            disposable=True,
+        ),
+        "disposable hook manifest/marker substitution",
+        "APT runtime hook command is not bound to its disposable paths",
+        exact=True,
+    )
+    good_command = (
+        f"/usr/bin/python3 -I -B {script} --verify-hook-disposable "
+        f"{admin} 0 0 {manifest} {marker}"
+    )
+    verifier.validate_runtime_hook_binding(
+        good_command,
+        manifest_path=manifest,
+        marker_path=marker,
+        dpkg_admin=admin,
+        expected_uid=0,
+        expected_gid=0,
+        disposable=True,
+    )
+
+
+def verify_disposable_dpkg_option_policy(verifier) -> None:
+    """Bind disposable dpkg options to the private status/admin layout."""
+    root = pathlib.PurePosixPath("/tmp/eipp-disposable")
+    admin = root / "var/lib/dpkg"
+    status = admin / "status"
+    private_paths = (("Dir::State::status", str(status)),)
+    required_runtime = dict(verifier.RUNTIME_REQUIRED_CONFIGURATION)
+    base_configuration = tuple(
+        record
+        for record in EXPECTED_CONFIGURATION
+        if record[0] != "DPkg::Pre-Install-Pkgs::"
+    )
+    capture_command = (
+        "/usr/bin/python3 -I -B /tmp/private/capture-eipp.py "
+        "--capture /tmp/private/eipp.log"
+    )
+    capture_configuration = tuple(
+        sorted(
+            (
+                *base_configuration,
+                ("DPkg::Pre-Install-Pkgs::", capture_command),
+                ("DPkg::Options::", f"--admindir={admin}"),
+                ("DPkg::Options::", f"--root={root}"),
+            )
+        )
+    )
+    verifier.validate_expected_configuration_policy(
+        capture_configuration,
+        required_runtime=required_runtime,
+        private_paths=dict(private_paths),
+    )
+    capture_actual = tuple(
+        sorted(
+            (
+                *capture_configuration,
+                *tuple(required_runtime.items()),
+                *private_paths,
+            )
+        )
+    )
+    verifier.verify_eipp_configuration(
+        capture_actual,
+        capture_configuration,
+        enforce_runtime_projection=True,
+        required_paths=private_paths,
+    )
+
+    script = pathlib.Path(verifier.__file__).resolve()
+    disposable_command = (
+        f"/usr/bin/python3 -I -B {script} --verify-hook-disposable "
+        f"{admin} 0 0 {root}/transaction/expected.tsv "
+        f"{root}/transaction/hook.ok"
+    )
+    disposable_configuration = tuple(
+        sorted(
+            (
+                *base_configuration,
+                ("DPkg::Pre-Install-Pkgs::", disposable_command),
+                ("DPkg::Options::", f"--admindir={admin}"),
+                ("DPkg::Options::", f"--root={root}"),
+            )
+        )
+    )
+    verifier.validate_expected_configuration_policy(
+        disposable_configuration,
+        required_runtime=required_runtime,
+        private_paths=dict(private_paths),
+    )
+
+    def reject_policy(
+        label: str,
+        configuration: tuple[tuple[str, str], ...],
+        paths: tuple[tuple[str, str], ...] = private_paths,
+        expected: str = "expected EIPP dpkg root and admindir options are not bound to private paths",
+    ) -> None:
+        require_rejected(
+            verifier,
+            lambda: verifier.validate_expected_configuration_policy(
+                configuration,
+                required_runtime=required_runtime,
+                private_paths=dict(paths),
+            ),
+            label,
+            expected,
+            exact=True,
+        )
+
+    reject_policy(
+        "capture missing disposable status path",
+        capture_configuration,
+        (),
+        "expected EIPP configuration has no private dpkg status path",
+    )
+    reject_policy(
+        "capture root option mismatch",
+        tuple(
+            sorted(
+                record
+                if record != ("DPkg::Options::", f"--root={root}")
+                else ("DPkg::Options::", "--root=/tmp/eipp-disposable-wrong-root")
+                for record in capture_configuration
+            )
+        ),
+    )
+    reject_policy(
+        "capture admindir option mismatch",
+        tuple(
+            sorted(
+                record
+                if record != ("DPkg::Options::", f"--admindir={admin}")
+                else ("DPkg::Options::", "--admindir=/tmp/eipp-other/var/lib/dpkg")
+                for record in capture_configuration
+            )
+        ),
+    )
+    reject_policy(
+        "capture status outside dpkg layout",
+        capture_configuration,
+        (("Dir::State::status", "/tmp/eipp-disposable/state/status"),),
+    )
+    reject_policy(
+        "capture noncanonical status path",
+        capture_configuration,
+        (("Dir::State::status", "/tmp/eipp-disposable/var/lib/dpkg/../status"),),
+        "expected EIPP configuration has no private dpkg status path",
+    )
+    reject_policy(
+        "capture duplicate disposable option",
+        tuple(
+            sorted(
+                (*capture_configuration, ("DPkg::Options::", f"--root={root}"))
+            )
+        ),
+    )
+    reject_policy(
+        "production hook disposable options",
+        tuple(
+            sorted(
+                (
+                    *base_configuration,
+                    ("DPkg::Pre-Install-Pkgs::", HOOK_COMMAND),
+                    ("DPkg::Options::", f"--admindir={admin}"),
+                    ("DPkg::Options::", f"--root={root}"),
+                )
+            )
+        ),
+        expected="expected EIPP configuration contains disposable dpkg options",
+    )
+    reject_policy(
+        "disposable hook admindir mismatch",
+        tuple(
+            sorted(
+                (
+                    (
+                        record[0],
+                        disposable_command.replace(
+                            str(admin), "/tmp/eipp-other/var/lib/dpkg"
+                        ),
+                    )
+                    if record == ("DPkg::Pre-Install-Pkgs::", disposable_command)
+                    else record
+                )
+                for record in disposable_configuration
+            )
+        ),
+        expected="expected EIPP dpkg admindir option differs from the disposable hook",
+    )
+
+
+def verify_bounded_command_high_fd(verifier) -> None:
+    """Exercise the production command path with descriptors above FD_SETSIZE."""
+    descriptors: list[int] = []
+    try:
+        while max(descriptors, default=-1) < 1100:
+            descriptors.append(os.open("/dev/null", os.O_RDONLY))
+        returncode, stdout, stderr = verifier._bounded_command(
+            ["/bin/sh", "-c", "printf ok"],
+            "high-fd fixture",
+            env={"PATH": "/usr/bin:/bin"},
+            timeout=2.0,
+            max_stdout=64,
+            max_stderr=64,
+        )
+    except BaseException as exc:
+        raise SystemExit(
+            f"bounded command failed with a legal high descriptor: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    finally:
+        for descriptor in descriptors:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    if (returncode, stdout, stderr) != (0, b"ok", b""):
+        raise SystemExit(
+            f"bounded command high-fd result changed: {returncode!r}, "
+            f"{stdout!r}, {stderr!r}"
+        )
+
+
 def run_cli(*arguments: str, environment: dict[str, str] | None = None):
     return subprocess.run(
         [sys.executable, "-I", "-B", str(MODULE_PATH), *arguments],
@@ -297,6 +538,9 @@ def main() -> None:
     verify_eipp_read_deadline(verifier)
     verify_version_comparison_deadline(verifier)
     verify_descriptor_cleanup(verifier)
+    verify_disposable_hook_path_binding(verifier)
+    verify_disposable_dpkg_option_policy(verifier)
+    verify_bounded_command_high_fd(verifier)
     original_bounded_command = verifier._bounded_command
     verifier._bounded_command = lambda *args, **kwargs: (_ for _ in ()).throw(
         subprocess.TimeoutExpired(["injected dpkg comparison"], 1)
@@ -337,6 +581,299 @@ def main() -> None:
     if not hasattr(verifier, "verify_eipp_configuration"):
         raise SystemExit("EIPP v3 configuration verifier is missing")
     verifier.verify_eipp_configuration(document.configuration, EXPECTED_CONFIGURATION)
+    benign_defaults = verifier.parse_eipp_v3_bytes(
+        VALID_EIPP_V3.replace(
+            b"\n\n",
+            b"\nAPT::Color=0\nDir::Bin::methods=/usr/lib/apt/methods\n\n",
+            1,
+        )
+    )
+    verifier.verify_eipp_configuration(
+        benign_defaults.configuration,
+        EXPECTED_CONFIGURATION,
+    )
+    verifier.validate_runtime_command_line(
+        "/usr/bin/apt-get -qq -y install --no-install-recommends "
+        "--allow-downgrades --no-remove -- example=1.0-1 "
+        "/tmp/private/example_1.0-1_amd64.deb"
+    )
+    for label, command in (
+        (
+            "executable prefix alias",
+            "/usr/bin/apt-get-evil -y install --no-install-recommends "
+            "--no-remove -- example=1.0-1",
+        ),
+        (
+            "option assignment bypass",
+            "/usr/bin/apt-get -y install --no-install-recommends "
+            "--no-remove --remove=example -- example=1.0-1",
+        ),
+        (
+            "short config override",
+            "/usr/bin/apt-get -c APT::Get::AllowUnauthenticated=1 -y install "
+            "--no-install-recommends --allow-downgrades --no-remove -- "
+            "example=1.0-1",
+        ),
+        (
+            "config-file override",
+            "/usr/bin/apt-get --config-file=/tmp/evil.conf -y install "
+            "--no-install-recommends --allow-downgrades --no-remove -- "
+            "example=1.0-1",
+        ),
+        (
+            "long option override",
+            "/usr/bin/apt-get --option APT::Get::AllowUnauthenticated=1 -y install "
+            "--no-install-recommends --allow-downgrades --no-remove -- "
+            "example=1.0-1",
+        ),
+        (
+            "unknown install option",
+            "/usr/bin/apt-get -y install --allow-unauthenticated "
+            "--no-install-recommends --no-remove -- example=1.0-1",
+        ),
+        (
+            "missing downgrade policy",
+            "/usr/bin/apt-get -y install --no-install-recommends "
+            "--no-remove -- example=1.0-1",
+        ),
+        (
+            "unpinned package",
+            "/usr/bin/apt-get -y install --no-install-recommends "
+            "--no-remove -- example",
+        ),
+        (
+            "noncanonical local archive",
+            "/usr/bin/apt-get -y install --no-install-recommends "
+            "--no-remove -- /tmp/private/../example.deb",
+        ),
+    ):
+        require_rejected(
+            verifier,
+            lambda command=command: verifier.validate_runtime_command_line(command),
+            label,
+            "effective APT configuration differs from the exact contract",
+        )
+    for label, record in (
+        ("manifest-side force option", ("DPkg::Options::", "--force-all")),
+        (
+            "manifest-side insecure policy",
+            ("APT::Get::AllowUnauthenticated", "1"),
+        ),
+        (
+            "manifest-side source redirection",
+            ("Dir::Etc::sourcelist", "/etc/apt/sources.list"),
+        ),
+        (
+            "manifest-side extra hook tool",
+            ("DPkg::Tools::options::/bin/evil::InfoFD", "21"),
+        ),
+    ):
+        hostile_expected = tuple(sorted((*EXPECTED_CONFIGURATION, record)))
+        require_rejected(
+            verifier,
+            lambda hostile_expected=hostile_expected: verifier.verify_eipp_configuration(
+                hostile_expected,
+                hostile_expected,
+            ),
+            label,
+            "expected EIPP configuration",
+        )
+    require_rejected(
+        verifier,
+        lambda: verifier.verify_eipp_configuration(
+            EXPECTED_CONFIGURATION,
+            EXPECTED_CONFIGURATION,
+            enforce_runtime_projection=True,
+        ),
+        "production hook without transaction layout",
+        "production hook does not identify its private transaction layout",
+        exact=False,
+    )
+    runtime_hook_command = (
+        f"/usr/bin/python3 -I -B {MODULE_PATH} --verify-hook "
+        "/tmp/runtime/transaction/expected.tsv "
+        "/tmp/runtime/transaction/hook.ok"
+    )
+    runtime_expected = verifier.expected_hook_configuration(runtime_hook_command)
+    runtime_paths = verifier.runtime_private_path_projection(runtime_expected)
+    if not runtime_paths:
+        raise SystemExit("runtime APT path projection is empty")
+    verifier.validate_runtime_hook_binding(
+        runtime_hook_command,
+        manifest_path=pathlib.Path("/tmp/runtime/transaction/expected.tsv"),
+        marker_path=pathlib.Path("/tmp/runtime/transaction/hook.ok"),
+        dpkg_admin=pathlib.Path("/var/lib/dpkg"),
+        expected_uid=0,
+        expected_gid=0,
+        disposable=False,
+    )
+    require_rejected(
+        verifier,
+        lambda: verifier.validate_runtime_hook_binding(
+            runtime_hook_command.replace(
+                str(MODULE_PATH),
+                "/tmp/runtime/other/verify-haptics-apt-transaction.py",
+            ),
+            manifest_path=pathlib.Path("/tmp/runtime/transaction/expected.tsv"),
+            marker_path=pathlib.Path("/tmp/runtime/transaction/hook.ok"),
+            dpkg_admin=pathlib.Path("/var/lib/dpkg"),
+            expected_uid=0,
+            expected_gid=0,
+            disposable=False,
+        ),
+        "same-basename replacement verifier",
+        "APT runtime hook command does not identify the executing verifier",
+        exact=True,
+    )
+    require_rejected(
+        verifier,
+        lambda: verifier.validate_runtime_hook_binding(
+            runtime_hook_command.replace("expected.tsv", "other.tsv"),
+            manifest_path=pathlib.Path("/tmp/runtime/transaction/other.tsv"),
+            marker_path=pathlib.Path("/tmp/runtime/transaction/hook.ok"),
+            dpkg_admin=pathlib.Path("/var/lib/dpkg"),
+            expected_uid=0,
+            expected_gid=0,
+            disposable=False,
+        ),
+        "arbitrary production manifest name",
+        "APT runtime hook paths are not canonical",
+        exact=True,
+    )
+    safe_command_line = (
+        "/usr/bin/apt-get -y install --no-install-recommends "
+        "--allow-downgrades --no-remove -- example=1.0-1 "
+        "/tmp/runtime/compat/example_1.0-1_amd64.deb"
+    )
+    runtime_actual = tuple(
+        sorted(
+            (
+                *runtime_expected,
+                *tuple(verifier.RUNTIME_REQUIRED_CONFIGURATION.items()),
+                *runtime_paths,
+                ("APT::Color", "0"),
+                ("Binary", "apt-get"),
+                ("CommandLine::AsString", safe_command_line),
+                ("Dir", "/"),
+                ("quiet", "1"),
+            )
+        )
+    )
+    verifier.verify_eipp_configuration(
+        runtime_actual,
+        runtime_expected,
+        enforce_runtime_projection=True,
+    )
+
+    def add_runtime_record(key: str, value: str):
+        return tuple(sorted((*runtime_actual, (key, value))))
+
+    def replace_runtime_record(
+        key: str,
+        old_value: str,
+        new_value: str,
+    ):
+        old_record = (key, old_value)
+        if runtime_actual.count(old_record) != 1:
+            raise SystemExit(f"runtime fixture cannot replace {key}")
+        return tuple(
+            sorted(
+                (key, new_value) if record == old_record else record
+                for record in runtime_actual
+            )
+        )
+
+    def remove_runtime_record(key: str, value: str):
+        record = (key, value)
+        if runtime_actual.count(record) != 1:
+            raise SystemExit(f"runtime fixture cannot remove {key}")
+        return tuple(item for item in runtime_actual if item != record)
+
+    runtime_hostile_configurations = (
+        (
+            "extra APT architecture",
+            add_runtime_record("APT::Architectures::", "arm64"),
+        ),
+        (
+            "APT architecture namespace drift",
+            add_runtime_record("APT::Architecture::Native", "arm64"),
+        ),
+        (
+            "substituted APT helper binary",
+            add_runtime_record("Dir::Bin::evil", "/bin/true"),
+        ),
+        (
+            "substituted dpkg helper child",
+            add_runtime_record("Dir::Bin::dpkg::evil", "/bin/true"),
+        ),
+        (
+            "custom TLS CA",
+            add_runtime_record("Acquire::https::CaInfo", "/tmp/evil-ca.pem"),
+        ),
+        (
+            "forced TLS version",
+            add_runtime_record("Acquire::https::SslForceVersion", "TLSv1.0"),
+        ),
+        (
+            "proxy auto detection",
+            add_runtime_record("Acquire::http::Proxy-Auto-Detect", "/bin/true"),
+        ),
+        (
+            "remove-essential policy",
+            add_runtime_record("APT::Get::Allow-Remove-Essential", "1"),
+        ),
+        (
+            "APT command-line override",
+            replace_runtime_record(
+                "CommandLine::AsString",
+                safe_command_line,
+                safe_command_line.replace(
+                    "-y install",
+                    "-o APT::Get::AllowUnauthenticated=1 -y install",
+                ),
+            ),
+        ),
+        (
+            "missing TLS verification policy",
+            remove_runtime_record("Acquire::https::Verify-Peer", "1"),
+        ),
+        (
+            "private archive path drift",
+            replace_runtime_record(
+                "Dir::Cache::archives",
+                "/tmp/runtime/cache/archives",
+                "/var/cache/apt/archives",
+            ),
+        ),
+        (
+            "duplicate allowed default",
+            add_runtime_record("APT::Color", "0"),
+        ),
+        (
+            "production quiet-level drift",
+            replace_runtime_record("quiet", "1", "2"),
+        ),
+    )
+    for label, hostile_configuration in runtime_hostile_configurations:
+        require_rejected(
+            verifier,
+            lambda hostile_configuration=hostile_configuration: (
+                verifier.verify_eipp_configuration(
+                    hostile_configuration,
+                    runtime_expected,
+                    enforce_runtime_projection=True,
+                )
+            ),
+            label,
+            "effective APT configuration differs from the exact contract",
+        )
+    require_rejected(
+        verifier,
+        lambda: verifier.verify_eipp_configuration((), ()),
+        "missing manifest hook",
+        "expected EIPP configuration has no unique hook",
+        exact=True,
+    )
     if not all(
         hasattr(verifier, name)
         for name in (
@@ -941,6 +1478,46 @@ def main() -> None:
             "dpkg option",
             VALID_EIPP_V3.replace(
                 b"\n\n", b"\nDPkg::Options::=--force-all\n\n", 1
+            ),
+        ),
+        (
+            "download proxy",
+            VALID_EIPP_V3.replace(
+                b"\n\n", b"\nAcquire::http::Proxy=http://evil.invalid\n\n", 1
+            ),
+        ),
+        (
+            "private source redirection",
+            VALID_EIPP_V3.replace(
+                b"\n\n",
+                b"\nDir::Etc::sourcelist=/etc/apt/sources.list\n\n",
+                1,
+            ),
+        ),
+        (
+            "insecure package policy",
+            VALID_EIPP_V3.replace(
+                b"\n\n", b"\nAPT::Get::AllowUnauthenticated=1\n\n", 1
+            ),
+        ),
+        (
+            "build-essential resolver drift",
+            VALID_EIPP_V3.replace(
+                b"\n\n", b"\nAPT::Build-Essential::=evil-package\n\n", 1
+            ),
+        ),
+        (
+            "compression helper drift",
+            VALID_EIPP_V3.replace(
+                b"\n\n", b"\nAcquire::CompressionTypes::gz=evil\n\n", 1
+            ),
+        ),
+        (
+            "index target drift",
+            VALID_EIPP_V3.replace(
+                b"\n\n",
+                b"\nAcquire::IndexTargets::deb::Packages::MetaKey=../../escape\n\n",
+                1,
             ),
         ),
     ):

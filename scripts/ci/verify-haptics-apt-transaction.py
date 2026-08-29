@@ -59,6 +59,185 @@ MAX_DPKG_STATE_BYTES = 32 * 1024 * 1024
 FORK_CANCELLATION_SIGNALS = frozenset((signal.SIGINT, signal.SIGTERM))
 MAX_FD_SNAPSHOT_ENTRIES = 4096
 
+# These values are deliberately kept outside the transaction manifest.  APT's
+# EIPP stream contains the complete configuration tree, including defaults and
+# command-line state which vary between otherwise equivalent runners.  They are
+# nevertheless part of the runtime security boundary and must be present with
+# exactly these values when the hook is actually invoked.
+RUNTIME_REQUIRED_CONFIGURATION = {
+    "Acquire::AllowDowngradeToInsecureRepositories": "0",
+    "Acquire::AllowInsecureRepositories": "0",
+    "Acquire::AllowWeakRepositories": "0",
+    "Acquire::Check-Valid-Until": "0",
+    "Acquire::Languages": "none",
+    "Acquire::https::Verify-Host": "1",
+    "Acquire::https::Verify-Peer": "1",
+    "APT::Get::AllowUnauthenticated": "0",
+    "APT::Get::List-Cleanup": "0",
+    "APT::Sandbox::User": "_apt",
+}
+
+# APT emits these built-in helper and relative path defaults even when the
+# private configuration does not mention them.  Every path used by this
+# transaction has a separate absolute private-path requirement below; accept
+# the remaining defaults only at their observed exact values.
+RUNTIME_DEFAULT_CONFIGURATION = {
+    "Binary": "apt-get",
+    "Dir": "/",
+    "Dir::Etc": "etc/apt",
+    "Dir::State": "var/lib/apt",
+    "Dir::State::cdroms": "cdroms.list",
+    "Dir::State::extended_states": "extended_states",
+    "Dir::Cache::pkgcache": "pkgcache.bin",
+    "Dir::Cache::srcpkgcache": "srcpkgcache.bin",
+    "Dir::Etc::netrc": "auth.conf",
+    "Dir::Etc::netrcparts": "auth.conf.d",
+    "Dir::Etc::preferences": "preferences",
+    "Dir::Etc::preferencesparts": "preferences.d",
+    "Dir::Log::History": "history.log",
+    "Dir::Log::Planner": "eipp.log.xz",
+    "Dir::Log::Terminal": "term.log",
+    "Dir::Log": "var/log/apt",
+    "Dir::Media::MountPath": "/media/apt",
+    "Dir::Bin::bzip2": "/bin/bzip2",
+    "Dir::Bin::dpkg": "/usr/bin/dpkg",
+    "Dir::Bin::gzip": "/bin/gzip",
+    "Dir::Bin::lz4": "/usr/bin/lz4",
+    "Dir::Bin::lzma": "/usr/bin/xz",
+    "Dir::Bin::methods": "/usr/lib/apt/methods",
+    "Dir::Bin::planners::": "/usr/lib/apt/planners",
+    "Dir::Bin::solvers::": "/usr/lib/apt/solvers",
+    "Dir::Bin::xz": "/usr/bin/xz",
+    "Dir::Bin::zstd": "/usr/bin/zstd",
+}
+
+# The records below are emitted by the Ubuntu 24.04 APT version used by the
+# release runner.  They are defaults, not policy inputs, but accepting an
+# arbitrary value in one of these namespaces would let a changed config tree
+# alter repository paths, resolver behavior, or helper execution.  We permit
+# only the observed byte-for-byte records and reject unknown records.  Missing
+# defaults remain acceptable so an APT minor update that stops serializing an
+# unused default does not break an otherwise equivalent transaction.
+RUNTIME_ALLOWED_DEFAULT_RECORDS = (
+    ("APT::Build-Essential::", "build-essential"),
+    ("APT::Color", "0"),
+    ("APT::Compressor::lzma::Binary", "xz"),
+    ("APT::Compressor::lzma::CompressArg::", "--format=lzma"),
+    ("APT::Compressor::lzma::CompressArg::", "-6"),
+    ("APT::Compressor::lzma::UncompressArg::", "--format=lzma"),
+    ("APT::Compressor::lzma::UncompressArg::", "-d"),
+    ("APT::Get::Assume-Yes", "1"),
+    ("APT::Get::Remove", "0"),
+    ("APT::Get::allow-downgrades", "1"),
+    ("APT::Install-Recommends", "0"),
+    ("APT::Install-Suggests", "0"),
+    ("APT::Internal::OpProgress::Absolute", "0"),
+    (
+        "APT::Key::Assert-Pubkey-Algo",
+        ">=rsa1024,ed25519,ed448,nistp256,nistp384,nistp512,brainpoolP256r1,brainpoolP320r1,brainpoolP384r1,brainpoolP512r1,secp256k1",
+    ),
+    ("APT::Key::Assert-Pubkey-Algo::Future", ">=rsa3072,ed25519,ed448"),
+    (
+        "APT::Key::Assert-Pubkey-Algo::Next",
+        ">=rsa2048,ed25519,ed448,nistp256,nistp384,nistp512",
+    ),
+    ("Acquire::Changelogs::AlwaysOnline::Origin::Ubuntu", "1"),
+    (
+        "Acquire::Changelogs::URI::Origin::Debian",
+        "https://metadata.ftp-master.debian.org/changelogs/@CHANGEPATH@_changelog",
+    ),
+    (
+        "Acquire::Changelogs::URI::Origin::Ubuntu",
+        "https://changelogs.ubuntu.com/changelogs/pool/@CHANGEPATH@/changelog",
+    ),
+    ("Acquire::CompressionTypes::bz2", "bzip2"),
+    ("Acquire::CompressionTypes::gz", "gzip"),
+    ("Acquire::CompressionTypes::lz4", "lz4"),
+    ("Acquire::CompressionTypes::lzma", "lzma"),
+    ("Acquire::CompressionTypes::xz", "xz"),
+    ("Acquire::CompressionTypes::zst", "zstd"),
+    ("Acquire::IndexTargets::deb-src::Sources::Description", "$(RELEASE)/$(COMPONENT) Sources"),
+    ("Acquire::IndexTargets::deb-src::Sources::MetaKey", "$(COMPONENT)/source/Sources"),
+    ("Acquire::IndexTargets::deb-src::Sources::Optional", "0"),
+    ("Acquire::IndexTargets::deb-src::Sources::ShortDescription", "Sources"),
+    ("Acquire::IndexTargets::deb-src::Sources::flatDescription", "$(RELEASE) Sources"),
+    ("Acquire::IndexTargets::deb-src::Sources::flatMetaKey", "Sources"),
+    ("Acquire::IndexTargets::deb::Packages::Description", "$(RELEASE)/$(COMPONENT) $(ARCHITECTURE) Packages"),
+    ("Acquire::IndexTargets::deb::Packages::MetaKey", "$(COMPONENT)/binary-$(ARCHITECTURE)/Packages"),
+    ("Acquire::IndexTargets::deb::Packages::Optional", "0"),
+    ("Acquire::IndexTargets::deb::Packages::ShortDescription", "Packages"),
+    ("Acquire::IndexTargets::deb::Packages::flatDescription", "$(RELEASE) Packages"),
+    ("Acquire::IndexTargets::deb::Packages::flatMetaKey", "Packages"),
+    ("Acquire::IndexTargets::deb::Translations::Description", "$(RELEASE)/$(COMPONENT) Translation-$(LANGUAGE)"),
+    ("Acquire::IndexTargets::deb::Translations::MetaKey", "$(COMPONENT)/i18n/Translation-$(LANGUAGE)"),
+    ("Acquire::IndexTargets::deb::Translations::ShortDescription", "Translation-$(LANGUAGE)"),
+    ("Acquire::IndexTargets::deb::Translations::flatDescription", "$(RELEASE) Translation-$(LANGUAGE)"),
+    ("Acquire::IndexTargets::deb::Translations::flatMetaKey", "$(LANGUAGE)"),
+    ("Acquire::Snapshots::URI::Host::.archive.ubuntu.com", "https://snapshot.ubuntu.com/@PATH@/@SNAPSHOTID@/"),
+    ("Acquire::Snapshots::URI::Host::archive.ubuntu.com", "https://snapshot.ubuntu.com/@PATH@/@SNAPSHOTID@/"),
+    ("Acquire::Snapshots::URI::Host::deb.debian.org", "https://snapshot.debian.org/archive/@PATH@/@SNAPSHOTID@/"),
+    ("Acquire::Snapshots::URI::Host::ppa.launchpad.net", "https://snapshot.ppa.launchpadcontent.net/@PATH@/@SNAPSHOTID@/"),
+    ("Acquire::Snapshots::URI::Host::ppa.launchpadcontent.net", "https://snapshot.ppa.launchpadcontent.net/@PATH@/@SNAPSHOTID@/"),
+    ("Acquire::Snapshots::URI::Host::security.ubuntu.com", "https://snapshot.ubuntu.com/@PATH@/@SNAPSHOTID@/"),
+    ("Acquire::Snapshots::URI::Origin::Debian", "https://snapshot.debian.org/archive/debian/@SNAPSHOTID@/"),
+    ("Acquire::Snapshots::URI::Origin::Ubuntu", "https://snapshot.ubuntu.com/ubuntu/@SNAPSHOTID@/"),
+    ("Acquire::Snapshots::URI::Override::Label::Debian-Security", "https://snapshot.debian.org/archive/debian-security/@SNAPSHOTID@/"),
+    ("Acquire::cdrom::mount", "/media/cdrom/"),
+    ("Dir::Ignore-Files-Silently::", "\\.bak$"),
+    ("Dir::Ignore-Files-Silently::", "\\.disabled$"),
+    ("Dir::Ignore-Files-Silently::", "\\.distUpgrade$"),
+    ("Dir::Ignore-Files-Silently::", "\\.dpkg-[a-z]+$"),
+    ("Dir::Ignore-Files-Silently::", "\\.orig$"),
+    ("Dir::Ignore-Files-Silently::", "\\.save$"),
+    ("Dir::Ignore-Files-Silently::", "\\.ucf-[a-z]+$"),
+    ("Dir::Ignore-Files-Silently::", "~$"),
+    # The production install invocation does not pass -q/-qq.  APT therefore
+    # serializes its default quiet level as 1 at the EIPP hook boundary.
+    ("quiet", "1"),
+)
+RUNTIME_ALLOWED_DEFAULT_COUNTS = Counter(RUNTIME_ALLOWED_DEFAULT_RECORDS)
+RUNTIME_PRIVATE_PATH_KEYS = frozenset(
+    {
+        "Dir::State::lists",
+        "Dir::State::extended_states",
+        "Dir::State::status",
+        "Dir::Cache",
+        "Dir::Cache::archives",
+        "Dir::Cache::srcpkgcache",
+        "Dir::Cache::pkgcache",
+        "Dir::Etc::sourcelist",
+        "Dir::Etc::sourceparts",
+        "Dir::Etc::main",
+        "Dir::Etc::parts",
+        "Dir::Etc::netrc",
+        "Dir::Etc::netrcparts",
+        "Dir::Etc::preferences",
+        "Dir::Etc::preferencesparts",
+        "Dir::Etc::trusted",
+        "Dir::Etc::trustedparts",
+        "Dir::Log",
+    }
+)
+
+RUNTIME_FORBIDDEN_COMMAND_TOKENS = frozenset(
+    {
+        "--admindir",
+        "--allow-remove-essential",
+        "--download-only",
+        "--force-yes",
+        "--no-download",
+        "--purge",
+        "--remove",
+        "--root",
+        "--simulate",
+        "--assume-no",
+        "--config-file",
+        "--option",
+        "-c",
+        "-o",
+    }
+)
+
 
 class AptTransactionError(ValueError):
     pass
@@ -565,23 +744,59 @@ def canonical_hook_path(value: str) -> pathlib.PurePosixPath:
     return path
 
 
-def expected_hook_configuration(command: str) -> tuple[tuple[str, str], ...]:
+def canonical_hook_projection(command: str) -> tuple[tuple[str, str], ...]:
+    """Return the fixed EIPP records for a safe Python hook command.
+
+    The production hook uses ``--verify-hook``, while the disposable canary
+    uses ``--capture`` and the CLI fixture also exercises the disposable-root
+    entry point.  All three commands share the same executable/protocol
+    projection; mode-specific argument validation lives here so fixtures do
+    not accidentally bypass command canonicalization.
+    """
     if type(command) is not str or len(command) > 3 * MAX_PRIVATE_PATH_BYTES:
         raise AptTransactionError("APT hook command is not canonical")
     fields = command.split(" ")
-    if len(fields) != 7 or fields[:3] != ["/usr/bin/python3", "-I", "-B"]:
-        raise AptTransactionError("APT hook command is not canonical")
-    script = canonical_hook_path(fields[3])
-    if fields[4] != "--verify-hook":
+    if (
+        len(fields) < 5
+        or any(not field for field in fields)
+        or fields[:3] != ["/usr/bin/python3", "-I", "-B"]
+    ):
         raise AptTransactionError("APT hook command is not canonical")
     tool = canonical_hook_path(fields[0])
-    manifest = canonical_hook_path(fields[5])
-    marker = canonical_hook_path(fields[6])
-    if (
-        script.name != "verify-haptics-apt-transaction.py"
-        or manifest == marker
-        or manifest.parent != marker.parent
-    ):
+    script = canonical_hook_path(fields[3])
+    mode = fields[4]
+    if mode == "--verify-hook":
+        if len(fields) != 7 or script.name != "verify-haptics-apt-transaction.py":
+            raise AptTransactionError("APT hook command is not canonical")
+        manifest = canonical_hook_path(fields[5])
+        marker = canonical_hook_path(fields[6])
+        if (
+            manifest == marker
+            or manifest.parent != marker.parent
+        ):
+            raise AptTransactionError("APT hook command is not canonical")
+    elif mode == "--verify-hook-disposable":
+        if (
+            len(fields) != 10
+            or script.name != "verify-haptics-apt-transaction.py"
+            or fields[6] not in {"0", "1"}
+            or fields[7] not in {"0", "1"}
+        ):
+            raise AptTransactionError("APT hook command is not canonical")
+        admin = canonical_hook_path(fields[5])
+        manifest = canonical_hook_path(fields[8])
+        marker = canonical_hook_path(fields[9])
+        if (
+            admin.name != "dpkg"
+            or manifest == marker
+            or manifest.parent != marker.parent
+        ):
+            raise AptTransactionError("APT hook command is not canonical")
+    elif mode == "--capture":
+        if len(fields) != 6 or script.name != "capture-eipp.py":
+            raise AptTransactionError("APT hook command is not canonical")
+        canonical_hook_path(fields[5])
+    else:
         raise AptTransactionError("APT hook command is not canonical")
     return tuple(
         sorted(
@@ -598,6 +813,109 @@ def expected_hook_configuration(command: str) -> tuple[tuple[str, str], ...]:
             )
         )
     )
+
+
+def validate_runtime_hook_binding(
+    command: str,
+    *,
+    manifest_path: pathlib.Path,
+    marker_path: pathlib.Path,
+    dpkg_admin: pathlib.Path,
+    expected_uid: int,
+    expected_gid: int,
+    disposable: bool,
+    fixed_production_paths: bool = True,
+    disposable_preparation: bool = False,
+) -> None:
+    """Bind a hook command to this verifier and its manifest/marker paths.
+
+    The production hook normally uses the installer's fixed
+    ``transaction/expected.tsv`` and ``transaction/hook.ok`` names.  The
+    runtime-reference preparation mode may choose a different private
+    transaction directory, but it still has to bind the command arguments to
+    the exact paths being published.
+    """
+    if (
+        type(manifest_path) is not pathlib.PosixPath
+        or type(marker_path) is not pathlib.PosixPath
+        or type(dpkg_admin) is not pathlib.PosixPath
+        or not manifest_path.is_absolute()
+        or not marker_path.is_absolute()
+        or not dpkg_admin.is_absolute()
+        or manifest_path == marker_path
+        or manifest_path.parent != marker_path.parent
+        or (
+            fixed_production_paths
+            and not disposable
+            and (
+                manifest_path.name != "expected.tsv"
+                or marker_path.name != "hook.ok"
+            )
+        )
+        or any(
+            type(value) is not int or value < 0 or value > 2**32 - 1
+            for value in (expected_uid, expected_gid)
+        )
+        or type(disposable) is not bool
+        or type(fixed_production_paths) is not bool
+        or type(disposable_preparation) is not bool
+    ):
+        raise AptTransactionError("APT runtime hook paths are not canonical")
+    canonical_hook_projection(command)
+    fields = command.split(" ")
+    try:
+        executing_script = pathlib.Path(__file__).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise AptTransactionError(
+            "cannot resolve the executing APT verifier path"
+        ) from exc
+    if str(executing_script) != fields[3]:
+        raise AptTransactionError(
+            "APT runtime hook command does not identify the executing verifier"
+        )
+    if fields[4] == "--verify-hook":
+        if disposable or len(fields) != 7:
+            raise AptTransactionError("APT runtime hook mode is inconsistent")
+        if (
+            (
+                fixed_production_paths
+                and manifest_path.parent.name != "transaction"
+            )
+            or fields[5] != str(manifest_path)
+            or fields[6] != str(marker_path)
+            or (
+                not disposable_preparation
+                and (
+                    str(dpkg_admin) != "/var/lib/dpkg"
+                    or expected_uid != 0
+                    or expected_gid != 0
+                )
+            )
+        ):
+            raise AptTransactionError(
+                "APT runtime hook command is not bound to its transaction paths"
+            )
+        return
+    if fields[4] != "--verify-hook-disposable" or not disposable or len(fields) != 10:
+        raise AptTransactionError("APT runtime hook mode is inconsistent")
+    if (
+        fields[5] != str(dpkg_admin)
+        or fields[6] != str(expected_uid)
+        or fields[7] != str(expected_gid)
+        or fields[8] != str(manifest_path)
+        or fields[9] != str(marker_path)
+    ):
+        raise AptTransactionError(
+            "APT runtime hook command is not bound to its disposable paths"
+        )
+
+
+def expected_hook_configuration(command: str) -> tuple[tuple[str, str], ...]:
+    """Build the production ``--verify-hook`` configuration projection."""
+    fields = command.split(" ") if type(command) is str else []
+    if len(fields) < 5 or fields[4] != "--verify-hook":
+        raise AptTransactionError("APT hook command is not canonical")
+    return canonical_hook_projection(command)
 
 
 def decode_eipp_component(value: str, label: str, *, key: bool) -> str:
@@ -725,6 +1043,9 @@ def _bounded_command(
     all_streams = (process.stdout, process.stderr)
     deadline = time.monotonic() + timeout
     leader_reaped_early = False
+    poller = select.poll()
+    for descriptor in streams:
+        poller.register(descriptor, select.POLLIN)
 
     def leader_exited_without_reaping() -> bool:
         nonlocal leader_reaped_early
@@ -784,15 +1105,47 @@ def _bounded_command(
             remaining_time = deadline - time.monotonic()
             if remaining_time <= 0:
                 raise subprocess.TimeoutExpired(args, timeout)
-            ready, _, _ = select.select(tuple(streams), (), (), remaining_time)
-            if not ready:
+            poll_timeout = max(1, min(2**31 - 1, math.ceil(remaining_time * 1000)))
+            try:
+                events = poller.poll(poll_timeout)
+            except OSError as exc:
+                raise AptTransactionError(
+                    f"cannot wait for {label} output: {exc}"
+                ) from exc
+            if not events:
                 raise subprocess.TimeoutExpired(args, timeout)
-            for descriptor in ready:
+            for descriptor, event_mask in events:
+                if descriptor not in streams:
+                    continue
+                if event_mask & select.POLLNVAL:
+                    raise AptTransactionError(
+                        f"{label} output descriptor became invalid"
+                    )
+                if not event_mask & (
+                    select.POLLIN
+                    | select.POLLPRI
+                    | select.POLLHUP
+                    | select.POLLERR
+                ):
+                    raise AptTransactionError(
+                        f"{label} output descriptor returned an unsupported poll event"
+                    )
                 stream, output, maximum, stream_name = streams[descriptor]
                 remaining_output = maximum - len(output)
-                chunk = os.read(descriptor, min(65536, remaining_output + 1))
+                try:
+                    chunk = os.read(descriptor, min(65536, remaining_output + 1))
+                except OSError as exc:
+                    if exc.errno == errno.EAGAIN:
+                        continue
+                    raise AptTransactionError(
+                        f"cannot read {label} {stream_name}: {exc}"
+                    ) from exc
                 if not chunk:
                     stream.close()
+                    try:
+                        poller.unregister(descriptor)
+                    except OSError:
+                        pass
                     del streams[descriptor]
                     continue
                 output.extend(chunk)
@@ -1312,10 +1665,390 @@ def parse_expected_transaction_bytes(raw: bytes) -> ExpectedTransaction:
     return transaction
 
 
+def runtime_private_path_projection(
+    expected: tuple[tuple[str, str], ...],
+    *,
+    require_executing_verifier: bool = False,
+) -> tuple[tuple[str, str], ...]:
+    """Derive the private APT paths from the production hook command.
+
+    The transaction directory is created by the installer and its absolute
+    path is already authenticated by the canonical hook command in the
+    manifest.  Deriving the remaining paths here keeps them bound to that same
+    directory without serializing runner-specific names into a reusable lock.
+    """
+    hook_values = tuple(
+        value for key, value in expected if key == "DPkg::Pre-Install-Pkgs::"
+    )
+    if len(hook_values) != 1:
+        return ()
+    fields = hook_values[0].split(" ")
+    if len(fields) < 5 or fields[:3] != ["/usr/bin/python3", "-I", "-B"]:
+        return ()
+    try:
+        script = canonical_hook_path(fields[3])
+    except AptTransactionError:
+        return ()
+    if script.name != "verify-haptics-apt-transaction.py":
+        return ()
+    if fields[4] == "--verify-hook-disposable":
+        if len(fields) != 10 or any(not field for field in fields[5:]):
+            return ()
+        try:
+            canonical_hook_path(fields[5])
+            parse_numeric_id(fields[6])
+            parse_numeric_id(fields[7])
+            manifest = canonical_hook_path(fields[8])
+            marker = canonical_hook_path(fields[9])
+        except (AptTransactionError, ValueError):
+            return ()
+    elif fields[4] == "--verify-hook" and len(fields) == 7:
+        try:
+            manifest = canonical_hook_path(fields[5])
+            marker = canonical_hook_path(fields[6])
+        except AptTransactionError:
+            return ()
+        if (
+            manifest.parent.name != "transaction"
+            or manifest.name != "expected.tsv"
+            or marker.name != "hook.ok"
+        ):
+            return ()
+    else:
+        return ()
+    if require_executing_verifier:
+        try:
+            executing_script = pathlib.Path(__file__).resolve(strict=True)
+        except (OSError, RuntimeError):
+            return ()
+        if str(executing_script) != str(script):
+            return ()
+    if (
+        manifest.parent != marker.parent
+    ):
+        return ()
+    if fields[4] == "--verify-hook-disposable":
+        root = manifest.parent
+        try:
+            status_path = canonical_hook_path(fields[5]) / "status"
+        except AptTransactionError:
+            return ()
+    else:
+        root = manifest.parent.parent
+        status_path = pathlib.PurePosixPath("/var/lib/dpkg/status")
+    if str(root) in {"", "/", ".", ".."} or any(
+        component in {"", ".", ".."} for component in root.parts[1:]
+    ):
+        return ()
+    records = {
+        "Dir::State::lists": str(root / "lists"),
+        "Dir::State::extended_states": str(root / "state/extended_states"),
+        "Dir::State::status": str(status_path),
+        "Dir::Cache": str(root / "cache"),
+        "Dir::Cache::archives": str(root / "cache/archives"),
+        "Dir::Cache::srcpkgcache": str(root / "cache/srcpkgcache.bin"),
+        "Dir::Cache::pkgcache": str(root / "cache/pkgcache.bin"),
+        "Dir::Etc::sourcelist": str(root / "ubuntu-snapshot.sources"),
+        "Dir::Etc::sourceparts": str(root / "source-parts"),
+        "Dir::Etc::main": str(root / "empty.conf"),
+        "Dir::Etc::parts": str(root / "config-parts"),
+        "Dir::Etc::netrc": str(root / "empty.conf"),
+        "Dir::Etc::netrcparts": str(root / "auth-parts"),
+        "Dir::Etc::preferences": str(root / "empty.conf"),
+        "Dir::Etc::preferencesparts": str(root / "preferences-parts"),
+        "Dir::Etc::trusted": "/dev/null",
+        "Dir::Etc::trustedparts": str(root / "trusted-parts"),
+        "Dir::Log": str(root / "log"),
+    }
+    return tuple(sorted(records.items()))
+
+
+def validate_runtime_command_line(value: str) -> None:
+    """Reject EIPP command-line state that can escape the installer policy."""
+    if type(value) is not str:
+        raise AptTransactionError(
+            "effective APT configuration differs from the exact contract: "
+            "APT command-line value is not text"
+        )
+    fields = value.split(" ")
+    if not fields or fields[0] != "/usr/bin/apt-get":
+        raise AptTransactionError(
+            "effective APT configuration differs from the exact contract: "
+            "APT command-line executable changed"
+        )
+    if any(not field for field in fields):
+        raise AptTransactionError(
+            "effective APT configuration differs from the exact contract: "
+            "APT command-line framing changed"
+        )
+    if any(
+        field in RUNTIME_FORBIDDEN_COMMAND_TOKENS
+        or any(field.startswith(token + "=") for token in RUNTIME_FORBIDDEN_COMMAND_TOKENS)
+        or field.startswith("-o")
+        for field in fields
+    ):
+        raise AptTransactionError(
+            "effective APT configuration differs from the exact contract: "
+            "APT command-line override is forbidden"
+        )
+    if fields.count("install") != 1 or "--" not in fields:
+        raise AptTransactionError(
+            "effective APT configuration differs from the exact contract: "
+            "APT command-line transaction policy changed"
+        )
+    separator = fields.index("--")
+    prefix = fields[1:separator]
+    allowed_options = {
+        "-q",
+        "-qq",
+        "-y",
+        "--yes",
+        "--allow-downgrades",
+        "--no-install-recommends",
+        "--no-remove",
+    }
+    if (
+        "install" not in prefix
+        or prefix.count("install") != 1
+        or not {
+            "--allow-downgrades",
+            "--no-install-recommends",
+            "--no-remove",
+        }.issubset(prefix)
+        or any(field.startswith("-") and field not in allowed_options for field in prefix)
+        or any(field not in allowed_options and field != "install" for field in prefix)
+        or not fields[separator + 1 :]
+    ):
+        raise AptTransactionError(
+            "effective APT configuration differs from the exact contract: "
+            "APT command-line transaction policy changed"
+        )
+    for argument in fields[separator + 1 :]:
+        if argument.startswith("-") or any(character.isspace() for character in argument):
+            raise AptTransactionError(
+                "effective APT configuration differs from the exact contract: "
+                "APT package argument is not canonical"
+            )
+        if argument.startswith("/"):
+            path = pathlib.PurePosixPath(argument)
+            if (
+                not path.is_absolute()
+                or str(path) != argument
+                or path.suffix != ".deb"
+                or any(component in {"", ".", ".."} for component in path.parts[1:])
+            ):
+                raise AptTransactionError(
+                    "effective APT configuration differs from the exact contract: "
+                    "APT package archive argument is not canonical"
+                )
+            continue
+        if "=" not in argument:
+            raise AptTransactionError(
+                "effective APT configuration differs from the exact contract: "
+                "APT package argument is not version-pinned"
+            )
+        package, version = argument.split("=", 1)
+        if not PACKAGE_NAME.fullmatch(package) or not VERSION.fullmatch(version):
+            raise AptTransactionError(
+                "effective APT configuration differs from the exact contract: "
+                "APT package argument is not canonical"
+            )
+
+
+def validate_expected_dpkg_option(value: str) -> tuple[str, str]:
+    """Allow only the two canonical disposable-root dpkg options."""
+    if type(value) is not str or "=" not in value:
+        raise AptTransactionError("expected EIPP configuration contains an unsafe dpkg option")
+    option, raw_path = value.split("=", 1)
+    if option not in {"--root", "--admindir"}:
+        raise AptTransactionError("expected EIPP configuration contains an unsafe dpkg option")
+    try:
+        path = canonical_hook_path(raw_path)
+    except AptTransactionError as exc:
+        raise AptTransactionError(
+            "expected EIPP configuration contains an unsafe dpkg option"
+        ) from exc
+    if option == "--admindir" and path.name != "dpkg":
+        raise AptTransactionError("expected EIPP configuration contains an unsafe dpkg option")
+    return option, str(path)
+
+
+def validate_manifest_hook_command(command: str) -> tuple[tuple[str, str], ...]:
+    """Validate production, disposable, and canary hook command shapes."""
+    return canonical_hook_projection(command)
+
+
+def validate_expected_configuration_policy(
+    expected: tuple[tuple[str, str], ...],
+    *,
+    required_runtime: dict[str, str],
+    private_paths: dict[str, str],
+    enforce_runtime_projection: bool = False,
+) -> None:
+    """Validate manifest-side configuration before comparing it to EIPP."""
+    hook_values = tuple(
+        value for key, value in expected if key == "DPkg::Pre-Install-Pkgs::"
+    )
+    if len(hook_values) != 1:
+        raise AptTransactionError("expected EIPP configuration has no unique hook")
+    canonical = validate_manifest_hook_command(hook_values[0])
+    hook_fields = hook_values[0].split(" ")
+    hook_mode = hook_fields[4]
+    counts = Counter(expected)
+    canonical_counts = Counter(canonical)
+    for record, count in canonical_counts.items():
+        if counts[record] != count:
+            raise AptTransactionError("expected EIPP hook projection is incomplete")
+    # Runtime security records are valid manifest-side records even for the
+    # disposable fixtures that do not require their presence in every EIPP
+    # stream.  Presence is controlled by ``required_runtime`` at the caller;
+    # their value must nevertheless never be weakened in a manifest.
+    allowed_runtime = dict(RUNTIME_REQUIRED_CONFIGURATION)
+    allowed_runtime.update(required_runtime)
+    dpkg_options: list[tuple[str, str]] = []
+    for key, value in expected:
+        record = (key, value)
+        if record in canonical_counts:
+            continue
+        if key == "DPkg::Pre-Install-Pkgs::":
+            if value != hook_values[0]:
+                raise AptTransactionError("expected EIPP hook record is inconsistent")
+            continue
+        core_values = {
+            "APT::Architecture": "amd64",
+            "APT::Architectures::": "amd64",
+            "Dir::Bin::dpkg": "/usr/bin/dpkg",
+            "DPkg::ConfigurePending": "1",
+            "DPkg::Path": "/usr/sbin:/usr/bin:/sbin:/bin",
+            "DPkg::Run-Directory": "/",
+        }
+        if key in core_values:
+            if value != core_values[key]:
+                raise AptTransactionError("expected EIPP core configuration changed")
+            continue
+        if key == "DPkg::Options::":
+            dpkg_options.append(validate_expected_dpkg_option(value))
+            continue
+        if key in allowed_runtime:
+            if value != allowed_runtime[key]:
+                raise AptTransactionError("expected EIPP configuration weakens APT policy")
+            continue
+        if key in private_paths:
+            if value != private_paths[key]:
+                raise AptTransactionError("expected EIPP configuration redirects a private path")
+            continue
+        known_value = RUNTIME_DEFAULT_CONFIGURATION.get(key)
+        if known_value is not None and value == known_value:
+            continue
+        if record in RUNTIME_ALLOWED_DEFAULT_COUNTS:
+            if counts[record] > RUNTIME_ALLOWED_DEFAULT_COUNTS[record]:
+                raise AptTransactionError("expected EIPP configuration repeats a default")
+            continue
+        raise AptTransactionError(
+            f"expected EIPP configuration contains an unsupported record {key}"
+        )
+    if not dpkg_options:
+        return
+    # The production hook deliberately runs the host dpkg with no
+    # DPkg::Options projection.  The disposable verifier and the real EIPP
+    # capture canary are the only modes that may carry root/admindir options,
+    # and those options must be derived from the private status path below.
+    if hook_mode not in {"--verify-hook-disposable", "--capture"}:
+        raise AptTransactionError(
+            "expected EIPP configuration contains disposable dpkg options"
+        )
+    if len(dpkg_options) != 2 or len(set(dpkg_options)) != 2:
+        raise AptTransactionError(
+            "expected EIPP dpkg root and admindir options are not bound to private paths"
+        )
+    status_text = private_paths.get("Dir::State::status")
+    if (
+        type(status_text) is not str
+        or status_text == "/dev/null"
+        or not pathlib.PurePosixPath(status_text).is_absolute()
+        or str(pathlib.PurePosixPath(status_text)) != status_text
+        or any(
+            component in {"", ".", ".."}
+            for component in pathlib.PurePosixPath(status_text).parts[1:]
+        )
+        or pathlib.PurePosixPath(status_text).name != "status"
+    ):
+        raise AptTransactionError(
+            "expected EIPP configuration has no private dpkg status path"
+        )
+    status_path = pathlib.PurePosixPath(status_text)
+    admin_path = status_path.parent
+    if status_path != admin_path / "status":
+        raise AptTransactionError(
+            "expected EIPP dpkg admindir option differs from the disposable hook"
+        )
+    # A disposable dpkg admin directory must retain the conventional
+    # <root>/var/lib/dpkg layout so the root option has one unambiguous value.
+    if len(admin_path.parts) < 4 or admin_path.parts[-3:] != ("var", "lib", "dpkg"):
+        raise AptTransactionError(
+            "expected EIPP dpkg root and admindir options are not bound to private paths"
+        )
+    root_path = admin_path.parent.parent.parent
+    required_options = {
+        ("--admindir", str(admin_path)),
+        ("--root", str(root_path)),
+    }
+    if set(dpkg_options) != required_options:
+        raise AptTransactionError(
+            "expected EIPP dpkg root and admindir options are not bound to private paths"
+        )
+    if hook_mode == "--verify-hook-disposable":
+        try:
+            hook_admin = pathlib.PurePosixPath(hook_fields[5])
+        except (IndexError, TypeError):
+            raise AptTransactionError(
+                "expected EIPP dpkg admindir option differs from the disposable hook"
+            ) from None
+        if hook_admin != admin_path:
+            raise AptTransactionError(
+                "expected EIPP dpkg admindir option differs from the disposable hook"
+            )
+
+
 def verify_eipp_configuration(
     actual: tuple[tuple[str, str], ...],
     expected: tuple[tuple[str, str], ...],
+    *,
+    enforce_runtime_projection: bool = False,
+    required_paths: tuple[tuple[str, str], ...] | None = None,
 ) -> None:
+    def mismatch(detail: str) -> AptTransactionError:
+        return AptTransactionError(
+            "effective APT configuration differs from the exact contract: " + detail
+        )
+
+    if type(enforce_runtime_projection) is not bool:
+        raise AptTransactionError("APT configuration projection mode is invalid")
+    if required_paths is not None and (
+        type(required_paths) is not tuple
+        or any(
+            type(record) is not tuple
+            or len(record) != 2
+            or any(type(field) is not str for field in record)
+            for record in required_paths
+        )
+        or tuple(sorted(required_paths)) != required_paths
+        or len({key for key, _ in required_paths}) != len(required_paths)
+        or any(key not in RUNTIME_PRIVATE_PATH_KEYS for key, _ in required_paths)
+        or any(
+            value != "/dev/null"
+            and (
+                not pathlib.PurePosixPath(value).is_absolute()
+                or str(pathlib.PurePosixPath(value)) != value
+                or any(
+                    component in {"", ".", ".."}
+                    for component in pathlib.PurePosixPath(value).parts[1:]
+                )
+            )
+            for _, value in required_paths
+        )
+    ):
+        raise AptTransactionError("APT private path projection is not canonical")
     if (
         type(actual) is not tuple
         or type(expected) is not tuple
@@ -1325,11 +2058,108 @@ def verify_eipp_configuration(
             or any(type(field) is not str for field in record)
             for record in (*actual, *expected)
         )
+        or tuple(sorted(actual)) != actual
         or tuple(sorted(expected)) != expected
     ):
         raise AptTransactionError("expected EIPP configuration is not canonical")
-    if actual != expected:
-        raise AptTransactionError("effective APT configuration differs from the exact contract")
+    private_paths = dict(
+        runtime_private_path_projection(
+            expected,
+            require_executing_verifier=enforce_runtime_projection,
+        )
+        if required_paths is None
+        else required_paths
+    )
+    required_runtime = (
+        RUNTIME_REQUIRED_CONFIGURATION if enforce_runtime_projection else {}
+    )
+    validate_expected_configuration_policy(
+        expected,
+        # Security-sensitive values are policy even when a fixture is using
+        # the non-runtime comparison mode.  The mode controls whether the
+        # complete runtime projection is required from APT, not whether an
+        # unsafe manifest may be serialized.
+        required_runtime=RUNTIME_REQUIRED_CONFIGURATION,
+        private_paths=private_paths,
+        enforce_runtime_projection=enforce_runtime_projection,
+    )
+    if enforce_runtime_projection and not private_paths:
+        raise mismatch("production hook does not identify its private transaction layout")
+    expected_counts = Counter(expected)
+    actual_counts = Counter(actual)
+    expected_keys = {key for key, _ in expected}
+    expected_key_counts = Counter(key for key, _ in expected)
+    actual_key_counts = Counter(key for key, _ in actual)
+    if any(
+        not key.endswith("::") and count != 1
+        for key, count in expected_key_counts.items()
+    ):
+        raise AptTransactionError("expected EIPP configuration repeats a scalar key")
+    if any(
+        actual_key_counts[key] != count
+        for key, count in expected_key_counts.items()
+    ):
+        raise mismatch("required key multiplicity changed")
+    for record, count in expected_counts.items():
+        if actual_counts[record] != count:
+            raise mismatch("required record changed")
+
+    if enforce_runtime_projection:
+        for key, value in (*tuple(required_runtime.items()), *tuple(private_paths.items())):
+            if actual_key_counts[key] != 1 or actual_counts[(key, value)] != 1:
+                raise mismatch(f"required runtime record changed for {key}")
+
+    # APT's EIPP v3 protocol serializes the complete configuration tree, including
+    # built-in defaults and dynamic command/path values.  Keep the manifest focused
+    # on the security-sensitive projection while rejecting configuration namespaces
+    # that could add a second hook, alter dpkg invocation, or redirect downloads.
+    for key, value in actual:
+        if key in expected_keys:
+            continue
+        if key in private_paths:
+            if value != private_paths[key]:
+                raise mismatch(f"private APT path changed for {key}")
+            continue
+        required_value = RUNTIME_REQUIRED_CONFIGURATION.get(key)
+        if required_value is not None:
+            if value != required_value:
+                raise mismatch(f"security option changed for {key}")
+            continue
+        if key.startswith("DPkg::"):
+            raise mismatch("unexpected dpkg option")
+        if any(
+            token in key.lower() for token in ("invoke", "hook", "proxy")
+        ):
+            raise mismatch("unexpected hook or proxy")
+        known_value = RUNTIME_DEFAULT_CONFIGURATION.get(key)
+        if known_value is not None:
+            if value != known_value:
+                raise mismatch(f"default APT value changed for {key}")
+            continue
+        default_record = (key, value)
+        if default_record in RUNTIME_ALLOWED_DEFAULT_COUNTS:
+            if actual_counts[default_record] > RUNTIME_ALLOWED_DEFAULT_COUNTS[default_record]:
+                raise mismatch(f"default APT record is duplicated for {key}")
+            continue
+        if (
+            key.startswith("Dir::Etc::")
+            or key.startswith("Dir::State::")
+            or key.startswith("Dir::Cache")
+            or key.startswith("Dir::Log")
+            or key.startswith("Dir::Bin::")
+            or key in {"Dir::Bin", "Dir"}
+        ):
+            raise mismatch(f"unexpected private APT path or binary {key}")
+        if key.startswith("APT::Architecture") or key.startswith("APT::Sandbox::"):
+            raise mismatch("APT architecture or sandbox namespace changed")
+        if key.startswith("Acquire::https::") or key.startswith("Acquire::Allow"):
+            raise mismatch("APT TLS or repository-security option changed")
+        if key == "CommandLine::AsString":
+            validate_runtime_command_line(value)
+            continue
+        if key in {"Binary", "Dir"}:
+            raise mismatch("APT executable root changed")
+        raise mismatch(f"unexpected APT configuration record {key}")
 
 
 def validate_semantic_action(action: PackageAction) -> None:
@@ -2963,6 +3793,9 @@ def verify_hook_inputs(
     apt_uid: int,
     apt_gid: int,
     *,
+    manifest_path: pathlib.Path | None = None,
+    marker_path: pathlib.Path | None = None,
+    disposable: bool = False,
     deadline: float | None = None,
 ) -> str:
     if (
@@ -2974,6 +3807,15 @@ def verify_hook_inputs(
             type(value) is not int or value < 0 or value > 2**32 - 1
             for value in (expected_uid, expected_gid, apt_uid, apt_gid)
         )
+        or (manifest_path is None) != (marker_path is None)
+        or (
+            manifest_path is not None
+            and (
+                type(manifest_path) is not pathlib.PosixPath
+                or type(marker_path) is not pathlib.PosixPath
+            )
+        )
+        or type(disposable) is not bool
     ):
         raise AptTransactionError("APT hook verifier received invalid runtime inputs")
     if os.geteuid() != 0:
@@ -2991,7 +3833,29 @@ def verify_hook_inputs(
     require_operation_deadline(deadline, "APT hook verification")
     transaction = parse_expected_transaction_bytes(manifest_raw)
     document = parse_eipp_v3_bytes(eipp_raw)
-    verify_eipp_configuration(document.configuration, transaction.configuration)
+    if manifest_path is not None and marker_path is not None:
+        hook_values = tuple(
+            value
+            for key, value in transaction.configuration
+            if key == "DPkg::Pre-Install-Pkgs::"
+        )
+        if len(hook_values) != 1:
+            raise AptTransactionError("APT runtime hook configuration has no unique hook")
+        validate_runtime_hook_binding(
+            hook_values[0],
+            manifest_path=manifest_path,
+            marker_path=marker_path,
+            dpkg_admin=dpkg_admin,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+            disposable=disposable,
+        )
+    verify_eipp_configuration(
+        document.configuration,
+        transaction.configuration,
+        enforce_runtime_projection=True,
+        required_paths=runtime_private_path_projection(transaction.configuration),
+    )
     verify_eipp_actions(document.actions, transaction.actions)
     package = load_package_verifier()
     dpkg = load_dpkg_state_verifier()
@@ -3114,15 +3978,42 @@ def read_eipp_hook_fd(
     deadline = (
         local_deadline if deadline is None else min(local_deadline, float(deadline))
     )
+    poller = select.poll()
+    try:
+        poller.register(descriptor, select.POLLIN)
+    except OSError as exc:
+        raise AptTransactionError(
+            f"cannot monitor the APT EIPP hook stream: {exc}"
+        ) from exc
     try:
         while remaining:
             remaining_time = deadline - time.monotonic()
             if remaining_time <= 0:
                 raise AptTransactionError("APT EIPP hook stream read timed out")
-            ready, _, _ = select.select((descriptor,), (), (), remaining_time)
-            if not ready:
+            poll_timeout = max(1, min(2**31 - 1, math.ceil(remaining_time * 1000)))
+            try:
+                events = poller.poll(poll_timeout)
+            except OSError as exc:
+                raise AptTransactionError(
+                    f"cannot wait for the APT EIPP hook stream: {exc}"
+                ) from exc
+            if not events:
                 raise AptTransactionError("APT EIPP hook stream read timed out")
-            chunk = os.read(descriptor, min(remaining, 65536))
+            event_descriptor, event_mask = events[0]
+            if event_descriptor != descriptor or event_mask & select.POLLNVAL:
+                raise AptTransactionError("APT EIPP hook stream descriptor is invalid")
+            if not event_mask & (
+                select.POLLIN | select.POLLPRI | select.POLLHUP | select.POLLERR
+            ):
+                raise AptTransactionError(
+                    "APT EIPP hook stream returned an unsupported poll event"
+                )
+            try:
+                chunk = os.read(descriptor, min(remaining, 65536))
+            except OSError as exc:
+                if exc.errno == errno.EAGAIN:
+                    continue
+                raise
             if not chunk:
                 break
             chunks.append(chunk)
@@ -4518,6 +5409,24 @@ def main() -> None:
             require_operation_deadline(
                 preparation_deadline, "APT transaction preparation"
             )
+            hook_fields = hook_command.split(" ")
+            hook_is_disposable = (
+                len(hook_fields) > 4
+                and hook_fields[4] == "--verify-hook-disposable"
+            )
+            validate_runtime_hook_binding(
+                hook_command,
+                manifest_path=manifest_path,
+                marker_path=manifest_path.parent / "hook.ok",
+                dpkg_admin=dpkg_admin,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
+                disposable=hook_is_disposable,
+                fixed_production_paths=arguments.prepare_manifest is not None,
+                disposable_preparation=(
+                    arguments.prepare_manifest_disposable is not None
+                ),
+            )
             transaction = prepare_expected_transaction(
                 hook_command,
                 *raw_evidence[:3],
@@ -4646,6 +5555,9 @@ def main() -> None:
                 expected_gid,
                 apt_account.pw_uid,
                 apt_account.pw_gid,
+                manifest_path=manifest_path,
+                marker_path=marker_path,
+                disposable=arguments.verify_hook_disposable is not None,
                 deadline=hook_deadline,
             )
             require_operation_deadline(hook_deadline, "APT hook verification")

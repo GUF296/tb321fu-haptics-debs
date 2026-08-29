@@ -79,10 +79,31 @@ import re
 import stat
 import sys
 import tarfile
+import io
+import zlib
 
 archive = pathlib.Path(sys.argv[1])
 expected = pathlib.Path(sys.argv[2]).read_text(encoding="ascii").splitlines()
 source_lock = None
+
+def verify_stream_termination(path: pathlib.Path) -> None:
+    expanded = bytearray()
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            expanded.extend(decompressor.decompress(chunk))
+            if len(expanded) > 128 * 1024 * 1024:
+                raise SystemExit("haptics release archive decompressed stream is oversized")
+            if decompressor.eof and decompressor.unused_data:
+                raise SystemExit("haptics release archive has trailing compressed bytes")
+    if not decompressor.eof:
+        raise SystemExit("haptics release archive gzip stream is truncated")
+    with tarfile.open(fileobj=io.BytesIO(expanded), mode="r:") as strict:
+        for _ in strict:
+            pass
+        if expanded[strict.offset:].strip(b"\0"):
+            raise SystemExit("haptics release archive has trailing tar bytes")
+
 try:
     with tarfile.open(archive, mode="r|gz") as handle:
         members = []
@@ -134,6 +155,7 @@ if len(members) != len(expected):
     )
 if source_lock is None:
     raise SystemExit("haptics release archive omits its source lock")
+verify_stream_termination(archive)
 try:
     source_lock_lines = source_lock.decode("ascii").splitlines()
 except UnicodeDecodeError as exc:

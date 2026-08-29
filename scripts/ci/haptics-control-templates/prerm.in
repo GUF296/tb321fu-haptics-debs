@@ -30,11 +30,22 @@ systemd_manager_running()
 }
 
 case "${1:-}" in
-	remove|deconfigure) ;;
+	remove|deconfigure)
+		action=remove
+		;;
+	failed-upgrade|abort-upgrade|abort-deconfigure)
+		action=recover
+		;;
 	*) exit 0 ;;
 esac
 
 if systemd_manager_running; then
 	command -v systemctl >/dev/null 2>&1 || die 'required command is unavailable: systemctl'
-	run_systemctl stop tb321fu-haptics.service
+	if [ "$action" = remove ]; then
+		run_systemctl stop tb321fu-haptics.service
+	else
+		# A failed/aborted upgrade must leave a previously running unit usable.
+		# systemctl start is idempotent for an already-running service.
+		run_systemctl start tb321fu-haptics.service
+	fi
 fi

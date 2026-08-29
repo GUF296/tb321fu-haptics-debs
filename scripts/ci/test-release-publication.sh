@@ -463,20 +463,12 @@ if [ "${1:-}" = api ]; then
         '.[].tag_name')
           [ ! -f "$GH_STATE/exists" ] || cat "$GH_STATE/tag"
           ;;
-        '.[] | select(.tag_name == "tb321fu-haptics-debs-20260730.2") | (["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets | sort_by(.name)[] | ["asset", .name, (.size | tostring), (.digest // ""), .state])) | @tsv')
+        '.[] | select(.tag_name == "tb321fu-haptics-debs-20260730.2") | .id')
           if [ -f "$GH_STATE/exists" ] &&
              [ "$(cat "$GH_STATE/tag")" = tb321fu-haptics-debs-20260730.2 ]; then
-            printf 'release\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-              "$(cat "$GH_STATE/id")" "$(cat "$GH_STATE/draft")" \
-              "$(cat "$GH_STATE/immutable")" "$(cat "$GH_STATE/tag")" \
-              "$(cat "$GH_STATE/target")" "$(cat "$GH_STATE/prerelease")" \
-              "$(cat "$GH_STATE/name")" "$(cat "$GH_STATE/body-b64")"
-            awk -F '\t' 'BEGIN { OFS="\t" } { print "asset", $1, $2, $3, "uploaded" }' \
-              "$GH_STATE/assets.tsv"
+            printf '%s\n' "$(cat "$GH_STATE/id")"
             if [ "${GH_DUPLICATE_TAG_MATCH:-0}" = 1 ]; then
-              printf 'release\t202\ttrue\tfalse\t%s\t%s\ttrue\t%s\t%s\n' \
-                "$(cat "$GH_STATE/tag")" "$(cat "$GH_STATE/target")" \
-                "$(cat "$GH_STATE/name")" "$(cat "$GH_STATE/body-b64")"
+              printf '202\n'
             fi
           fi
           ;;
@@ -517,7 +509,7 @@ if [ "${1:-}" = api ]; then
       ;;
     repos/GUF296/tb321fu-haptics-debs/releases/latest)
       [ "${GH_NO_LATEST:-0}" != 1 ] || exit 44
-      [ "$query" = '(["latest", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets | sort_by(.name)[] | ["latest-asset", .name, (.size | tostring), (.digest // ""), .state])) | @tsv' ] || exit 2
+      [ "$query" = '["latest", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv' ] || exit 2
       latest_count=0
       [ ! -f "$GH_STATE/latest-count" ] || latest_count=$(cat "$GH_STATE/latest-count")
       latest_count=$((latest_count + 1))
@@ -527,15 +519,21 @@ if [ "${1:-}" = api ]; then
         printf 'latest\t78\tfalse\ttrue\tstable/other\tmain\tfalse\t\tc3RhYmxlLW90aGVyCg==\n'
       else
         printf 'latest\t77\tfalse\ttrue\tstable/20260627\tmain\tfalse\t\tc3RhYmxlCg==\n'
-        printf 'latest-asset\tstable.bin\t7\tsha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\tuploaded\n'
       fi
       exit
       ;;
   esac
 
-  if [[ $query == *'["release"'* ]]; then
-    [ "$endpoint" = repos/GUF296/tb321fu-haptics-debs/releases/101 ] || exit 45
-    [ "$query" = '(["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets | sort_by(.name)[] | ["asset", .name, (.size | tostring), (.digest // ""), .state])) | @tsv' ] || exit 2
+  case "$endpoint" in
+    repos/GUF296/tb321fu-haptics-debs/releases/202)
+    [ "$query" = '["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv' ] || exit 2
+    printf 'release\t202\ttrue\tfalse\ttb321fu-haptics-debs-20260730.2\t%s\ttrue\t%s\t%s\n' \
+      "$EXPECTED_PRODUCER_SHA" "tb321fu-haptics-debs-20260730.2" \
+      "$(cat "$GH_STATE/body-b64")"
+    exit
+    ;;
+    repos/GUF296/tb321fu-haptics-debs/releases/101)
+    [ "$query" = '["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv' ] || exit 2
     count=0
     [ ! -f "$GH_STATE/snapshot-count" ] || count=$(cat "$GH_STATE/snapshot-count")
     count=$((count + 1))
@@ -594,6 +592,15 @@ if [ "${1:-}" = api ]; then
     fi
     printf 'release\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$id" "$draft" "$immutable" "$tag" "$target" "$prerelease" "$name" "$body_b64"
+    exit
+    ;;
+    'repos/GUF296/tb321fu-haptics-debs/releases/101/assets?per_page=100')
+    [ "$paginate" = true ] || exit 69
+    [ "$query" = '.[] | ["asset", .name, (.size | tostring), (.digest // ""), .state] | @tsv' ] || exit 2
+    count=0
+    [ ! -f "$GH_STATE/snapshot-count" ] || count=$(cat "$GH_STATE/snapshot-count")
+    mutate=false
+    if [ "${GH_MUTATE_SNAPSHOT:-0}" -eq "$count" ]; then mutate=true; fi
     asset_state=uploaded
     if [ "${GH_BAD_ASSET_STATE_AFTER_PATCH:-0}" = 1 ] && [ -f "$GH_STATE/published" ]; then
       asset_state=starter
@@ -610,7 +617,19 @@ if [ "${1:-}" = api ]; then
       printf 'asset\tintruder.bin\t1\tsha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\tuploaded\n'
     fi
     exit
-  fi
+    ;;
+    'repos/GUF296/tb321fu-haptics-debs/releases/202/assets?per_page=100')
+    [ "$paginate" = true ] || exit 69
+    [ "$query" = '.[] | ["asset", .name, (.size | tostring), (.digest // ""), .state] | @tsv' ] || exit 2
+    exit
+    ;;
+    'repos/GUF296/tb321fu-haptics-debs/releases/77/assets?per_page=100')
+    [ "$paginate" = true ] || exit 69
+    [ "$query" = '.[] | ["latest-asset", .name, (.size | tostring), (.digest // ""), .state] | @tsv' ] || exit 2
+    printf 'latest-asset\tstable.bin\t7\tsha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\tuploaded\n'
+    exit
+    ;;
+  esac
 
   printf 'unexpected GET endpoint/query: %s (%s)\n' "$endpoint" "$query" >&2
   exit 2
@@ -1388,12 +1407,13 @@ printf 'PASS curl upload authentication stays out of argv and child environment\
 state_create_apply_fail=$scratch/state-create-apply-then-fail
 capture_bounded create-apply-fail run_publish "$state_create_apply_fail" \
   env PRERELEASE=1 GH_APPLY_THEN_FAIL_RELEASE_CREATE=1
-[ "$CAPTURE_STATUS" -eq 0 ]
+[ "$CAPTURE_STATUS" -ne 0 ]
 create_apply_fail_output=$CAPTURE_OUTPUT
-grep -Fq 'draft-create POST transport failure reconciled to exact release ID 101' \
+grep -Fq 'refusing to take over an unowned remote object' \
   <<< "$create_apply_fail_output"
 [ "$(cat "$state_create_apply_fail/draft")" = true ]
-[ "$(wc -l < "$state_create_apply_fail/assets.tsv")" -eq 5 ]
+[ "$(wc -l < "$state_create_apply_fail/assets.tsv")" -eq 0 ]
+[ ! -f "$state_create_apply_fail/snapshot-count" ]
 [ "$(grep -c -- '-X POST repos/GUF296/tb321fu-haptics-debs/releases ' \
     "$state_create_apply_fail/calls.log")" -eq 1 ]
 
@@ -1406,7 +1426,7 @@ upload_apply_fail_output=$CAPTURE_OUTPUT
 [ "$(cat "$state_upload_apply_fail/draft")" = true ]
 [ "$(wc -l < "$state_upload_apply_fail/assets.tsv")" -eq 5 ]
 [ "$(wc -l < "$state_upload_apply_fail/curl-calls.log")" -eq 5 ]
-printf 'PASS applied-then-failed create and every asset upload reconcile without retrying writes\n'
+printf 'PASS applied-then-failed create fails closed and every asset upload reconciles without retrying writes\n'
 
 for applied_signal in INT TERM; do
   case $applied_signal in INT) expected_signal_status=130 ;; TERM) expected_signal_status=143 ;; esac
@@ -1461,6 +1481,7 @@ if run_publish "$state_create_incomplete" env PRERELEASE=1 \
 fi
 [ -f "$state_create_incomplete/exists" ]
 [ ! -s "$state_create_incomplete/assets.tsv" ]
+[ ! -f "$state_create_incomplete/snapshot-count" ]
 
 state_create_duplicate=$scratch/state-create-duplicate-tag
 if run_publish "$state_create_duplicate" env PRERELEASE=1 \
@@ -1470,6 +1491,7 @@ if run_publish "$state_create_duplicate" env PRERELEASE=1 \
 fi
 [ -f "$state_create_duplicate/exists" ]
 [ ! -s "$state_create_duplicate/assets.tsv" ]
+[ -f "$state_create_duplicate/snapshot-count" ]
 printf 'PASS create reconciliation refuses incomplete or non-unique exact-tag objects\n'
 
 common_helper=$publisher_scripts/common.sh

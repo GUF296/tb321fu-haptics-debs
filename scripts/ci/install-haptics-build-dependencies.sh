@@ -126,7 +126,8 @@ verify_no_apt_sandbox_fallback() {
 
 configure_private_apt_hook() {
   local hook_command=$1
-  local hook_tool
+  local expected_hook_script=${2:-}
+  local hook_tool hook_rest hook_script
 
   [ -n "$hook_command" ] &&
     [ "${#hook_command}" -le 12288 ] &&
@@ -140,6 +141,14 @@ configure_private_apt_hook() {
     echo 'private APT hook executable is missing' >&2
     return 1
   }
+  if [ -n "$expected_hook_script" ]; then
+    hook_rest=${hook_command#"/usr/bin/python3 -I -B "}
+    hook_script=${hook_rest%% --verify-hook *}
+    [ "$hook_script" = "$expected_hook_script" ] || {
+      echo 'private APT hook is not bound to the reviewed verifier' >&2
+      return 1
+    }
+  fi
   [ -f "$apt_config" ] && [ ! -L "$apt_config" ] &&
     [ "$(/usr/bin/stat -c '%a' -- "$apt_config")" = 600 ] || {
       echo 'private apt configuration is not a mode-0600 regular file' >&2
@@ -159,8 +168,9 @@ configure_private_apt_hook() {
 
 verify_private_apt_configuration() {
   local hook_command=${1:-}
+  local expected_hook_script=${2:-}
   local resolved_config="$work_dir/resolved-apt-config.txt"
-  local expected count hook_key
+  local expected count hook_key hook_rest hook_script
   local -a expected_lines=(
     "Dir::State::lists \"$lists\";"
     "Dir::State::extended_states \"$extended_states\";"
@@ -199,6 +209,14 @@ verify_private_apt_configuration() {
     'DPkg::Run-Directory "/";'
   )
   if [ -n "$hook_command" ]; then
+    if [ -n "$expected_hook_script" ]; then
+      hook_rest=${hook_command#"/usr/bin/python3 -I -B "}
+      hook_script=${hook_rest%% --verify-hook *}
+      [ "$hook_script" = "$expected_hook_script" ] || {
+        echo 'resolved APT hook is not bound to the reviewed verifier' >&2
+        return 1
+      }
+    fi
     hook_key=${hook_command%% *}
     expected_lines+=(
       'DPkg::Pre-Install-Pkgs "";'
@@ -474,8 +492,8 @@ if [ "${1:-}" = --self-test-apt-config ]; then
   hook_manifest="$hook_private/expected.tsv"
   hook_marker="$hook_private/hook.ok"
   hook_command="/usr/bin/python3 -I -B $mode_script_dir/verify-haptics-apt-transaction.py --verify-hook $hook_manifest $hook_marker"
-  configure_private_apt_hook "$hook_command"
-  verify_private_apt_configuration "$hook_command"
+  configure_private_apt_hook "$hook_command" "$mode_script_dir/verify-haptics-apt-transaction.py"
+  verify_private_apt_configuration "$hook_command" "$mode_script_dir/verify-haptics-apt-transaction.py"
   printf 'DPkg::Tools::options { "%s" { InfoFD "22"; }; };\n' \
     "${hook_command%% *}" >> "$apt_config"
   if verify_private_apt_configuration "$hook_command" >/dev/null 2>&1; then
@@ -483,7 +501,7 @@ if [ "${1:-}" = --self-test-apt-config ]; then
     exit 1
   fi
   prepare_private_apt_state 0
-  configure_private_apt_hook "$hook_command"
+  configure_private_apt_hook "$hook_command" "$mode_script_dir/verify-haptics-apt-transaction.py"
   printf 'DPkg::Tools::options { "%s" { Version "2"; }; };\n' \
     "${hook_command%% *}" >> "$apt_config"
   if verify_private_apt_configuration "$hook_command" >/dev/null 2>&1; then
@@ -491,14 +509,14 @@ if [ "${1:-}" = --self-test-apt-config ]; then
     exit 1
   fi
   prepare_private_apt_state 0
-  configure_private_apt_hook "$hook_command"
+  configure_private_apt_hook "$hook_command" "$mode_script_dir/verify-haptics-apt-transaction.py"
   printf 'DPkg::Pre-Install-Pkgs { "/bin/true"; };\n' >> "$apt_config"
   if verify_private_apt_configuration "$hook_command" >/dev/null 2>&1; then
     echo 'private apt configuration verifier accepted an extra package hook' >&2
     exit 1
   fi
   prepare_private_apt_state 0
-  configure_private_apt_hook "$hook_command"
+  configure_private_apt_hook "$hook_command" "$mode_script_dir/verify-haptics-apt-transaction.py"
   printf 'DPkg::Tools::options { "%s" { Unknown "1"; }; };\n' \
     "${hook_command%% *}" >> "$apt_config"
   if verify_private_apt_configuration "$hook_command" >/dev/null 2>&1; then
@@ -730,8 +748,8 @@ hook_command="/usr/bin/python3 -I -B $APT_TRANSACTION_VERIFIER --verify-hook $ho
   "$private_package_lock" "$before_state" "$host_plan" \
   "$before_dpkg_state" "$private_host_reference" \
   "$archives" "$compat_dir" "$hook_manifest"
-configure_private_apt_hook "$hook_command"
-verify_private_apt_configuration "$hook_command"
+configure_private_apt_hook "$hook_command" "$APT_TRANSACTION_VERIFIER"
+verify_private_apt_configuration "$hook_command" "$APT_TRANSACTION_VERIFIER"
 compat_apt_stderr="$work_dir/package-install.stderr"
 if "${apt_command[@]}" install -y \
   --no-install-recommends --allow-downgrades --no-remove -- \

@@ -104,7 +104,10 @@ read_managed_want_state()
 	if [ -e "$managed_want_state" ] || [ -L "$managed_want_state" ]; then
 		[ -f "$managed_want_state" ] && [ ! -L "$managed_want_state" ] ||
 			die "managed systemd-want state is not a regular file: $managed_want_state"
-		state_sample=$(mktemp "$(dirname -- "$managed_want_state")/.managed-want-state.XXXXXX") ||
+		state_dir=$(dirname -- "$managed_want_state")
+		[ -d "$state_dir" ] && [ ! -L "$state_dir" ] ||
+			die "managed systemd-want state parent is not a real directory: $state_dir"
+		state_sample=$(mktemp "$state_dir/.managed-want-state.XXXXXX") ||
 			die "cannot create bounded managed systemd-want state sample"
 		if ! dd if="$managed_want_state" of="$state_sample" bs=1 \
 			count=$((MANAGED_WANT_STATE_MAX_BYTES + 1)) 2>/dev/null; then
@@ -168,10 +171,21 @@ record_owned_managed_want()
 		{ printf '%s\n' "tb321fu-haptics postinst: cannot read package-managed systemd want: $managed_want" >&2; return 1; }
 	[ "$managed_want_target" = "$MANAGED_WANT_TARGET" ] ||
 		{ printf '%s\n' "tb321fu-haptics postinst: package-managed systemd want has an unexpected target: $managed_want" >&2; return 1; }
-	if ! install -d -m 0755 "$(dirname -- "$managed_want_state")"; then
+	state_dir=$(dirname -- "$managed_want_state")
+	if [ -e "$state_dir" ] || [ -L "$state_dir" ]; then
+		[ -d "$state_dir" ] && [ ! -L "$state_dir" ] || {
+			printf '%s\n' "tb321fu-haptics postinst: managed systemd-want state parent is not a real directory" >&2
+			return 1
+		}
+	fi
+	if ! install -d -m 0755 "$state_dir"; then
 		printf '%s\n' 'tb321fu-haptics postinst: cannot create managed systemd-want state directory' >&2
 		return 1
 	fi
+	[ -d "$state_dir" ] && [ ! -L "$state_dir" ] || {
+		printf '%s\n' 'tb321fu-haptics postinst: managed systemd-want state parent changed to a symlink' >&2
+		return 1
+	}
 	tmp_state=$(mktemp "$managed_want_state.tmp.XXXXXX") || {
 		printf '%s\n' "tb321fu-haptics postinst: cannot create managed systemd-want state temporary file: $managed_want_state" >&2
 		return 1
@@ -215,7 +229,11 @@ rollback_new_managed_want()
 }
 
 case "${1:-}" in
-	configure) ;;
+	configure|abort-upgrade|abort-remove|abort-deconfigure|failed-upgrade)
+		# The recovery callbacks are deliberately idempotent. dpkg invokes them
+		# after a partial lifecycle action, so silently returning would leave the
+		# module map or service enablement in the half-upgraded state.
+		;;
 	*) exit 0 ;;
 esac
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import os
 import pathlib
@@ -135,20 +136,97 @@ class ProvenanceError(ValueError):
     pass
 
 
-def read_regular(root: pathlib.Path, relative: str, maximum: int) -> bytes:
-    path = root / relative
+def _directory_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _file_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+
+
+def _open_parent(path: pathlib.Path) -> tuple[int, str, pathlib.Path]:
+    """Pin every parent directory before opening a provenance file."""
     try:
-        before = path.lstat()
+        absolute = pathlib.Path(os.path.abspath(path))
+    except (OSError, ValueError) as exc:
+        raise ProvenanceError(f"invalid provenance path: {path}") from exc
+    if not absolute.is_absolute() or absolute.parts[0] != os.sep:
+        raise ProvenanceError(f"provenance path is not absolute: {absolute}")
+    components = absolute.parts[1:]
+    if not components:
+        raise ProvenanceError(f"provenance path has no file component: {path}")
+    current = -1
+    try:
+        current = os.open(os.sep, _directory_flags())
+        for component in components[:-1]:
+            child = os.open(component, _directory_flags(), dir_fd=current)
+            os.close(current)
+            current = child
+        return current, components[-1], absolute
     except OSError as exc:
-        raise ProvenanceError(f"cannot inspect provenance member {relative}: {exc}") from exc
-    if not stat.S_ISREG(before.st_mode) or stat.S_IMODE(before.st_mode) != 0o644:
-        raise ProvenanceError(f"provenance member is not regular mode 0644: {relative}")
-    if before.st_size > maximum:
-        raise ProvenanceError(f"provenance member is oversized: {relative}")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
+        if current >= 0:
+            os.close(current)
+        if exc.errno == errno.ELOOP:
+            raise ProvenanceError(
+                f"provenance path contains a symlink component: {path}"
+            ) from exc
+        raise ProvenanceError(f"cannot open provenance path parent: {path}: {exc}") from exc
+
+
+def _open_regular_path(path: pathlib.Path) -> tuple[int, int, str, pathlib.Path]:
+    parent_fd, name, absolute = _open_parent(path)
     try:
-        opened = os.fstat(descriptor)
+        descriptor = os.open(name, _file_flags(), dir_fd=parent_fd)
+    except OSError as exc:
+        os.close(parent_fd)
+        raise ProvenanceError(f"cannot open provenance file: {path}: {exc}") from exc
+    return descriptor, parent_fd, name, absolute
+
+
+def _member_path(root: pathlib.Path, relative: str) -> pathlib.Path:
+    if type(relative) is not str or not relative:
+        raise ProvenanceError("provenance member path is invalid")
+    member = pathlib.PurePosixPath(relative)
+    if member.is_absolute() or any(part in {"", ".", ".."} for part in member.parts):
+        raise ProvenanceError(f"provenance member path is not contained: {relative}")
+    root_absolute = pathlib.Path(os.path.abspath(root))
+    path = pathlib.Path(os.path.abspath(root_absolute / relative))
+    try:
+        contained = os.path.commonpath((str(root_absolute), str(path))) == str(root_absolute)
+    except ValueError as exc:
+        raise ProvenanceError(f"provenance member path is not contained: {relative}") from exc
+    if not contained:
+        raise ProvenanceError(f"provenance member path is not contained: {relative}")
+    return path
+
+
+def _read_stable(
+    descriptor: int,
+    parent_fd: int,
+    name: str,
+    maximum: int,
+    allowed_modes: tuple[int, ...],
+    label: str,
+) -> bytes:
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_IMODE(before.st_mode) not in allowed_modes
+        ):
+            raise ProvenanceError(f"{label} is not a bounded regular file")
+        if before.st_size > maximum:
+            raise ProvenanceError(f"{label} is oversized")
         raw = bytearray()
         while len(raw) <= maximum:
             chunk = os.read(descriptor, min(1024 * 1024, maximum + 1 - len(raw)))
@@ -156,60 +234,57 @@ def read_regular(root: pathlib.Path, relative: str, maximum: int) -> bytes:
                 break
             raw.extend(chunk)
         after = os.fstat(descriptor)
+        path_after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except ProvenanceError:
+        raise
+    except OSError as exc:
+        raise ProvenanceError(f"{label} could not be read: {exc}") from exc
+    identity = lambda value: (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+    if identity(before) != identity(after) or identity(after) != identity(path_after):
+        raise ProvenanceError(f"{label} changed while reading")
+    if len(raw) != before.st_size or len(raw) > maximum:
+        raise ProvenanceError(f"{label} size changed while reading")
+    return bytes(raw)
+
+
+def read_regular(root: pathlib.Path, relative: str, maximum: int) -> bytes:
+    path = _member_path(root, relative)
+    descriptor, parent_fd, name, _ = _open_regular_path(path)
+    try:
+        return _read_stable(
+            descriptor,
+            parent_fd,
+            name,
+            maximum,
+            (0o644,),
+            f"provenance member {relative}",
+        )
     finally:
         os.close(descriptor)
-    identity = lambda value: (
-        value.st_dev, value.st_ino, value.st_mode, value.st_size,
-        value.st_mtime_ns, value.st_ctime_ns,
-    )
-    if identity(before) != identity(opened) or identity(opened) != identity(after):
-        raise ProvenanceError(f"provenance member changed while reading: {relative}")
-    if len(raw) != opened.st_size or len(raw) > maximum:
-        raise ProvenanceError(f"provenance member size changed while reading: {relative}")
-    return bytes(raw)
+        os.close(parent_fd)
 
 
 def read_reference(path: pathlib.Path) -> bytes:
+    descriptor, parent_fd, name, _ = _open_regular_path(path)
     try:
-        before = path.lstat()
-    except OSError as exc:
-        raise ProvenanceError(f"cannot inspect trusted release reference: {exc}") from exc
-    if (
-        not stat.S_ISREG(before.st_mode)
-        or stat.S_IMODE(before.st_mode) not in (0o400, 0o644)
-        or before.st_size > MAX_METADATA_BYTES
-    ):
-        raise ProvenanceError("trusted release reference is not a bounded regular file")
-    descriptor = os.open(
-        path,
-        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
-    try:
-        opened = os.fstat(descriptor)
-        raw = bytearray()
-        while len(raw) <= MAX_METADATA_BYTES:
-            chunk = os.read(
-                descriptor,
-                min(1024 * 1024, MAX_METADATA_BYTES + 1 - len(raw)),
-            )
-            if not chunk:
-                break
-            raw.extend(chunk)
-        after = os.fstat(descriptor)
+        return _read_stable(
+            descriptor,
+            parent_fd,
+            name,
+            MAX_METADATA_BYTES,
+            (0o400, 0o644),
+            "trusted release reference",
+        )
     finally:
         os.close(descriptor)
-    identity = lambda value: (
-        value.st_dev, value.st_ino, value.st_mode, value.st_size,
-        value.st_mtime_ns, value.st_ctime_ns,
-    )
-    if (
-        identity(before) != identity(opened)
-        or identity(opened) != identity(after)
-        or len(raw) != opened.st_size
-        or len(raw) > MAX_METADATA_BYTES
-    ):
-        raise ProvenanceError("trusted release reference changed while reading")
-    return bytes(raw)
+        os.close(parent_fd)
 
 
 def parse_exact_tsv(raw: bytes, fields: tuple[tuple[str, re.Pattern[str]], ...], label: str) -> dict[str, str]:

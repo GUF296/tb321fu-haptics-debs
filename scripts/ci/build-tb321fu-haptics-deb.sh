@@ -508,6 +508,8 @@ prepare_inputs() {
         ci_die "kernel SDK archive does not match KERNEL-SDK-MANIFEST.tsv"
     fi
     ci_extract_archive "$archive" "$extract"
+    [ "$(haptics_sha256_file "$archive")" = "$kernel_build_archive_identity" ] ||
+      ci_die "kernel SDK archive changed between verification and extraction"
     if [ -n "$kernel_sdk_manifest_path" ]; then
       haptics_run_isolated_tool python3 "$SCRIPT_DIR/verify-kernel-sdk.py" \
         "$archive" "$kernel_sdk_manifest_path" "$extract" \
@@ -579,6 +581,8 @@ validate_haptics_maintainer_source_contract() {
     scripts/ci/haptics-control-templates/postrm.in
   )
 
+  haptics_maintainer_template_snapshot_dir="$contract_root/scripts/ci/haptics-control-templates"
+
   [ "$(realpath -e -- "$SCRIPT_DIR")" = \
     "$(realpath -e -- "$haptics_root/scripts/ci")" ] ||
     ci_die "haptics maintainer scripts are not from the verified producer root"
@@ -615,6 +619,7 @@ validate_haptics_maintainer_source_contract() {
       "$rendered" "$kernel_release" ||
       ci_die "cannot render verified haptics maintainer template: $template"
   done
+  chmod 0444 "$haptics_maintainer_template_snapshot_dir"/*.in
 }
 
 verify_kernel_source_state() {
@@ -865,12 +870,13 @@ EOF_CONTROL
 }
 
 write_bind_script() {
-  local dest=$1
+  local dest=$1 rendered
 
   cat > "$dest" <<'EOF_BIND'
 #!/bin/sh
 set -eu
 
+KERNEL_RELEASE=@KERNEL_RELEASE@
 SYSFS_ROOT=${TB321FU_HAPTICS_SYSFS_ROOT:-/sys}
 case "$SYSFS_ROOT" in
 	/*) ;;
@@ -962,25 +968,56 @@ module_loaded()
 	lsmod | awk 'NR > 1 { print $1 }' | grep -Fxq "$1"
 }
 
+verify_runtime_kernel_and_module()
+{
+	running_release=$(uname -r) || {
+		echo "cannot determine the running kernel release" >&2
+		return 1
+	}
+	[ "$running_release" = "$KERNEL_RELEASE" ] || {
+		echo "running kernel release $running_release differs from packaged release $KERNEL_RELEASE" >&2
+		return 1
+	}
+	module_root=${TB321FU_HAPTICS_MODULE_ROOT:-/usr/lib/modules}
+	case "$module_root" in
+		/*) ;;
+		*) echo "TB321FU_HAPTICS_MODULE_ROOT must be an absolute path" >&2; return 1 ;;
+	esac
+	module_path="$module_root/$KERNEL_RELEASE/extra/aw86937-haptics.ko"
+	[ -f "$module_path" ] && [ ! -L "$module_path" ] || {
+		echo "packaged AW86937 haptics module is missing or not regular: $module_path" >&2
+		return 1
+	}
+	module_real=$(readlink -f -- "$module_path") || {
+		echo "cannot resolve packaged AW86937 haptics module: $module_path" >&2
+		return 1
+	}
+	printf '%s\n' "$module_real"
+}
+
 load_current_driver()
 {
 	if module_loaded aw86937_y700; then
 		echo "legacy aw86937_y700 module is already loaded; reboot before binding TB321FU haptics" >&2
 		return 1
 	fi
-	module_loaded aw86937_haptics && return 0
-	modprobe aw86937_haptics 2>/dev/null && return 0
-
-	krel=$(uname -r)
-	for module_path in \
-		"/lib/modules/$krel/extra/aw86937-haptics.ko" \
-		"/usr/lib/modules/$krel/extra/aw86937-haptics.ko"; do
-		[ -f "$module_path" ] || continue
-		insmod "$module_path" && return 0
-	done
-
-	echo "no current AW86937 haptics module could be loaded" >&2
-	return 1
+	module_path=$(verify_runtime_kernel_and_module) || return 1
+	if module_loaded aw86937_haptics; then
+		loaded_path=$(modinfo -n aw86937_haptics) || {
+			echo "cannot resolve the already-loaded AW86937 haptics module" >&2
+			return 1
+		}
+		loaded_real=$(readlink -f -- "$loaded_path") || return 1
+		[ "$loaded_real" = "$module_path" ] || {
+			echo "already-loaded AW86937 haptics module is not the packaged module" >&2
+			return 1
+		}
+		return 0
+	fi
+	insmod "$module_path" || {
+		echo "cannot load packaged AW86937 haptics module: $module_path" >&2
+		return 1
+	}
 }
 
 wait_for_current_driver()
@@ -1034,6 +1071,12 @@ driver_dir=$(wait_for_current_driver) || exit 1
 bind_current_client "$right_client" "$driver_dir" || exit 1
 bind_current_client "$left_client" "$driver_dir" || exit 1
 EOF_BIND
+  rendered="${dest}.rendered.$$"
+  sed "s/@KERNEL_RELEASE@/$kernel_release/g" "$dest" > "$rendered" || {
+    rm -f -- "$rendered"
+    ci_die "cannot bind the runtime helper to the verified kernel release"
+  }
+  mv -f -- "$rendered" "$dest"
   chmod 0755 "$dest"
 }
 
@@ -1204,7 +1247,8 @@ EOF_MAKE
   haptics_test_helper_binary_sha256=$(haptics_sha256_file \
     "$pkg/usr/bin/tb321fu-haptic-test")
   write_control "$pkg"
-  haptics_write_maintainer_scripts "$pkg" "$kernel_release"
+  haptics_write_maintainer_scripts "$pkg" "$kernel_release" \
+    "$haptics_maintainer_template_snapshot_dir"
 
   find "$pkg" -type d -exec chmod 0755 {} +
   find "$pkg" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
@@ -1223,7 +1267,8 @@ verify_built_haptics_deb() {
     "$haptics_ram_firmware_sha256" \
     "$haptics_click_firmware_sha256" \
     "$haptics_module_sha256" \
-    "$haptics_test_helper_binary_sha256" >/dev/null
+    "$haptics_test_helper_binary_sha256" \
+    tb321fu-haptics "$HAPTICS_DEB_VERSION" "$ARCH" >/dev/null
 }
 
 stage_haptics_source_snapshot() {

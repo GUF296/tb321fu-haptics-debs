@@ -70,7 +70,10 @@ read_managed_want_state()
 	managed_want_state_target=
 	[ -f "$managed_want_state" ] && [ ! -L "$managed_want_state" ] ||
 		die "managed systemd-want state is not a regular file: $managed_want_state"
-	state_sample=$(mktemp "$(dirname -- "$managed_want_state")/.managed-want-state.XXXXXX") ||
+	state_dir=$(dirname -- "$managed_want_state")
+	[ -d "$state_dir" ] && [ ! -L "$state_dir" ] ||
+		die "managed systemd-want state parent is not a real directory: $state_dir"
+	state_sample=$(mktemp "$state_dir/.managed-want-state.XXXXXX") ||
 		die "cannot create bounded managed systemd-want state sample"
 	if ! dd if="$managed_want_state" of="$state_sample" bs=1 \
 		count=$((MANAGED_WANT_STATE_MAX_BYTES + 1)) 2>/dev/null; then
@@ -118,7 +121,12 @@ depmod_target()
 }
 
 case "${1:-}" in
-	remove|purge) ;;
+	remove|purge)
+		action=remove
+		;;
+	abort-upgrade|abort-deconfigure|abort-install|failed-upgrade)
+		action=recover
+		;;
 	*) exit 0 ;;
 esac
 
@@ -127,7 +135,9 @@ require_command dd
 require_command mktemp
 require_command dirname
 
-remove_managed_want tb321fu-haptics.service
+if [ "$action" = remove ]; then
+	remove_managed_want tb321fu-haptics.service
+fi
 reload_systemd_if_running
 reload_udev_if_running
 

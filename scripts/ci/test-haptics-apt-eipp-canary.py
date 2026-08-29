@@ -83,6 +83,88 @@ def require_success(result: subprocess.CompletedProcess[bytes], label: str) -> N
         )
 
 
+def expected_disposable_hook_configuration(
+    command: str,
+    *,
+    dpkg_admin: pathlib.Path,
+    rootfs: pathlib.Path,
+) -> tuple[tuple[str, str], ...]:
+    """Return the required APT EIPP configuration projection for this hook."""
+    fields = command.split(" ")
+    if (
+        len(fields) != 6
+        or fields[:3] != ["/usr/bin/python3", "-I", "-B"]
+        or fields[4] != "--capture"
+        or any(
+            not value
+            or not pathlib.PurePosixPath(value).is_absolute()
+            or any(character.isspace() for character in value)
+            for value in (fields[3], fields[5])
+        )
+        or not dpkg_admin.is_absolute()
+        or not rootfs.is_absolute()
+    ):
+        raise SystemExit("disposable APT hook command is not canonical")
+    return tuple(
+        sorted(
+            (
+                ("APT::Architecture", "amd64"),
+                ("APT::Architectures::", "amd64"),
+                ("Dir::Bin::dpkg", "/usr/bin/dpkg"),
+                ("DPkg::ConfigurePending", "1"),
+                ("DPkg::Path", "/usr/sbin:/usr/bin:/sbin:/bin"),
+                ("DPkg::Pre-Install-Pkgs::", command),
+                ("DPkg::Options::", f"--admindir={dpkg_admin}"),
+                ("DPkg::Options::", f"--root={rootfs}"),
+                ("DPkg::Run-Directory", "/"),
+                ("DPkg::Tools::options::/usr/bin/python3::InfoFD", "21"),
+                ("DPkg::Tools::options::/usr/bin/python3::Version", "3"),
+            )
+        )
+    )
+
+
+def expected_disposable_private_paths(
+    *,
+    work: pathlib.Path,
+    admin: pathlib.Path,
+    lists: pathlib.Path,
+    archives: pathlib.Path,
+    source_parts: pathlib.Path,
+    config_parts: pathlib.Path,
+    auth_parts: pathlib.Path,
+    preferences_parts: pathlib.Path,
+    trusted_parts: pathlib.Path,
+    sources: pathlib.Path,
+    empty: pathlib.Path,
+    log: pathlib.Path,
+) -> tuple[tuple[str, str], ...]:
+    """Return the complete private path projection used by this canary."""
+    cache = work / "cache"
+    state = work / "state"
+    records = {
+        "Dir::State::lists": str(lists),
+        "Dir::State::extended_states": str(state / "extended_states"),
+        "Dir::State::status": str(admin / "status"),
+        "Dir::Cache": str(cache),
+        "Dir::Cache::archives": str(archives),
+        "Dir::Cache::srcpkgcache": str(cache / "srcpkgcache.bin"),
+        "Dir::Cache::pkgcache": str(cache / "pkgcache.bin"),
+        "Dir::Etc::sourcelist": str(sources),
+        "Dir::Etc::sourceparts": str(source_parts),
+        "Dir::Etc::main": str(empty),
+        "Dir::Etc::parts": str(config_parts),
+        "Dir::Etc::netrc": str(empty),
+        "Dir::Etc::netrcparts": str(auth_parts),
+        "Dir::Etc::preferences": str(empty),
+        "Dir::Etc::preferencesparts": str(preferences_parts),
+        "Dir::Etc::trusted": "/dev/null",
+        "Dir::Etc::trustedparts": str(trusted_parts),
+        "Dir::Log": str(log),
+    }
+    return tuple(sorted(records.items()))
+
+
 def mkdir(path: pathlib.Path, mode: int = 0o755) -> None:
     path.mkdir(parents=True, exist_ok=True)
     path.chmod(mode)
@@ -149,11 +231,13 @@ def run_disposable_canary(verifier, apt_account) -> None:
         updates = admin / "updates"
         triggers = admin / "triggers"
         parts = admin / "parts"
-        logs = rootfs / "var/log"
+        logs = work / "log"
         lists = work / "state/lists"
         archives = work / "cache/archives"
         source_parts = work / "source-parts"
         config_parts = work / "config-parts"
+        auth_parts = work / "auth-parts"
+        preferences_parts = work / "preferences-parts"
         trusted_parts = work / "trusted-parts"
         for directory in (
             repo,
@@ -170,7 +254,10 @@ def run_disposable_canary(verifier, apt_account) -> None:
             archives / "partial",
             source_parts,
             config_parts,
+            auth_parts,
+            preferences_parts,
             trusted_parts,
+            work / "log",
         ):
             mkdir(directory)
         os.chown(lists / "partial", apt_account.pw_uid, 0)
@@ -255,18 +342,34 @@ def run_disposable_canary(verifier, apt_account) -> None:
         )
         apt_config.write_text(
             f'Dir::State::lists "{lists}";\n'
+            f'Dir::State::extended_states "{work / "state/extended_states"}";\n'
             f'Dir::State::status "{admin / "status"}";\n'
             f'Dir::Cache "{work / "cache"}";\n'
             f'Dir::Cache::archives "{archives}";\n'
+            f'Dir::Cache::srcpkgcache "{work / "cache/srcpkgcache.bin"}";\n'
+            f'Dir::Cache::pkgcache "{work / "cache/pkgcache.bin"}";\n'
             f'Dir::Etc::sourcelist "{sources}";\n'
             f'Dir::Etc::sourceparts "{source_parts}";\n'
             f'Dir::Etc::main "{empty}";\n'
             f'Dir::Etc::parts "{config_parts}";\n'
+            f'Dir::Etc::netrc "{empty}";\n'
+            f'Dir::Etc::netrcparts "{auth_parts}";\n'
+            f'Dir::Etc::preferences "{empty}";\n'
+            f'Dir::Etc::preferencesparts "{preferences_parts}";\n'
             'Dir::Etc::trusted "/dev/null";\n'
             f'Dir::Etc::trustedparts "{trusted_parts}";\n'
+            f'Dir::Log "{logs}";\n'
+            'Acquire::Languages "none";\n'
             'APT::Architecture "amd64";\n'
             'APT::Architectures { "amd64"; };\n'
-            'APT::Get::AllowUnauthenticated "1";\n'
+            'Acquire::Check-Valid-Until "0";\n'
+            'Acquire::AllowInsecureRepositories "0";\n'
+            'Acquire::AllowWeakRepositories "0";\n'
+            'Acquire::AllowDowngradeToInsecureRepositories "0";\n'
+            'Acquire::https::Verify-Peer "1";\n'
+            'Acquire::https::Verify-Host "1";\n'
+            'APT::Get::AllowUnauthenticated "0";\n'
+            'APT::Get::List-Cleanup "0";\n'
             'APT::Sandbox::User "_apt";\n'
             'Dir::Bin::dpkg "/usr/bin/dpkg";\n'
             'DPkg::ConfigurePending "1";\n'
@@ -282,7 +385,10 @@ def run_disposable_canary(verifier, apt_account) -> None:
         apt_config.chmod(0o600)
         apt_environment = dict(base_environment)
         apt_environment["APT_CONFIG"] = str(apt_config)
-        apt_command = ["/usr/bin/apt-get", "-qq"]
+        # Keep the hooked install argv identical to the production installer.
+        # The simulation/check phases add their own -qq flags below where no
+        # EIPP hook is invoked.
+        apt_command = ["/usr/bin/apt-get"]
         require_success(
             run(apt_command + ["update"], cwd=work, environment=apt_environment),
             "canary apt update",
@@ -295,7 +401,9 @@ def run_disposable_canary(verifier, apt_account) -> None:
                     "--download-only",
                     "install",
                     "--no-install-recommends",
+                    "--allow-downgrades",
                     "--no-remove",
+                    "--",
                     str(archive),
                 ],
                 cwd=work,
@@ -316,7 +424,9 @@ def run_disposable_canary(verifier, apt_account) -> None:
                     "-y",
                     "install",
                     "--no-install-recommends",
+                    "--allow-downgrades",
                     "--no-remove",
+                    "--",
                     str(archive),
                 ],
                 cwd=work,
@@ -343,6 +453,45 @@ def run_disposable_canary(verifier, apt_account) -> None:
                 if after_separator:
                     print("EIPP_ACTION_LINE=" + repr(line[:2048]), file=sys.stderr)
             raise
+        expected_configuration = expected_disposable_hook_configuration(
+            hook_command,
+            dpkg_admin=admin,
+            rootfs=rootfs,
+        )
+        required_paths = expected_disposable_private_paths(
+            work=work,
+            admin=admin,
+            lists=lists,
+            archives=archives,
+            source_parts=source_parts,
+            config_parts=config_parts,
+            auth_parts=auth_parts,
+            preferences_parts=preferences_parts,
+            trusted_parts=trusted_parts,
+            sources=sources,
+            empty=empty,
+            log=logs,
+        )
+        try:
+            verifier.verify_eipp_configuration(
+                document.configuration,
+                expected_configuration,
+                enforce_runtime_projection=True,
+                required_paths=required_paths,
+            )
+        except verifier.AptTransactionError as exc:
+            raise SystemExit(
+                "real disposable transaction produced unexpected EIPP configuration: "
+                + str(exc)
+                + " actual="
+                + repr(document.configuration)
+                + " expected="
+                + repr(expected_configuration)
+            ) from exc
+        if ("quiet", "1") not in document.configuration:
+            raise SystemExit(
+                "real disposable transaction did not preserve the production quiet level"
+            )
         expected_actions = (
             verifier.PackageAction(
                 "haptics-eipp-canary",

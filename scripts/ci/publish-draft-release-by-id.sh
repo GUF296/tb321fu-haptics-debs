@@ -412,7 +412,7 @@ manifest_names=$(awk '
   length($1) != 64 || $1 !~ /^[0-9a-fA-F]+$/ { exit 2 }
   {
     name = substr($0, 67)
-    sub(/^\\*/, "", name)
+    sub(/^\*/, "", name)
     if (name == "" || name == "SHA256SUMS.txt") exit 3
     print name
   }
@@ -466,7 +466,9 @@ local_asset_records=$(snapshot_local_assets) || {
 
 fetch_release_snapshot() {
   github_api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq \
-    '(["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets | sort_by(.name)[] | ["asset", .name, (.size | tostring), (.digest // ""), .state])) | @tsv'
+    '["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv'
+  github_api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
+    --paginate --jq '.[] | ["asset", .name, (.size | tostring), (.digest // ""), .state] | @tsv'
 }
 
 verify_release_snapshot() {
@@ -511,11 +513,15 @@ verify_release_snapshot() {
 }
 
 fetch_latest_snapshot() {
-  local snapshot regular_release_ids
+  local metadata latest_id assets regular_release_ids
 
-  if snapshot=$(github_api "repos/$GITHUB_REPOSITORY/releases/latest" --jq \
-      '(["latest", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets | sort_by(.name)[] | ["latest-asset", .name, (.size | tostring), (.digest // ""), .state])) | @tsv'); then
-    printf '%s\n' "$snapshot"
+  if metadata=$(github_api "repos/$GITHUB_REPOSITORY/releases/latest" --jq \
+      '["latest", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv'); then
+    latest_id=$(printf '%s\n' "$metadata" | awk -F '\t' \
+      '$1 == "latest" && NF == 9 && $2 ~ /^[1-9][0-9]{0,19}$/ { print $2; found++ } END { if (found != 1) exit 1 }') || return 1
+    assets=$(github_api "repos/$GITHUB_REPOSITORY/releases/$latest_id/assets?per_page=100" \
+      --paginate --jq '.[] | ["latest-asset", .name, (.size | tostring), (.digest // ""), .state] | @tsv') || return 1
+    printf '%s\n%s\n' "$metadata" "$assets"
     return 0
   fi
   regular_release_ids=$(github_api \

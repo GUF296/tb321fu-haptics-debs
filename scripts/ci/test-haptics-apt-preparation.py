@@ -318,13 +318,25 @@ def verify_whole_preparation_deadline(
     original_unlink = verifier.os.unlink
 
     def preparation_argv(manifest_path: pathlib.Path) -> list[str]:
+        fields = hook_command.split(" ")
+        if len(fields) != 7 or fields[4] != "--verify-hook":
+            raise SystemExit(
+                "APT whole-deadline fixture received a non-production hook"
+            )
+        bound_hook_command = " ".join(
+            (
+                *fields[:5],
+                str(manifest_path),
+                str(manifest_path.parent / "hook.ok"),
+            )
+        )
         return [
             str(MODULE_PATH),
             "--prepare-manifest-disposable",
             "/tmp/dpkg-admin",
             str(os.getuid()),
             str(os.getgid()),
-            hook_command,
+            bound_hook_command,
             str(private / "lock.tsv"),
             str(private / "package-state.tsv"),
             str(private / "host.plan"),
@@ -1590,10 +1602,24 @@ def verify_runtime_reference_mode(
         verifier.enumerate_archive_paths = enumerate_archives
         verifier.capture_deb_archive = capture_archive
         verifier.write_private_manifest = refuse_manifest_publication
+        case_hook_command = hook_command
+        if mode == "--prepare-manifest-runtime-reference":
+            fields = hook_command.split(" ")
+            if len(fields) != 7 or fields[4] != "--verify-hook":
+                raise SystemExit(
+                    "APT runtime-reference fixture received a non-production hook"
+                )
+            case_hook_command = " ".join(
+                (
+                    *fields[:5],
+                    str(manifest_path),
+                    str(manifest_path.parent / "hook.ok"),
+                )
+            )
         sys.argv = [
             str(MODULE_PATH),
             mode,
-            hook_command,
+            case_hook_command,
             str(private / "lock.tsv"),
             str(private / "package-state.tsv"),
             str(private / "host.plan"),
@@ -1664,7 +1690,12 @@ def verify_runtime_reference_mode(
         or enumeration_count != 2
     ):
         raise SystemExit(
-            "APT runtime-reference mode skipped parsing, live comparison, or race checks"
+            "APT runtime-reference mode skipped parsing, live comparison, or race checks: "
+            f"message={message!r} package_capture={package.capture_count} "
+            f"plan={package.verified_plan} dpkg_parse={dpkg.parsed_host_reference_count} "
+            f"dpkg_verify={dpkg.verified_host_count} dpkg_serialize="
+            f"{dpkg.serialized_host_reference_count} dpkg_capture={dpkg.capture_count} "
+            f"archive={archive_count} enumerate={enumeration_count}"
         )
 
     message, package, dpkg, archive_count, _ = run_case(
@@ -2315,7 +2346,7 @@ def main() -> None:
             path.write_bytes(content)
             path.chmod(0o600)
         prepared_path = private / "prepared.tsv"
-        marker_path = private / "prepared.ok"
+        marker_path = private / "hook.ok"
         hook_command = (
             f"/usr/bin/python3 -I -B {MODULE_PATH} --verify-hook "
             f"{prepared_path} {marker_path}"

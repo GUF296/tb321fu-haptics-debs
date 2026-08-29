@@ -107,6 +107,14 @@ require_failure 'unexpected file count' \
   bash "$verifier" "$extra_control" "$tmp/extra-control.deb" "$kernel_release" \
   "$ram_sha" "$click_sha" "$module_sha" "$helper_sha"
 
+extra_directory="$tmp/extra-directory"
+cp -a "$pkg" "$extra_directory"
+install -d -m 0755 "$extra_directory/usr/libexec/tb321fu-haptics/unexpected-empty"
+build_deb "$extra_directory" "$tmp/extra-directory.deb"
+require_failure 'unexpected empty directory' \
+  bash "$verifier" "$extra_directory" "$tmp/extra-directory.deb" "$kernel_release" \
+  "$ram_sha" "$click_sha" "$module_sha" "$helper_sha"
+
 wrong_path="$tmp/wrong-path"
 cp -a "$pkg" "$wrong_path"
 mv "$wrong_path/usr/lib/udev/rules.d/90-tb321fu-haptics.rules" \
@@ -155,6 +163,36 @@ sed -i 's/^Depends: .*/Depends: kmod, systemd, udev, linux-image-test-kernel/' \
 build_deb "$guessed_kernel_dep" "$tmp/guessed-kernel-dep.deb"
 require_failure 'must not guess a distro kernel package ABI dependency' \
   bash "$verifier" "$guessed_kernel_dep" "$tmp/guessed-kernel-dep.deb" "$kernel_release" \
+  "$ram_sha" "$click_sha" "$module_sha" "$helper_sha"
+
+symlink_deb="$tmp/symlink.deb"
+ln -s "$(basename "$good_deb")" "$symlink_deb"
+require_failure 'DEB input must not be a symlink' \
+  bash "$verifier" "$pkg" "$symlink_deb" "$kernel_release" \
+  "$ram_sha" "$click_sha" "$module_sha" "$helper_sha"
+
+wrong_package="$tmp/wrong-package"
+cp -a "$pkg" "$wrong_package"
+sed -i 's/^Package: .*/Package: unrelated-package/' "$wrong_package/DEBIAN/control"
+build_deb "$wrong_package" "$tmp/wrong-package.deb"
+require_failure 'package-tree Package field differs' \
+  bash "$verifier" "$wrong_package" "$tmp/wrong-package.deb" "$kernel_release" \
+  "$ram_sha" "$click_sha" "$module_sha" "$helper_sha"
+
+wrong_version="$tmp/wrong-version"
+cp -a "$pkg" "$wrong_version"
+sed -i 's/^Version: .*/Version: 9/' "$wrong_version/DEBIAN/control"
+build_deb "$wrong_version" "$tmp/wrong-version.deb"
+require_failure 'DEB Version field differs' \
+  bash "$verifier" "$wrong_version" "$tmp/wrong-version.deb" "$kernel_release" \
+  "$ram_sha" "$click_sha" "$module_sha" "$helper_sha" tb321fu-haptics 1 arm64
+
+wrong_arch="$tmp/wrong-architecture"
+cp -a "$pkg" "$wrong_arch"
+sed -i 's/^Architecture: .*/Architecture: amd64/' "$wrong_arch/DEBIAN/control"
+build_deb "$wrong_arch" "$tmp/wrong-architecture.deb"
+require_failure 'package-tree Architecture field differs' \
+  bash "$verifier" "$wrong_arch" "$tmp/wrong-architecture.deb" "$kernel_release" \
   "$ram_sha" "$click_sha" "$module_sha" "$helper_sha"
 
 printf 'HAPTICS_DEB_FIXTURES=PASS\n'
