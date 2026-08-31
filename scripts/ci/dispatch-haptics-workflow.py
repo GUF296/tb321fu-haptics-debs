@@ -181,6 +181,17 @@ def require_verification_evidence(value: object) -> VerificationEvidence:
 
 
 def dispatch_input_digest(release_tag: str, dispatch_id: str) -> str:
+    inputs = canonical_workflow_inputs(release_tag, dispatch_id)
+    return hashlib.sha256(
+        json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def canonical_workflow_inputs(
+    release_tag: str,
+    dispatch_id: str,
+) -> dict[str, str]:
+    """Return the string-valued payload accepted by gh workflow run --json."""
     expected_tag = f"tb321fu-haptics-debs-{CANONICAL_INPUTS['haptics_deb_version']}"
     if (
         type(release_tag) is not str
@@ -189,12 +200,17 @@ def dispatch_input_digest(release_tag: str, dispatch_id: str) -> str:
         or not DISPATCH_ID.fullmatch(dispatch_id)
     ):
         raise WorkflowGateError("workflow dispatch input identity is not canonical")
-    inputs = dict(CANONICAL_INPUTS)
+    inputs: dict[str, str] = {}
+    for key, value in CANONICAL_INPUTS.items():
+        if type(value) is bool:
+            inputs[key] = "true" if value else "false"
+        elif type(value) is str:
+            inputs[key] = value
+        else:
+            raise WorkflowGateError("workflow dispatch input value is not canonical")
     inputs["release_tag"] = release_tag
     inputs["dispatch_id"] = dispatch_id
-    return hashlib.sha256(
-        json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return inputs
 
 
 def serialize_dispatch_state(
@@ -2884,9 +2900,7 @@ def dispatch_candidate(
         dispatch_id_factory,
     )
     before_ids = {record.run_id for record in before} if should_submit else set()
-    inputs = dict(CANONICAL_INPUTS)
-    inputs["dispatch_id"] = dispatch_id
-    inputs["release_tag"] = release_tag
+    inputs = canonical_workflow_inputs(release_tag, dispatch_id)
     if should_submit:
         dispatch = require_gh_result(
             gh_runner(

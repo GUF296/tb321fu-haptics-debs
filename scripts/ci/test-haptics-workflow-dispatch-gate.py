@@ -9894,9 +9894,9 @@ def _main() -> None:
             )
         finally:
             local_directory.chmod(local_mode)
-        expected_inputs = dict(gate_module.CANONICAL_INPUTS)
-        expected_inputs["dispatch_id"] = main_fake_gh.dispatch_id
-        expected_inputs["release_tag"] = ""
+        expected_inputs = gate_module.canonical_workflow_inputs(
+            "", main_fake_gh.dispatch_id
+        )
         if main_fake_gh.inputs != expected_inputs:
             raise SystemExit("production dispatch main sent a noncanonical JSON body")
         expected_json = json.dumps(
@@ -10017,9 +10017,9 @@ def _main() -> None:
             release_tag,
             release_state,
         )
-        release_inputs = dict(gate_module.CANONICAL_INPUTS)
-        release_inputs["dispatch_id"] = release_fake_gh.dispatch_id
-        release_inputs["release_tag"] = release_tag
+        release_inputs = gate_module.canonical_workflow_inputs(
+            release_tag, release_fake_gh.dispatch_id
+        )
         release_json = json.dumps(
             release_inputs,
             sort_keys=True,
