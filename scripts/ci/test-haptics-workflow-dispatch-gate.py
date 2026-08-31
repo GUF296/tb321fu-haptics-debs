@@ -7483,7 +7483,7 @@ def workflow_run_ownership_arguments(run_id: int) -> list[str]:
         (
             "{runId:.id,headBranch:.head_branch,headSha:.head_sha,"
             "event:.event,path:.path,displayTitle:.display_title,"
-            "workflowName:.name,workflowId:.workflow_id,"
+            "runName:.name,workflowId:.workflow_id,"
             "actorLogin:.actor.login,"
             "triggeringActorLogin:.triggering_actor.login,"
             "repositoryFullName:.repository.full_name,"
@@ -8896,7 +8896,7 @@ class FakeGhRunner:
         actor_login: str = TEST_AUTHENTICATED_LOGIN,
         triggering_actor_login: str | None = None,
         run_path: str = ".github/workflows/build.yml",
-        run_workflow_name: str = "Build TB321FU Haptics Debs",
+        run_workflow_name: str | None = None,
         run_workflow_id: int = 7,
         run_repository: str = TEST_REPOSITORY,
         run_head_repository: str = TEST_REPOSITORY,
@@ -8955,7 +8955,11 @@ class FakeGhRunner:
             "event": "workflow_dispatch",
             "path": self.run_path,
             "displayTitle": title,
-            "workflowName": self.run_workflow_name,
+            "runName": (
+                f"haptics-dispatch-{self.dispatch_id}"
+                if self.run_workflow_name is None
+                else self.run_workflow_name
+            ),
             "workflowId": self.run_workflow_id,
             "actorLogin": self.actor_login,
             "triggeringActorLogin": self.triggering_actor_login,
@@ -9199,7 +9203,7 @@ def test_competing_full_main_dispatches(
                             "event": "workflow_dispatch",
                             "path": ".github/workflows/build.yml",
                             "displayTitle": f"haptics-dispatch-{dispatch_id_path.read_text(encoding='ascii').strip()}",
-                            "workflowName": gate_module.WORKFLOW_NAME,
+                            "runName": f"haptics-dispatch-{dispatch_id_path.read_text(encoding='ascii').strip()}",
                             "workflowId": 7,
                             "actorLogin": TEST_AUTHENTICATED_LOGIN,
                             "triggeringActorLogin": TEST_AUTHENTICATED_LOGIN,
@@ -10389,6 +10393,10 @@ def _main() -> None:
             (
                 "triggering actor",
                 {"triggering_actor_login": "different-user"},
+            ),
+            (
+                "run name",
+                {"run_workflow_name": gate_module.WORKFLOW_NAME},
             ),
             ("run repository", {"run_repository": "GUF296/other-repository"}),
             (

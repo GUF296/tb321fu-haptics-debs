@@ -2673,7 +2673,7 @@ def verify_workflow_run_ownership(
             (
                 "{runId:.id,headBranch:.head_branch,headSha:.head_sha,"
                 "event:.event,path:.path,displayTitle:.display_title,"
-                "workflowName:.name,workflowId:.workflow_id,"
+                "runName:.name,workflowId:.workflow_id,"
                 "actorLogin:.actor.login,"
                 "triggeringActorLogin:.triggering_actor.login,"
                 "repositoryFullName:.repository.full_name,"
@@ -2690,7 +2690,7 @@ def verify_workflow_run_ownership(
         "event",
         "path",
         "displayTitle",
-        "workflowName",
+        "runName",
         "workflowId",
         "actorLogin",
         "triggeringActorLogin",
@@ -2703,6 +2703,7 @@ def verify_workflow_run_ownership(
         )
     run_id = value.get("runId")
     workflow_id = value.get("workflowId")
+    run_name = value.get("runName")
     actor_login = value.get("actorLogin")
     triggering_actor_login = value.get("triggeringActorLogin")
     repository_full_name = value.get("repositoryFullName")
@@ -2720,7 +2721,13 @@ def verify_workflow_run_ownership(
         or value.get("event") != "workflow_dispatch"
         or value.get("path") != WORKFLOW_PATH
         or value.get("displayTitle") != record.display_title
-        or value.get("workflowName") != WORKFLOW_NAME
+        # The REST run object's `name` is the per-run `run-name` value.  It is
+        # intentionally different from the workflow's top-level `name` (the
+        # latter is what `gh run list --json workflowName` reports).  The
+        # display title is populated from the same run-name expression and is
+        # already bound to this dispatch id by the inventory query.
+        or type(run_name) is not str
+        or run_name != record.display_title
         or type(actor_login) is not str
         or type(triggering_actor_login) is not str
         or actor_login != authenticated_login
