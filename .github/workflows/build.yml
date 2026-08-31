@@ -126,6 +126,8 @@ jobs:
           /usr/bin/python3 -I -B scripts/ci/verify-haptics-build-packages.py --self-test
           /usr/bin/python3 -I -B scripts/ci/verify-haptics-build-packages.py \
             scripts/ci/HAPTICS-BUILD-PACKAGES.tsv
+          /bin/bash -p scripts/ci/test-haptics-cross-link-closure.sh \
+            scripts/ci/HAPTICS-BUILD-PACKAGES.tsv
           /usr/bin/python3 -I -B scripts/ci/test-haptics-dpkg-configuration.py
           /usr/bin/python3 -I -B scripts/ci/test-haptics-package-transaction.py
           /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-transaction.py

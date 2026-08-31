@@ -336,7 +336,7 @@ CANONICAL_PROFILE_DEFAULTS = {
 }
 REVIEWED_RUN_SHA256 = {
     "Validate workflow and lifecycle boundaries": (
-        "7c35a10f7b99f82b312395ce42128f3ee4308b829edd5263d7e5d563717554bd"
+        "6867c5654b84bac9f8c21eedacb254543b47b29a06b34bc6df78f70ca10f3762"
     ),
     "Validate build inputs": (
         "53620abb19b0354f1740f33345439bfa5f14d70aedd8f8587680bdfdff5b9fdc"
@@ -411,6 +411,8 @@ VALIDATION_RUN_FIXTURE = "\n".join((
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-release-reference.py",
     "/usr/bin/python3 -I -B scripts/ci/verify-haptics-build-packages.py --self-test",
     "/usr/bin/python3 -I -B scripts/ci/verify-haptics-build-packages.py \\",
+    "  scripts/ci/HAPTICS-BUILD-PACKAGES.tsv",
+    "/bin/bash -p scripts/ci/test-haptics-cross-link-closure.sh \\",
     "  scripts/ci/HAPTICS-BUILD-PACKAGES.tsv",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-dpkg-configuration.py",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-package-transaction.py",
@@ -925,6 +927,8 @@ def validate(data: dict) -> None:
         fail("workflow validation must execute the package-lock hostile fixtures")
     if "scripts/ci/HAPTICS-BUILD-PACKAGES.tsv" not in validation_run:
         fail("workflow validation must validate the committed package lock")
+    if "test-haptics-cross-link-closure.sh" not in validation_run:
+        fail("workflow validation must execute the cross-link closure fixture")
     if "test-haptics-dpkg-configuration.py" not in validation_run:
         fail("workflow validation must execute native dpkg configuration fixtures")
     if "test-haptics-package-transaction.py" not in validation_run:

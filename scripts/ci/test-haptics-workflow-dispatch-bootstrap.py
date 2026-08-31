@@ -9567,8 +9567,9 @@ def test_launcher_process_containment(
             raise SystemExit("bootstrap trusted a reused root PID ancestry")
     finally:
         launcher_module.process_parent_map = original_parent_map
+    oversized_pid_base = os.getpid() + 1
     oversized_parent_map = {
-        10000 + index: (os.getpid(), 20000 + index)
+        oversized_pid_base + index: (os.getpid(), 20000 + index)
         for index in range(launcher_module.MAX_DESCENDANT_PROCESSES + 73)
     }
     launcher_module.process_parent_map = lambda: oversized_parent_map

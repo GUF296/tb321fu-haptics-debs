@@ -703,7 +703,7 @@ for record in "${compat_records[@]}"; do
 done
 
 transaction_arguments=("${package_arguments[@]}" "${compat_debs[@]}")
-[ "${#transaction_arguments[@]}" -eq 209 ] || {
+[ "${#transaction_arguments[@]}" -eq 211 ] || {
   echo 'package lock emitted an unexpected transaction argument count' >&2
   exit 1
 }

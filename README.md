@@ -56,8 +56,8 @@ toolchain, matching the host architecture used to produce and validate the
 canonical kernel SDK. An ARM64 host runner is not interchangeable: regenerating
 Kbuild host tools there changes compiler-probed configuration, and the
 post-regeneration config identity gate rejects that drift before packaging.
-`HAPTICS-BUILD-PACKAGES.tsv` v2 locks 109 A12 command-provider/runtime roots and
-their complete 100-package selected dependency closure. All 209 package records
+`HAPTICS-BUILD-PACKAGES.tsv` v2 locks 110 A12 command-provider/runtime roots and
+their complete 101-package selected dependency closure. All 211 package records
 carry exact `amd64`/`all` architecture, version, and
 `bootstrap`/`requested`/`closure` role. The only general apt source is Ubuntu's signed
 `20260730T000000Z` snapshot, restricted to `main`; runner sources, lists and
@@ -82,7 +82,7 @@ fallback sources are prohibited.
 The installer verifies the apt/dpkg/keyring bootstrap before network access and
 authenticates and inspects each compatibility DEB before package mutation. It
 then runs an empty-status apt simulation whose exact `Inst`/`Conf` tuples must
-equal the 209-package lock, and a second simulation whose old/new tuples must
+equal the 211-package lock, and a second simulation whose old/new tuples must
 equal the delta from a captured runner state. One apt transaction consumes the
 same exact repository arguments and verified local DEBs. Complete dpkg package
 status, selections, foreign architectures, and alternatives are compared before

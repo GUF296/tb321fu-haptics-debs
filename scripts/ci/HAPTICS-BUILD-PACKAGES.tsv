@@ -64,6 +64,7 @@ package	libbrotli1	amd64	1.1.0-2build2	requested
 package	libbsd0	amd64	0.12.1-1build1.1	closure
 package	libbz2-1.0	amd64	1.0.8-5.1build0.1	requested
 package	libc6-arm64-cross	all	2.39-0ubuntu8cross1	closure
+package	libc6-dev-arm64-cross	all	2.39-0ubuntu8cross1	requested
 package	libcap2	amd64	1:2.66-5ubuntu2.4	closure
 package	libcc1-0	amd64	14.2.0-4ubuntu2~24.04.1	closure
 package	libcom-err2	amd64	1.47.0-2.4~exp1ubuntu4.1	requested
@@ -171,6 +172,7 @@ package	libxxhash0	amd64	0.8.2-2build1	requested
 package	libyaml-0-2	amd64	0.2.5-1build1	requested
 package	libzstd1	amd64	1.5.5+dfsg2-2build1.1	requested
 package	linux-libc-dev	amd64	6.8.0-136.136	closure
+package	linux-libc-dev-arm64-cross	all	6.8.0-25.25cross1	closure
 package	lsb-base	all	11.6	closure
 package	lto-disabled-list	all	47	closure
 package	m4	amd64	1.4.19-4build1	requested

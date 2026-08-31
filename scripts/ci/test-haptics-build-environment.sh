@@ -509,6 +509,153 @@ for expected in "${expected_make_arguments[@]}"; do
     fail "caller-controlled make assignment overrode verified value: $key"
 done
 (
+userspace_link_fixture="$tmp/kernel-userspace-link-function.sh"
+awk '
+  /^verify_kernel_userspace_link_capability\(\)/ { emit = 1 }
+  emit { print }
+  emit && /^}$/ { exit }
+' "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" > "$userspace_link_fixture"
+[ -s "$userspace_link_fixture" ] ||
+  fail "could not extract kernel userspace cross-link verifier"
+. "$userspace_link_fixture"
+
+kernel_source_root="$tmp/userspace-link-kernel-source"
+probe_path="$kernel_source_root/scripts/cc-can-link.sh"
+probe_environment="$tmp/userspace-link.environment"
+probe_arguments="$tmp/userspace-link.arguments"
+verification_log="$tmp/userspace-link.verifications"
+haptics_kbuild_path="$tmp/userspace-link-kbuild-tools"
+mkdir -p -- "$kernel_source_root/scripts"
+haptics_prepare_kbuild_tool_path "$haptics_kbuild_path"
+SOURCE_DATE_EPOCH=24680
+kernel_toolchain_manifest_path="$tmp/KERNEL-TOOLCHAIN.tsv"
+: > "$kernel_toolchain_manifest_path"
+
+write_userspace_link_probe() {
+  local status=$1
+
+  cat > "$probe_path" <<EOF_USERSPACE_LINK_PROBE
+#!/bin/false
+/usr/bin/env > '$probe_environment'
+printf '%s\\n' "\$@" > '$probe_arguments'
+exit $status
+EOF_USERSPACE_LINK_PROBE
+  chmod 0755 "$probe_path"
+}
+
+verify_kernel_source_state() {
+  [ "$#" -eq 1 ] || fail "userspace link source verification received wrong arguments"
+  printf 'source:%s\n' "$1" >> "$verification_log"
+}
+haptics_verify_build_tools_unchanged() {
+  [ "$#" -eq 1 ] || fail "userspace link tool verification received wrong arguments"
+  printf 'tools:%s\n' "$1" >> "$verification_log"
+}
+verify_kernel_toolchain_identity() {
+  [ "$#" -eq 1 ] || fail "userspace link toolchain verification received wrong arguments"
+  printf 'toolchain:%s\n' "$1" >> "$verification_log"
+}
+haptics_verify_kbuild_tool_path() {
+  [ "$#" -eq 1 ] && [ "$1" = "$haptics_kbuild_path" ] ||
+    fail "userspace link Kbuild-path verification received wrong arguments"
+  printf 'kbuild:%s\n' "$1" >> "$verification_log"
+}
+
+write_userspace_link_probe 0
+: > "$verification_log"
+export ARCH=x86_64
+export CC=/tmp/hostile-cc
+export CLANG_FLAGS=--hostile-clang-flag
+export USERCFLAGS=--hostile-user-cflag
+export USERLDFLAGS=--hostile-user-ldflag
+export LD_LIBRARY_PATH=/tmp/hostile-library-path
+verify_kernel_userspace_link_capability ||
+  fail "authenticated kernel userspace cross-link fixture failed"
+
+mapfile -t userspace_link_arguments < "$probe_arguments"
+[ "${#userspace_link_arguments[@]}" -eq 1 ] &&
+  [ "${userspace_link_arguments[0]}" = \
+    "$haptics_kbuild_path/aarch64-linux-gnu-gcc" ] ||
+  fail "userspace cross-link probe did not receive only the private compiler alias"
+for forbidden in ARCH CC CLANG_FLAGS USERCFLAGS USERLDFLAGS LD_LIBRARY_PATH; do
+  if grep -q "^$forbidden=" "$probe_environment"; then
+    fail "userspace cross-link probe inherited hostile $forbidden"
+  fi
+done
+for expected in \
+  "PATH=$haptics_kbuild_path" \
+  LANG=C \
+  LC_ALL=C \
+  TZ=UTC \
+  "HOME=$HAPTICS_BUILD_HOME" \
+  "TMPDIR=$HAPTICS_BUILD_TMPDIR" \
+  SOURCE_DATE_EPOCH=24680 \
+  "CONFIG_SHELL=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}" \
+  "SHELL=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}"; do
+  grep -Fxq -- "$expected" "$probe_environment" ||
+    fail "userspace cross-link probe omitted clean environment: $expected"
+done
+cat > "$tmp/userspace-link.expected-verifications" <<EOF_USERSPACE_LINK_EXPECTED
+source:before userspace cross-link probe
+tools:before userspace cross-link probe
+toolchain:before userspace cross-link probe
+kbuild:$haptics_kbuild_path
+kbuild:$haptics_kbuild_path
+tools:after userspace cross-link probe
+toolchain:after userspace cross-link probe
+source:after userspace cross-link probe
+EOF_USERSPACE_LINK_EXPECTED
+cmp -s "$verification_log" "$tmp/userspace-link.expected-verifications" ||
+  fail "userspace cross-link probe omitted or reordered identity checks"
+
+write_userspace_link_probe 37
+: > "$verification_log"
+set +e
+verify_kernel_userspace_link_capability
+userspace_link_status=$?
+set -e
+[ "$userspace_link_status" -eq 37 ] ||
+  fail "userspace cross-link verifier did not preserve the probe failure"
+cmp -s "$verification_log" "$tmp/userspace-link.expected-verifications" ||
+  fail "failed userspace cross-link probe skipped post-use identity checks"
+
+cat > "$probe_path" <<'EOF_USERSPACE_LINK_HANG'
+#!/bin/false
+trap '' TERM
+exec sleep 30
+EOF_USERSPACE_LINK_HANG
+chmod 0755 "$probe_path"
+: > "$verification_log"
+userspace_link_started=$SECONDS
+set +e
+verify_kernel_userspace_link_capability
+userspace_link_status=$?
+set -e
+userspace_link_elapsed=$((SECONDS - userspace_link_started))
+case "$userspace_link_status" in
+  124|137) ;;
+  *) fail "hanging userspace cross-link probe returned unexpected status: $userspace_link_status" ;;
+esac
+[ "$userspace_link_elapsed" -ge 9 ] && [ "$userspace_link_elapsed" -le 16 ] ||
+  fail "userspace cross-link probe deadline was not bounded: ${userspace_link_elapsed}s"
+cmp -s "$verification_log" "$tmp/userspace-link.expected-verifications" ||
+  fail "timed-out userspace cross-link probe skipped post-use identity checks"
+
+rm -- "$probe_path"
+require_failure 'verified kernel userspace cross-link probe is not a regular executable' \
+  verify_kernel_userspace_link_capability
+printf '#!/bin/false\nexit 0\n' > "$tmp/userspace-link-target"
+chmod 0755 "$tmp/userspace-link-target"
+ln -s -- "$tmp/userspace-link-target" "$probe_path"
+require_failure 'verified kernel userspace cross-link probe is not a regular executable' \
+  verify_kernel_userspace_link_capability
+rm -- "$probe_path"
+printf '#!/bin/false\nexit 0\n' > "$probe_path"
+chmod 0644 "$probe_path"
+require_failure 'verified kernel userspace cross-link probe is not a regular executable' \
+  verify_kernel_userspace_link_capability
+)
+(
 cc_identity_fixture="$tmp/kernel-cc-identity-functions.sh"
 awk '
   /^kernel_cc_version_suffix\(\)/ { emit = 1 }
@@ -948,6 +1095,34 @@ for token in \
   'OBJCOPY="$haptics_kbuild_path/aarch64-linux-gnu-objcopy"'; do
   grep -Fq -- "$token" "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
     fail "isolated Kbuild contract omits: $token"
+done
+prepare_inputs_line=$(grep -n '^prepare_inputs$' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" | cut -d: -f1)
+userspace_link_line=$(grep -nF \
+  'verify_kernel_userspace_link_capability || kernel_userspace_link_status=$?' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" | cut -d: -f1)
+host_tools_line=$(grep -n '^prepare_kernel_host_tools$' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" | cut -d: -f1)
+[[ $prepare_inputs_line =~ ^[0-9]+$ && $userspace_link_line =~ ^[0-9]+$ &&
+   $host_tools_line =~ ^[0-9]+$ ]] ||
+  fail "producer userspace cross-link call order is not uniquely identifiable"
+[ "$prepare_inputs_line" -lt "$userspace_link_line" ] &&
+  [ "$userspace_link_line" -lt "$host_tools_line" ] ||
+  fail "producer does not run the authenticated cross-link probe after inputs and before Kbuild"
+for token in \
+  '"$kernel_source_root/scripts/cc-can-link.sh"' \
+  '"${HAPTICS_BUILD_TOOL_COMMAND_PATHS[timeout]}"' \
+  '--signal=TERM --kill-after="$probe_kill_after" "$probe_timeout"' \
+  '"${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}" "$probe" "$compiler"' \
+  'kernel_userspace_link_status=0' \
+  'verify_kernel_userspace_link_capability || kernel_userspace_link_status=$?' \
+  'CONFIG_CC_CAN_LINK=y (status $kernel_userspace_link_status)' \
+  'verify_kernel_source_state "before userspace cross-link probe"' \
+  'verify_kernel_source_state "after userspace cross-link probe"' \
+  'haptics_verify_build_tools_unchanged "before userspace cross-link probe"' \
+  'haptics_verify_build_tools_unchanged "after userspace cross-link probe"'; do
+  grep -Fq -- "$token" "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+    fail "authenticated userspace cross-link contract omits: $token"
 done
 grep -Fq -- '--build --root-owner-group --uniform-compression --threads-max=1' \
   "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||

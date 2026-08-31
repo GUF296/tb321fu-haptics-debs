@@ -28,9 +28,9 @@ PACKAGE_NAME = re.compile(r"[a-z0-9][a-z0-9+.-]{0,79}")
 PACKAGE_VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+:~\-]{0,159}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 MAX_LOCK_BYTES = 32768
-EXPECTED_LOCK_SHA256 = "7be88d7dcd9d7dc247fcad934b1723fb54157b3569577a999ffc7557dd5360ef"
-EXPECTED_PACKAGE_COUNT = 209
-EXPECTED_CLOSURE_COUNT = 100
+EXPECTED_LOCK_SHA256 = "d1e376eb51a52d76ee8fab7c87626b385a23758187f061e9ff1138e70a5ff784"
+EXPECTED_PACKAGE_COUNT = 211
+EXPECTED_CLOSURE_COUNT = 101
 EXPECTED_ALTERNATIVES = {"awk": ("manual", "/usr/bin/gawk")}
 BOOTSTRAP_ARCHITECTURES = {
     "apt": "amd64",
@@ -63,7 +63,7 @@ gcc-13-aarch64-linux-gnu-base gcc-13-cross-base gcc-13-x86-64-linux-gnu
 gcc-aarch64-linux-gnu git grep gzip kmod libacl1 libattr1 libbinutils
 libbrotli1 libbz2-1.0 libc-bin libc-dev-bin libc-devtools libc6 libc6-dev
 libcom-err2 libctf-nobfd0 libctf0 libcurl3t64-gnutls libcurl4t64
-libexpat1 libffi8 libgcc-13-dev-arm64-cross libgmp10 libgnutls30t64
+libc6-dev-arm64-cross libexpat1 libffi8 libgcc-13-dev-arm64-cross libgmp10 libgnutls30t64
 libgprofng0 libgssapi-krb5-2 libhogweed6t64 libidn2-0 libisl23
 libjansson4 libk5crypto3 libkeyutils1 libkrb5-3 libkrb5support0
 libldap-common libldap2 liblz4-1 liblzma5 libmd0 libmpc3 libmpfr6
@@ -75,6 +75,11 @@ libxxhash0 libyaml-0-2 libzstd1 locales m4 make openssl python3
 python3-minimal python3-yaml python3.12 python3.12-minimal rsync sed tar unzip
 ubuntu-keyring xz-utils zlib1g zstd
 """.split()))
+EXPECTED_CROSS_LINK_PACKAGES = {
+    "libc6-arm64-cross": ("all", "2.39-0ubuntu8cross1", "closure"),
+    "libc6-dev-arm64-cross": ("all", "2.39-0ubuntu8cross1", "requested"),
+    "linux-libc-dev-arm64-cross": ("all", "6.8.0-25.25cross1", "closure"),
+}
 COMPAT_PACKAGES = (
     (
         "libc-bin", "amd64", "2.39-0ubuntu8.8", "requested",
@@ -2003,6 +2008,20 @@ def capture_system_state(*, deadline: float | None = None) -> SystemState:
     return state
 
 
+def verify_cross_link_policy(
+    by_name: dict[str, tuple[str, PackageRecord]],
+) -> None:
+    actual = {
+        name: (architecture, record.version, record.role)
+        for name, (architecture, record) in by_name.items()
+        if name in EXPECTED_CROSS_LINK_PACKAGES
+    }
+    if actual != EXPECTED_CROSS_LINK_PACKAGES:
+        raise PackageLockError(
+            "cross-link development package closure differs from policy"
+        )
+
+
 def parse_lock(
     path: pathlib.Path,
 ) -> LockPolicy:
@@ -2025,6 +2044,7 @@ def parse_lock(
     closure_count = sum(record.role == "closure" for record in policy.packages.values())
     if closure_count != EXPECTED_CLOSURE_COUNT:
         raise PackageLockError("dependency closure has an unexpected size")
+    verify_cross_link_policy(by_name)
     for name, architecture in BOOTSTRAP_ARCHITECTURES.items():
         actual_architecture, record = by_name[name]
         if actual_architecture != architecture or record.role != "bootstrap":
@@ -2238,6 +2258,51 @@ def fixture_text() -> str:
 
 
 def self_test() -> None:
+    cross_link_packages = {
+        name: (architecture, PackageRecord(version, role, "repo"))
+        for name, (architecture, version, role) in EXPECTED_CROSS_LINK_PACKAGES.items()
+    }
+    verify_cross_link_policy(cross_link_packages)
+    cross_link_cases = {}
+
+    missing = dict(cross_link_packages)
+    del missing["linux-libc-dev-arm64-cross"]
+    cross_link_cases["missing package"] = missing
+
+    wrong_architecture = dict(cross_link_packages)
+    _, record = wrong_architecture["libc6-dev-arm64-cross"]
+    wrong_architecture["libc6-dev-arm64-cross"] = ("arm64", record)
+    cross_link_cases["wrong architecture"] = wrong_architecture
+
+    wrong_version = dict(cross_link_packages)
+    architecture, record = wrong_version["libc6-dev-arm64-cross"]
+    wrong_version["libc6-dev-arm64-cross"] = (
+        architecture,
+        PackageRecord("0", record.role, record.source),
+    )
+    cross_link_cases["wrong version"] = wrong_version
+
+    wrong_role = dict(cross_link_packages)
+    architecture, record = wrong_role["linux-libc-dev-arm64-cross"]
+    wrong_role["linux-libc-dev-arm64-cross"] = (
+        architecture,
+        PackageRecord(record.version, "requested", record.source),
+    )
+    cross_link_cases["wrong role"] = wrong_role
+
+    for label, hostile in cross_link_cases.items():
+        try:
+            verify_cross_link_policy(hostile)
+        except PackageLockError as exc:
+            if str(exc) != "cross-link development package closure differs from policy":
+                raise PackageLockError(
+                    f"self-test rejected cross-link {label} at wrong boundary: {exc}"
+                ) from exc
+        else:
+            raise PackageLockError(
+                f"self-test accepted cross-link policy with {label}"
+            )
+
     with tempfile.TemporaryDirectory(prefix="tb321fu-package-lock-test.") as directory:
         root = pathlib.Path(directory)
 

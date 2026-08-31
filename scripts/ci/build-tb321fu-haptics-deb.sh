@@ -918,6 +918,58 @@ kernel_make() {
   return "$status"
 }
 
+verify_kernel_userspace_link_capability() {
+  local probe="$kernel_source_root/scripts/cc-can-link.sh"
+  local compiler="$haptics_kbuild_path/aarch64-linux-gnu-gcc"
+  local probe_timeout=10
+  local probe_kill_after=2
+  local status
+  local -a probe_env
+
+  verify_kernel_source_state "before userspace cross-link probe"
+  [ -f "$probe" ] && [ -x "$probe" ] && [ ! -L "$probe" ] ||
+    ci_die "verified kernel userspace cross-link probe is not a regular executable"
+  [ -e "$compiler" ] && [ -x "$compiler" ] ||
+    ci_die "private cross compiler is unavailable for userspace link probe"
+
+  probe_env=(
+    "PATH=$haptics_kbuild_path"
+    LANG=C
+    LC_ALL=C
+    TZ=UTC
+    "HOME=$HAPTICS_BUILD_HOME"
+    "TMPDIR=$HAPTICS_BUILD_TMPDIR"
+    "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+    "CONFIG_SHELL=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}"
+    "SHELL=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}"
+  )
+
+  haptics_verify_build_tools_unchanged "before userspace cross-link probe"
+  if [ -n "$kernel_toolchain_manifest_path" ]; then
+    verify_kernel_toolchain_identity "before userspace cross-link probe"
+  fi
+  haptics_verify_kbuild_tool_path "$haptics_kbuild_path"
+  if "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[env]}" -i "${probe_env[@]}" \
+      "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[timeout]}" \
+      --signal=TERM --kill-after="$probe_kill_after" "$probe_timeout" \
+      "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}" "$probe" "$compiler"; then
+    status=0
+  else
+    status=$?
+  fi
+  haptics_verify_kbuild_tool_path "$haptics_kbuild_path"
+  haptics_verify_build_tools_unchanged "after userspace cross-link probe"
+  if [ -n "$kernel_toolchain_manifest_path" ]; then
+    verify_kernel_toolchain_identity "after userspace cross-link probe"
+  fi
+  verify_kernel_source_state "after userspace cross-link probe"
+
+  if [ "$status" -eq 0 ]; then
+    ci_log "verified kernel userspace cross-link capability"
+  fi
+  return "$status"
+}
+
 record_kernel_host_tools() {
   local path
 
@@ -1541,6 +1593,10 @@ finalize_haptics_output() {
 }
 
 prepare_inputs
+kernel_userspace_link_status=0
+verify_kernel_userspace_link_capability || kernel_userspace_link_status=$?
+[ "$kernel_userspace_link_status" -eq 0 ] ||
+  ci_die "verified kernel compiler cannot reproduce CONFIG_CC_CAN_LINK=y (status $kernel_userspace_link_status)"
 verify_haptics_producer_state "before package build"
 prepare_kernel_config_diagnostics
 validate_haptics_maintainer_source_contract
