@@ -848,6 +848,17 @@ assert '"$KERNEL_BUNDLE_METADATA_SHA256"' in metadata_block
 assert metadata_block.count("65536") == 1
 assert '--kernel-release "$kernel_bundle_release"' in source[preflight:extract]
 assert '--kernel-release "$kernel_bundle_release"' in source[verifier:remove_archive]
+prepare_block = source.index("prepare_inputs()")
+config_check = source.index(
+    'ci_die "kernel build config differs from KERNEL-BUNDLE.tsv"', prepare_block
+)
+cc_capture = source.index(
+    'capture_kernel_config_cc_version "$kernel_build_root/.config"', prepare_block
+)
+assert config_check < cc_capture < source.index('verify_kernel_source_state', cc_capture)
+assert 'kernel_cc_version_suffix()' in source
+assert 'kernel build config uses an unsupported compiler identity' in source
+assert 'kernel compiler version differs from verified SDK config' in source
 for field, variable in (
     ("kbuild-build-timestamp", "kernel_kbuild_timestamp"),
     ("kbuild-build-user", "kernel_kbuild_user"),
@@ -858,13 +869,15 @@ for field, variable in (
 kernel_make = source[source.index("kernel_make()") : source.index("record_kernel_host_tools()")]
 caller_args = kernel_make.index('"$@"')
 for assignment in (
-    'KERNELRELEASE="$kernel_release"',
-    'KBUILD_BUILD_TIMESTAMP="$kernel_kbuild_timestamp"',
-    'KBUILD_BUILD_USER="$kernel_kbuild_user"',
-    'KBUILD_BUILD_HOST="$kernel_kbuild_host"',
-    'KBUILD_BUILD_VERSION="$kernel_kbuild_version"',
+    '"KERNELRELEASE=$kernel_release"',
+    '"KBUILD_BUILD_TIMESTAMP=$kernel_kbuild_timestamp"',
+    '"KBUILD_BUILD_USER=$kernel_kbuild_user"',
+    '"KBUILD_BUILD_HOST=$kernel_kbuild_host"',
+    '"KBUILD_BUILD_VERSION=$kernel_kbuild_version"',
 ):
     assert kernel_make.index(assignment) > caller_args
+assert 'CC_VERSION_TEXT=$kernel_config_cc_version_text' in kernel_make
+assert kernel_make.index('CC_VERSION_TEXT=$kernel_config_cc_version_text') > caller_args
 start = source.index("write_haptics_source_lock()")
 end = source.index("\n}\n", start) + 2
 block = source[start:end]

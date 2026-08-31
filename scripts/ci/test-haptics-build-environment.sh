@@ -294,6 +294,7 @@ kernel_kbuild_host=tb321fu-builder
 kernel_kbuild_version=1
 kernel_bundle_id=3333333333333333333333333333333333333333333333333333333333333333
 kernel_toolchain_manifest_path=
+kernel_config_cc_version_text='aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0'
 mkdir -p "$kernel_source_root"
 export ARCH=x86_64
 export CROSS_COMPILE=/tmp/hostile-
@@ -331,7 +332,8 @@ kernel_make \
   OBJCOPY=/tmp/hostile-caller-objcopy \
   OBJDUMP=/tmp/hostile-caller-objdump \
   READELF=/tmp/hostile-caller-readelf \
-  STRIP=/tmp/hostile-caller-strip
+  STRIP=/tmp/hostile-caller-strip \
+  CC_VERSION_TEXT=hostile-caller-version
 set +e
 kernel_make \
   "PROBE_OUTPUT=$tmp/kernel-make-failure.environment" \
@@ -407,7 +409,8 @@ expected_make_arguments=(
   "OBJCOPY=$haptics_kbuild_path/aarch64-linux-gnu-objcopy" \
   "OBJDUMP=$haptics_kbuild_path/aarch64-linux-gnu-objdump" \
   "READELF=$haptics_kbuild_path/aarch64-linux-gnu-readelf" \
-  "STRIP=$haptics_kbuild_path/aarch64-linux-gnu-strip"
+  "STRIP=$haptics_kbuild_path/aarch64-linux-gnu-strip" \
+  "CC_VERSION_TEXT=$kernel_config_cc_version_text"
 )
 for expected in "${expected_make_arguments[@]}"; do
   grep -Fxq -- "$expected" "$tmp/kernel-make.arguments" ||
@@ -425,6 +428,47 @@ for expected in "${expected_make_arguments[@]}"; do
   [ "$actual" = "$expected" ] ||
     fail "caller-controlled make assignment overrode verified value: $key"
 done
+(
+cc_identity_fixture="$tmp/kernel-cc-identity-functions.sh"
+awk '
+  /^kernel_cc_version_suffix\(\)/ { emit = 1 }
+  emit { print }
+  emit && /^}$/ { exit }
+' "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" > "$cc_identity_fixture"
+awk '
+  /^capture_kernel_config_cc_version\(\)/ { emit = 1 }
+  emit { print }
+  emit && /^}$/ { exit }
+' "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" >> "$cc_identity_fixture"
+. "$cc_identity_fixture"
+HAPTICS_BUILD_TOOL_COMMAND_PATHS[aarch64-linux-gnu-gcc]="$tmp/fake-cross-gcc"
+printf '#!/bin/sh\n' > "$tmp/fake-cross-gcc"
+chmod 0755 "$tmp/fake-cross-gcc"
+haptics_build_tool_version() { printf '%s\n' "$FAKE_CROSS_GCC_VERSION"; }
+kernel_bundle_id=3333333333333333333333333333333333333333333333333333333333333333
+cc_config="$tmp/kernel-sdk.config"
+FAKE_CROSS_GCC_VERSION='aarch64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0'
+printf '%s\n' 'CONFIG_CC_VERSION_TEXT="aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0"' > "$cc_config"
+capture_kernel_config_cc_version "$cc_config"
+[ "$kernel_config_cc_version_text" = \
+  'aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0' ] ||
+  fail 'compiler alias normalization did not accept gcc/gcc-13'
+printf '%s\n' 'CONFIG_CC_VERSION_TEXT="aarch64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0"' > "$cc_config"
+capture_kernel_config_cc_version "$cc_config"
+printf '%s\n' 'CONFIG_CC_VERSION_TEXT="aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0"' > "$cc_config"
+FAKE_CROSS_GCC_VERSION='aarch64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0-mismatch'
+require_failure 'kernel compiler version differs from verified SDK config' \
+  capture_kernel_config_cc_version "$cc_config"
+FAKE_CROSS_GCC_VERSION='aarch64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0'
+printf '%s\n' 'CONFIG_CC_VERSION_TEXT="clang version 18.1.3"' > "$cc_config"
+require_failure 'kernel build config uses an unsupported compiler identity' \
+  capture_kernel_config_cc_version "$cc_config"
+printf '%s\n' \
+  'CONFIG_CC_VERSION_TEXT="aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0"' \
+  'CONFIG_CC_VERSION_TEXT="aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0"' > "$cc_config"
+require_failure 'kernel build config must contain exactly one CONFIG_CC_VERSION_TEXT' \
+  capture_kernel_config_cc_version "$cc_config"
+)
 HAPTICS_BUILD_TOOL_COMMAND_PATHS[make]=$(haptics_resolve_build_tool_command make)
 HAPTICS_BUILD_TOOL_PATHS[make]=$(haptics_resolve_build_tool make)
 

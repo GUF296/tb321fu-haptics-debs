@@ -161,6 +161,7 @@ kernel_bundle_canonical_path=
 haptics_source_lock_schema=
 haptics_output_mode=
 build_tools_manifest_sha256=
+kernel_config_cc_version_text=
 
 [ "$ARCH" = arm64 ] || ci_die "unsupported ARCH=$ARCH; only arm64 is supported"
 [[ $HAPTICS_DEB_VERSION =~ ^[0-9][0-9A-Za-z.+~_-]{0,63}$ ]] || ci_die "unsafe HAPTICS_DEB_VERSION"
@@ -529,6 +530,7 @@ prepare_inputs() {
     [ "$kernel_release" = "$kernel_bundle_release" ] || ci_die "kernel release differs from KERNEL-BUNDLE.tsv"
     [ "$(haptics_sha256_file "$kernel_build_root/.config")" = "$kernel_bundle_config_sha256" ] ||
       ci_die "kernel build config differs from KERNEL-BUNDLE.tsv"
+    capture_kernel_config_cc_version "$kernel_build_root/.config"
   fi
   if [ -n "$EXPECTED_KERNEL_SOURCE_COMMIT" ]; then
     verify_kernel_source_state "before package build"
@@ -649,6 +651,53 @@ verify_kernel_build_state() {
   ci_log "kernel build state verified $phase: $actual_release"
 }
 
+kernel_cc_version_suffix() {
+  local value=$1
+
+  case "$value" in
+    'aarch64-linux-gnu-gcc-13 '*) printf '%s\n' "${value#aarch64-linux-gnu-gcc-13 }" ;;
+    'aarch64-linux-gnu-gcc '*) printf '%s\n' "${value#aarch64-linux-gnu-gcc }" ;;
+    *) return 1 ;;
+  esac
+}
+
+capture_kernel_config_cc_version() {
+  local config=$1 line count configured_suffix compiler_path actual_version actual_suffix
+
+  [ "$kernel_bundle_id" != unbound ] || return 0
+  [ -f "$config" ] && [ ! -L "$config" ] ||
+    ci_die "verified kernel build config is not a regular file"
+  count=$(awk 'index($0, "CONFIG_CC_VERSION_TEXT=") == 1 { count++ } END { print count + 0 }' "$config") ||
+    ci_die "cannot inspect verified kernel build config"
+  [ "$count" -eq 1 ] ||
+    ci_die "kernel build config must contain exactly one CONFIG_CC_VERSION_TEXT"
+  line=$(awk 'index($0, "CONFIG_CC_VERSION_TEXT=") == 1 { print; exit }' "$config") ||
+    ci_die "cannot read verified CONFIG_CC_VERSION_TEXT"
+  [[ $line =~ ^CONFIG_CC_VERSION_TEXT=\"([^\"]+)\"$ ]] ||
+    ci_die "kernel build config has an unsafe CONFIG_CC_VERSION_TEXT"
+  kernel_config_cc_version_text=${BASH_REMATCH[1]}
+  case "$kernel_config_cc_version_text" in
+    *$'\n'*|*$'\r'*|*$'\t'*|*\\*)
+      ci_die "kernel build config has an unsafe CONFIG_CC_VERSION_TEXT"
+      ;;
+  esac
+  configured_suffix=$(kernel_cc_version_suffix "$kernel_config_cc_version_text") ||
+    ci_die "kernel build config uses an unsupported compiler identity"
+  [ -n "$configured_suffix" ] ||
+    ci_die "kernel build config uses an empty compiler identity"
+
+  compiler_path=${HAPTICS_BUILD_TOOL_COMMAND_PATHS[aarch64-linux-gnu-gcc]-}
+  [ -n "$compiler_path" ] ||
+    ci_die "verified cross compiler path is unavailable"
+  actual_version=$(haptics_build_tool_version "$compiler_path") ||
+    ci_die "cannot determine the verified cross compiler version"
+  actual_suffix=$(kernel_cc_version_suffix "$actual_version") ||
+    ci_die "live compiler reports an unsupported identity"
+  [ "$configured_suffix" = "$actual_suffix" ] ||
+    ci_die "kernel compiler version differs from verified SDK config"
+  ci_log "kernel compiler version identity verified (executable alias normalized)"
+}
+
 prepare_haptics_source_snapshot() {
   local source_root
 
@@ -716,7 +765,8 @@ create_haptics_producer_bundle() {
 
 kernel_make() {
   local status
-  local -a make_env=(
+  local -a make_env=() make_args=()
+  make_env=(
     "PATH=$haptics_kbuild_path"
     LANG=C
     LC_ALL=C
@@ -744,36 +794,42 @@ kernel_make() {
   if [ -n "$KERNEL_GIT_DIR" ]; then
     make_env+=("GIT_DIR=$KERNEL_GIT_DIR" "GIT_WORK_TREE=$kernel_source_root")
   fi
+  make_args=(
+    "$@"
+    "KERNELRELEASE=$kernel_release"
+    "KBUILD_BUILD_TIMESTAMP=$kernel_kbuild_timestamp"
+    "KBUILD_BUILD_USER=$kernel_kbuild_user"
+    "KBUILD_BUILD_HOST=$kernel_kbuild_host"
+    "KBUILD_BUILD_VERSION=$kernel_kbuild_version"
+    ARCH=arm64
+    CONFIG_SHELL="${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}"
+    SHELL="${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}"
+    HOSTCC="$haptics_kbuild_path/gcc"
+    HOSTAS="$haptics_kbuild_path/as"
+    HOSTLD="$haptics_kbuild_path/ld"
+    HOSTAR="$haptics_kbuild_path/ar"
+    CROSS_COMPILE=
+    CC="$haptics_kbuild_path/aarch64-linux-gnu-gcc"
+    CPP="$haptics_kbuild_path/aarch64-linux-gnu-gcc -E"
+    AS="$haptics_kbuild_path/aarch64-linux-gnu-as"
+    LD="$haptics_kbuild_path/aarch64-linux-gnu-ld"
+    AR="$haptics_kbuild_path/aarch64-linux-gnu-ar"
+    NM="$haptics_kbuild_path/aarch64-linux-gnu-nm"
+    OBJCOPY="$haptics_kbuild_path/aarch64-linux-gnu-objcopy"
+    OBJDUMP="$haptics_kbuild_path/aarch64-linux-gnu-objdump"
+    READELF="$haptics_kbuild_path/aarch64-linux-gnu-readelf"
+    STRIP="$haptics_kbuild_path/aarch64-linux-gnu-strip"
+  )
+  if [ -n "${kernel_config_cc_version_text:-}" ]; then
+    make_args+=("CC_VERSION_TEXT=$kernel_config_cc_version_text")
+  fi
   haptics_verify_build_tools_unchanged "before Kbuild invocation"
   if [ -n "$kernel_toolchain_manifest_path" ]; then
     verify_kernel_toolchain_identity "before Kbuild invocation"
   fi
   haptics_verify_kbuild_tool_path "$haptics_kbuild_path"
   if "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[env]}" -i "${make_env[@]}" \
-      "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[make]}" -C "$kernel_source_root" "$@" \
-      KERNELRELEASE="$kernel_release" \
-      KBUILD_BUILD_TIMESTAMP="$kernel_kbuild_timestamp" \
-      KBUILD_BUILD_USER="$kernel_kbuild_user" \
-      KBUILD_BUILD_HOST="$kernel_kbuild_host" \
-      KBUILD_BUILD_VERSION="$kernel_kbuild_version" \
-      ARCH=arm64 \
-      CONFIG_SHELL="${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}" \
-      SHELL="${HAPTICS_BUILD_TOOL_COMMAND_PATHS[dash]}" \
-      HOSTCC="$haptics_kbuild_path/gcc" \
-      HOSTAS="$haptics_kbuild_path/as" \
-      HOSTLD="$haptics_kbuild_path/ld" \
-      HOSTAR="$haptics_kbuild_path/ar" \
-      CROSS_COMPILE= \
-      CC="$haptics_kbuild_path/aarch64-linux-gnu-gcc" \
-      CPP="$haptics_kbuild_path/aarch64-linux-gnu-gcc -E" \
-      AS="$haptics_kbuild_path/aarch64-linux-gnu-as" \
-      LD="$haptics_kbuild_path/aarch64-linux-gnu-ld" \
-      AR="$haptics_kbuild_path/aarch64-linux-gnu-ar" \
-      NM="$haptics_kbuild_path/aarch64-linux-gnu-nm" \
-      OBJCOPY="$haptics_kbuild_path/aarch64-linux-gnu-objcopy" \
-      OBJDUMP="$haptics_kbuild_path/aarch64-linux-gnu-objdump" \
-      READELF="$haptics_kbuild_path/aarch64-linux-gnu-readelf" \
-      STRIP="$haptics_kbuild_path/aarch64-linux-gnu-strip"; then
+      "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[make]}" -C "$kernel_source_root" "${make_args[@]}"; then
     status=0
   else
     status=$?
