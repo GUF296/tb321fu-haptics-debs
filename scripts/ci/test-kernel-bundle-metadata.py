@@ -786,6 +786,28 @@ def main() -> None:
         require_bison_failure(bison_fixture, "canonical root-owned mode-0755")
         bison_fixture.chmod(0o755)
 
+        bison_hardlink = root / "bison-hardlink"
+        bison_hardlink.mkdir(mode=0o755)
+        bison_hardlink_target = root / "bison-hardlink-target"
+        bison_hardlink_target.write_bytes(b"hard-linked Bison data\n")
+        bison_hardlink_target.chmod(0o644)
+        os.link(bison_hardlink_target, bison_hardlink / "alias")
+        original_hardlink_command = VERIFIER._bounded_command
+        hardlink_tar_started = False
+
+        def reject_hardlink_tar(*_args, **_kwargs):
+            nonlocal hardlink_tar_started
+            hardlink_tar_started = True
+            raise SystemExit("Bison hardlink rejection started tar")
+
+        VERIFIER._bounded_command = reject_hardlink_tar
+        try:
+            require_bison_failure(bison_hardlink, "hard-linked file")
+        finally:
+            VERIFIER._bounded_command = original_hardlink_command
+        if hardlink_tar_started:
+            raise SystemExit("Bison hardlink was not rejected before tar")
+
         bison_descriptor = os.open(
             bison_fixture,
             os.O_RDONLY

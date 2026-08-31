@@ -1,6 +1,7 @@
 #!/bin/bash -p
 set -euo pipefail
 umask 077
+export PYTHONDONTWRITEBYTECODE=1
 
 SCRIPT_PATH=$(/usr/bin/realpath -e -- "${BASH_SOURCE[0]}")
 SCRIPT_DIR=${SCRIPT_PATH%/*}
@@ -66,6 +67,10 @@ marker_line=$(/usr/bin/grep -nF -- '--verify-marker' "$INSTALLER" | /usr/bin/tai
 post_line=$(/usr/bin/grep -nF -- '--verify-post' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
 sandbox_line=$(/usr/bin/grep -nF -- 'verify_no_apt_sandbox_fallback "$compat_apt_stderr"' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
 normalize_line=$(/usr/bin/grep -nF -- '/usr/bin/python3 -I -B "$BISON_NORMALIZER"' "$INSTALLER" | /usr/bin/cut -d: -f1)
+post_state_line=$(/usr/bin/grep -nF -- '--verify-state-transition' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
+post_audit_line=$(/usr/bin/grep -nF -- 'HOME="$dpkg_home" /usr/bin/dpkg --audit > "$after_audit"' "$INSTALLER" | /usr/bin/cut -d: -f1)
+installed_line=$(/usr/bin/grep -nF -- '"$PACKAGE_VERIFIER" --verify-installed' "$INSTALLER" | /usr/bin/cut -d: -f1)
+normalizer_failure_line=$(/usr/bin/grep -nF -- 'Bison data-directory normalization failed after package-state audit' "$INSTALLER" | /usr/bin/cut -d: -f1)
 live_tools_line=$(/usr/bin/grep -nF -- '"$LIVE_TOOLS_VERIFIER"' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
 [ "$download_line" -lt "$prepare_line" ] &&
   [ "$prepare_line" -lt "$configure_line" ] &&
@@ -74,6 +79,11 @@ live_tools_line=$(/usr/bin/grep -nF -- '"$LIVE_TOOLS_VERIFIER"' "$INSTALLER" | /
   [ "$marker_line" -lt "$post_line" ] &&
   [ "$post_line" -lt "$sandbox_line" ] &&
   [ "$sandbox_line" -lt "$normalize_line" ] &&
+  [ "$normalize_line" -lt "$post_state_line" ] &&
+  [ "$post_state_line" -lt "$post_audit_line" ] &&
+  [ "$post_audit_line" -lt "$installed_line" ] &&
+  [ "$installed_line" -lt "$normalizer_failure_line" ] &&
+  [ "$normalizer_failure_line" -lt "$live_tools_line" ] &&
   [ "$normalize_line" -lt "$live_tools_line" ] || {
     echo 'dependency installer transaction gates are not in fail-closed order' >&2
     exit 1

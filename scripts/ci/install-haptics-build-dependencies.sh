@@ -789,8 +789,14 @@ if ! verify_no_apt_sandbox_fallback "$compat_apt_stderr"; then
   exit 1
 fi
 /usr/bin/cat -- "$compat_apt_stderr" >&2
-/usr/bin/python3 -I -B "$BISON_NORMALIZER"
-/usr/bin/update-alternatives --set awk /usr/bin/gawk
+if /usr/bin/python3 -I -B "$BISON_NORMALIZER"; then
+  bison_normalizer_status=0
+else
+  bison_normalizer_status=$?
+fi
+if [ "$bison_normalizer_status" -eq 0 ]; then
+  /usr/bin/update-alternatives --set awk /usr/bin/gawk
+fi
 after_state="$work_dir/package-state.after.tsv"
 HOME="$dpkg_home" /usr/bin/python3 -I -B \
   "$PACKAGE_VERIFIER" --capture-system-state "$runtime_package_lock" > "$after_state"
@@ -808,6 +814,10 @@ HOME="$dpkg_home" /usr/bin/dpkg --audit > "$after_audit"
 "${apt_command[@]}" -qq check
 HOME="$dpkg_home" /usr/bin/python3 -I -B \
   "$PACKAGE_VERIFIER" --verify-installed "$runtime_package_lock"
+if [ "$bison_normalizer_status" -ne 0 ]; then
+  echo 'Bison data-directory normalization failed after package-state audit' >&2
+  exit "$bison_normalizer_status"
+fi
 /bin/bash -p "$LIVE_TOOLS_VERIFIER" \
   "$BUILD_TOOLS_REFERENCE" "$RELEASE_REFERENCE"
 echo 'HAPTICS_BUILD_DEPENDENCIES=PASS'

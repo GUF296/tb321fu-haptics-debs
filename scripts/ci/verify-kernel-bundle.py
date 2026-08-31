@@ -324,11 +324,17 @@ def _bounded_command(
     return returncode, bytes(stdout), bytes(stderr)
 
 
-def file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
+FileIdentity = tuple[int, int, int, int, int, int, int, int, int]
+
+
+def file_identity(metadata: os.stat_result) -> FileIdentity:
     return (
         metadata.st_dev,
         metadata.st_ino,
         metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_nlink,
         metadata.st_size,
         metadata.st_mtime_ns,
         metadata.st_ctime_ns,
@@ -360,8 +366,8 @@ class OpenedRegular:
     descriptor: int
     requested: pathlib.Path
     resolved: pathlib.Path
-    requested_before: tuple[int, int, int, int, int, int]
-    target_before: tuple[int, int, int, int, int, int]
+    requested_before: FileIdentity
+    target_before: FileIdentity
     digest: str
     label: str
     maximum: int
@@ -579,6 +585,10 @@ def scan_bison_tree(
                         finally:
                             os.close(child_descriptor)
                     elif stat.S_ISREG(entry_meta.st_mode):
+                        if entry_meta.st_nlink != 1:
+                            raise BundleError(
+                                "Bison data tree contains a hard-linked file"
+                            )
                         if stat.S_IMODE(entry_meta.st_mode) != 0o644:
                             raise BundleError(
                                 "Bison data tree contains an unexpected file mode"
