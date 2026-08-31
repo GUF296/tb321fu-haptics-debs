@@ -523,7 +523,9 @@ def command_identity(
     return opened.digest, version
 
 
-def scan_bison_tree(root_descriptor: int) -> tuple[int, int]:
+def scan_bison_tree(
+    root_descriptor: int, *, expected_uid: int = 0, expected_gid: int = 0
+) -> tuple[int, int]:
     entry_count = 1
     total_size = 0
     root_device = os.fstat(root_descriptor).st_dev
@@ -542,6 +544,13 @@ def scan_bison_tree(root_descriptor: int) -> tuple[int, int]:
                     entry_meta = entry.stat(follow_symlinks=False)
                     if entry_meta.st_dev != root_device:
                         raise BundleError("Bison data tree contains a cross-device entry")
+                    if (
+                        entry_meta.st_uid != expected_uid
+                        or entry_meta.st_gid != expected_gid
+                    ):
+                        raise BundleError(
+                            "Bison data tree contains an unexpected owner"
+                        )
                     if stat.S_ISDIR(entry_meta.st_mode):
                         if stat.S_IMODE(entry_meta.st_mode) != 0o755:
                             raise BundleError(
@@ -600,6 +609,9 @@ def canonical_bison_data_sha256(
     directory: pathlib.Path,
     tar_expected_digest: str | None = None,
     tar_command: pathlib.Path = pathlib.Path("/usr/bin/tar"),
+    *,
+    expected_uid: int = 0,
+    expected_gid: int = 0,
 ) -> str:
     root_descriptor = -1
     try:
@@ -620,12 +632,18 @@ def canonical_bison_data_sha256(
         not stat.S_ISDIR(metadata.st_mode)
         or stat.S_ISLNK(metadata.st_mode)
         or stat.S_IMODE(metadata.st_mode) != 0o755
+        or metadata.st_uid != expected_uid
+        or metadata.st_gid != expected_gid
         or file_identity(metadata) != file_identity(opened_metadata)
     ):
         os.close(root_descriptor)
-        raise BundleError("Bison data directory is not a canonical mode-0755 directory")
+        raise BundleError(
+            "Bison data directory is not a canonical root-owned mode-0755 directory"
+        )
     try:
-        scan_bison_tree(root_descriptor)
+        scan_bison_tree(
+            root_descriptor, expected_uid=expected_uid, expected_gid=expected_gid
+        )
         opened_tar = open_verified_regular(
             tar_command,
             "tar",

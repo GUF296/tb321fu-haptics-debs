@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import importlib.util
 import io
 import os
 import pathlib
@@ -11,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -87,8 +90,32 @@ def manifest_records(
     return sorted(records, key=lambda record: record[3])
 
 
-def write_manifest(path: pathlib.Path, records: list[tuple[str, str, int, str]]) -> None:
-    lines = ["schema\ttb321fu.kernel-sdk-manifest/v1"]
+def v2_manifest_records(
+    *,
+    additional_directories: tuple[str, ...] = (),
+    **manifest_options,
+) -> list[tuple[str, str, int, str]]:
+    records = manifest_records(**manifest_options)
+    directories = set(additional_directories)
+    for _, _, _, path in records:
+        parts = path[2:].split("/")
+        for depth in range(1, len(parts)):
+            directories.add("./" + "/".join(parts[:depth]))
+    empty_digest = hashlib.sha256(b"").hexdigest()
+    records.extend(
+        ("directory", empty_digest, 0o755, directory)
+        for directory in directories
+    )
+    return sorted(records, key=lambda record: record[3])
+
+
+def write_manifest(
+    path: pathlib.Path,
+    records: list[tuple[str, str, int, str]],
+    *,
+    schema: str = "tb321fu.kernel-sdk-manifest/v1",
+) -> None:
+    lines = [f"schema\t{schema}"]
     lines.extend(f"{kind}\t{digest}\t{mode:o}\t{name}" for kind, digest, mode, name in records)
     path.write_text("\n".join(lines) + "\n", encoding="ascii")
 
@@ -230,6 +257,30 @@ def run(*arguments: pathlib.Path | str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_with_environment(
+    environment: dict[str, str], *arguments: pathlib.Path | str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(VERIFY), *(str(argument) for argument in arguments)],
+        check=False,
+        env={**os.environ, **environment},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+
+
+def load_verifier():
+    spec = importlib.util.spec_from_file_location("kernel_sdk_verifier_fixture", VERIFY)
+    if spec is None or spec.loader is None:
+        raise SystemExit("cannot import the kernel SDK verifier fixture")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def extract(archive: pathlib.Path, destination: pathlib.Path) -> None:
     result = subprocess.run(
         [sys.executable, str(EXTRACT), str(archive), str(destination)],
@@ -257,6 +308,65 @@ def require_normalized_rejection(
         raise SystemExit(f"{label} did not use the verifier error boundary")
 
 
+def require_rejected_for_error(
+    result: subprocess.CompletedProcess[str], label: str, expected: str
+) -> None:
+    require_normalized_rejection(result, label)
+    if expected not in result.stderr:
+        raise SystemExit(
+            f"wrong {label} rejection: expected {expected!r}, got {result.stderr!r}"
+        )
+
+
+def require_sdk_error(operation, error_type, label: str, expected: str) -> None:
+    try:
+        operation()
+    except error_type as exc:
+        if expected not in str(exc):
+            raise SystemExit(
+                f"wrong {label} rejection: expected {expected!r}, got {exc!r}"
+            ) from exc
+    else:
+        raise SystemExit(f"unsafe SDK fixture was accepted: {label}")
+
+
+def exercise_deadline_boundaries(verifier, records) -> None:
+    original_monotonic = verifier.time.monotonic
+    ticks = iter((0.0, 1.0))
+    verifier.time.monotonic = lambda: next(ticks, 1.0)
+    try:
+        require_sdk_error(
+            lambda: verifier.direct_root_candidates(records, 1.0),
+            verifier.SDKError,
+            "in-operation SDK deadline",
+            "deadline exceeded while discovering SDK root candidates",
+        )
+    finally:
+        verifier.time.monotonic = original_monotonic
+
+    original_deadline = verifier.verification_deadline
+    original_verify_archive = verifier.verify_archive
+    original_argv = sys.argv
+    verifier.verification_deadline = lambda: 1.0
+    verifier.verify_archive = lambda *args, **kwargs: (None, set())
+    verifier.time.monotonic = lambda: 1.0
+    sys.argv = [str(VERIFY), "unused.tar", "unused.tsv", "--archive-only"]
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = verifier.main()
+    finally:
+        sys.argv = original_argv
+        verifier.time.monotonic = original_monotonic
+        verifier.verify_archive = original_verify_archive
+        verifier.verification_deadline = original_deadline
+    if result != 1 or "KERNEL_SDK=PASS" in stdout.getvalue():
+        raise SystemExit("expired final SDK deadline crossed the success boundary")
+    if "deadline exceeded while finishing kernel SDK verification" not in stderr.getvalue():
+        raise SystemExit(f"wrong final SDK deadline rejection: {stderr.getvalue()!r}")
+
+
 def validate_fixture(root: pathlib.Path, archive: pathlib.Path, manifest: pathlib.Path) -> None:
     preflight = run(archive, manifest, "--archive-only", "--kernel-release", RELEASE)
     if preflight.returncode or preflight.stdout.strip() != "KERNEL_SDK=PASS":
@@ -276,6 +386,134 @@ def main() -> None:
         write_archive(good_archive)
         write_manifest(good_manifest, manifest_records())
         validate_fixture(root / "good", good_archive, good_manifest)
+
+        good_v2_manifest = root / "good-v2.tsv"
+        good_v2_records = v2_manifest_records()
+        write_manifest(
+            good_v2_manifest,
+            good_v2_records,
+            schema="tb321fu.kernel-sdk-manifest/v2",
+        )
+        validate_fixture(root / "good-v2", good_archive, good_v2_manifest)
+
+        symlink_ratio_archive = root / "symlink-ratio.tar.gz"
+        symlink_ratio_target = "/".join(["x" * 31] * 126)
+        write_archive(symlink_ratio_archive, link_target=symlink_ratio_target)
+        verifier = load_verifier()
+        original_ratio = verifier.MAX_COMPRESSION_RATIO
+        verifier.MAX_COMPRESSION_RATIO = 1
+        try:
+            verifier.archive_records(symlink_ratio_archive, time.monotonic() + 30)
+        except verifier.SDKError as exc:
+            if "compression ratio" not in str(exc):
+                raise SystemExit(
+                    f"wrong symlink-ratio rejection: {exc}"
+                ) from exc
+        else:
+            raise SystemExit("symlink targets bypassed the SDK compression-ratio limit")
+        finally:
+            verifier.MAX_COMPRESSION_RATIO = original_ratio
+
+        v1_directory_manifest = root / "v1-directory.tsv"
+        write_manifest(v1_directory_manifest, good_v2_records)
+        require_rejected_for_error(
+            run(good_archive, v1_directory_manifest, "--archive-only"),
+            "directory record in manifest v1",
+            "unsupported type: 'directory'",
+        )
+
+        unknown_schema_manifest = root / "unknown-schema.tsv"
+        write_manifest(
+            unknown_schema_manifest,
+            good_v2_records,
+            schema="tb321fu.kernel-sdk-manifest/v3",
+        )
+        require_rejected_for_error(
+            run(good_archive, unknown_schema_manifest, "--archive-only"),
+            "unknown SDK manifest schema",
+            "unsupported schema: 'tb321fu.kernel-sdk-manifest/v3'",
+        )
+
+        missing_v2_parent_manifest = root / "missing-v2-parent.tsv"
+        write_manifest(
+            missing_v2_parent_manifest,
+            [record for record in good_v2_records if record[3] != "./include/config"],
+            schema="tb321fu.kernel-sdk-manifest/v2",
+        )
+        require_rejected_for_error(
+            run(good_archive, missing_v2_parent_manifest, "--archive-only"),
+            "v2 manifest missing an explicit directory parent",
+            "lacks an explicit directory parent",
+        )
+
+        extra_v2_directory_manifest = root / "extra-v2-directory.tsv"
+        write_manifest(
+            extra_v2_directory_manifest,
+            v2_manifest_records(additional_directories=("./include/empty",)),
+            schema="tb321fu.kernel-sdk-manifest/v2",
+        )
+        require_rejected_for_error(
+            run(good_archive, extra_v2_directory_manifest, "--archive-only"),
+            "manifest-only v2 directory",
+            "SDK archive paths differ from SDK manifest: missing=['./include/empty']",
+        )
+
+        bad_v2_directory_digest = list(good_v2_records)
+        directory_index = next(
+            index for index, record in enumerate(bad_v2_directory_digest)
+            if record[0] == "directory"
+        )
+        directory_record = bad_v2_directory_digest[directory_index]
+        bad_v2_directory_digest[directory_index] = (
+            directory_record[0],
+            "f" * 64,
+            directory_record[2],
+            directory_record[3],
+        )
+        bad_v2_directory_manifest = root / "bad-v2-directory.tsv"
+        write_manifest(
+            bad_v2_directory_manifest,
+            bad_v2_directory_digest,
+            schema="tb321fu.kernel-sdk-manifest/v2",
+        )
+        require_rejected_for_error(
+            run(good_archive, bad_v2_directory_manifest, "--archive-only"),
+            "v2 directory with a non-empty digest",
+            "directory must be mode 755 with the empty SHA-256",
+        )
+
+        bad_v2_directory_mode = list(good_v2_records)
+        directory_record = bad_v2_directory_mode[directory_index]
+        bad_v2_directory_mode[directory_index] = (
+            directory_record[0],
+            directory_record[1],
+            0o700,
+            directory_record[3],
+        )
+        bad_v2_directory_mode_manifest = root / "bad-v2-directory-mode.tsv"
+        write_manifest(
+            bad_v2_directory_mode_manifest,
+            bad_v2_directory_mode,
+            schema="tb321fu.kernel-sdk-manifest/v2",
+        )
+        require_rejected_for_error(
+            run(good_archive, bad_v2_directory_mode_manifest, "--archive-only"),
+            "v2 directory with a non-canonical mode",
+            "directory must be mode 755 with the empty SHA-256",
+        )
+
+        require_rejected_for_error(
+            run_with_environment(
+                {"TB321FU_KERNEL_SDK_DEADLINE_SECONDS": "0"},
+                good_archive,
+                good_v2_manifest,
+                "--archive-only",
+            ),
+            "invalid SDK verification deadline",
+            "TB321FU_KERNEL_SDK_DEADLINE_SECONDS must be 1..3600",
+        )
+        parsed_v2 = verifier.parse_manifest(good_v2_manifest, time.monotonic() + 30)
+        exercise_deadline_boundaries(verifier, parsed_v2.records)
 
         optional_archive = root / "optional-empty.tar.gz"
         optional_manifest = root / "optional-empty.tsv"
@@ -314,9 +552,42 @@ def main() -> None:
 
         oversized_extension_archive = root / "oversized-extension.tar.gz"
         write_oversized_extension_archive(oversized_extension_archive)
-        require_rejected(
+        require_rejected_for_error(
             run(oversized_extension_archive, good_manifest, "--archive-only"),
             "oversized GNU extension payload",
+            "extension payload exceeds 1048576 bytes",
+        )
+
+        pax_archive = root / "pax.tar.gz"
+        with tarfile.open(
+            pax_archive,
+            "w:gz",
+            format=tarfile.PAX_FORMAT,
+            pax_headers={"comment": "unsupported"},
+        ) as archive:
+            add_directory(archive, "./")
+            for directory in ("include", "include/config", "include/generated"):
+                add_directory(archive, f"./{directory}")
+            for name, data in REQUIRED.items():
+                add_regular(archive, name, data)
+            add_symlink(archive, "./include/generated/autoconf-link", "autoconf.h")
+        require_rejected_for_error(
+            run(pax_archive, good_manifest, "--archive-only"),
+            "PAX metadata",
+            "uses unsupported PAX metadata",
+        )
+
+        sparse_archive = root / "sparse.tar.gz"
+        with tarfile.open(sparse_archive, "w:gz", format=tarfile.GNU_FORMAT) as archive:
+            add_directory(archive, "./")
+            sparse = tarfile.TarInfo("./unsupported-sparse")
+            sparse.type = tarfile.GNUTYPE_SPARSE
+            sparse.mode = 0o644
+            archive.addfile(sparse)
+        require_rejected_for_error(
+            run(sparse_archive, good_manifest, "--archive-only"),
+            "GNU sparse metadata",
+            "uses unsupported GNU sparse metadata",
         )
 
         optional_file_archive = root / "optional-file.tar.gz"
@@ -428,6 +699,21 @@ def main() -> None:
         require_rejected(
             run(parent_target_archive, parent_target_manifest, "--archive-only"),
             "symlink parent traversal",
+        )
+
+        long_link_target = "x" * 256
+        long_link_archive = root / "long-link-target.tar.gz"
+        long_link_manifest = root / "long-link-target.tsv"
+        write_archive(long_link_archive, link_target=long_link_target)
+        write_manifest(
+            long_link_manifest,
+            v2_manifest_records(link_target=long_link_target),
+            schema="tb321fu.kernel-sdk-manifest/v2",
+        )
+        require_rejected_for_error(
+            run(long_link_archive, long_link_manifest, "--archive-only"),
+            "overlong v2 symlink-target component",
+            "symlink escapes the direct root",
         )
 
         long_component_archive = root / "long-component.tar.gz"
@@ -542,6 +828,10 @@ def main() -> None:
             run(extra_directory_archive, good_manifest, "--archive-only"),
             "unmanifested empty archive directory",
         )
+        require_rejected(
+            run(extra_directory_archive, good_v2_manifest, "--archive-only"),
+            "unmanifested empty archive directory under v2",
+        )
 
         corrupt_xz_archive = root / "corrupt.tar.xz"
         write_archive(corrupt_xz_archive, compression="w:xz")
@@ -614,6 +904,22 @@ def main() -> None:
         extract(good_archive, mutated_extract)
         (mutated_extract / ".config").write_bytes(b"mutated\n")
         require_rejected(run(good_archive, good_manifest, mutated_extract), "extracted byte mutation")
+
+        extra_v2_extract = root / "extra-v2-extract"
+        extract(good_archive, extra_v2_extract)
+        (extra_v2_extract / "include" / "empty").mkdir(mode=0o755)
+        require_rejected(
+            run(good_archive, good_v2_manifest, extra_v2_extract),
+            "unmanifested extracted v2 directory",
+        )
+
+        hardlink_extract = root / "hardlink-extract"
+        extract(good_archive, hardlink_extract)
+        os.link(hardlink_extract / ".config", root / "outside-hardlink")
+        require_rejected(
+            run(good_archive, good_v2_manifest, hardlink_extract),
+            "extracted regular file with an external hardlink alias",
+        )
 
         malformed_manifest = root / "malformed.tsv"
         malformed_manifest.write_text(

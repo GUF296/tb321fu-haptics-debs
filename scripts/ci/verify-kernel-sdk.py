@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import bz2
 import hashlib
-import io
 import lzma
 import os
 import pathlib
@@ -14,6 +13,7 @@ import re
 import stat
 import sys
 import tarfile
+import time
 import zlib
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -37,7 +37,10 @@ DIRECTORY_MODE = 0o755
 SYMLINK_MODE = 0o777
 FILE_MODES = {0o600, 0o644, 0o755}
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
-SCHEMA = "tb321fu.kernel-sdk-manifest/v1"
+SCHEMA_V1 = "tb321fu.kernel-sdk-manifest/v1"
+SCHEMA_V2 = "tb321fu.kernel-sdk-manifest/v2"
+SUPPORTED_SCHEMAS = frozenset({SCHEMA_V1, SCHEMA_V2})
+DEFAULT_DEADLINE_SECONDS = 300
 REQUIRED_FILES = (
     "./.config",
     "./Module.symvers",
@@ -90,6 +93,29 @@ class ManifestRecord:
     path: str
 
 
+@dataclass(frozen=True)
+class Manifest:
+    schema: str
+    records: dict[str, ManifestRecord]
+
+
+def verification_deadline() -> float:
+    raw = os.environ.get(
+        "TB321FU_KERNEL_SDK_DEADLINE_SECONDS", str(DEFAULT_DEADLINE_SECONDS)
+    )
+    if re.fullmatch(r"[1-9][0-9]{0,3}", raw) is None:
+        raise SDKError("TB321FU_KERNEL_SDK_DEADLINE_SECONDS must be 1..3600")
+    seconds = int(raw, 10)
+    if seconds > 3600:
+        raise SDKError("TB321FU_KERNEL_SDK_DEADLINE_SECONDS must be 1..3600")
+    return time.monotonic() + seconds
+
+
+def check_deadline(deadline: float, label: str) -> None:
+    if time.monotonic() >= deadline:
+        raise SDKError(f"kernel SDK verification deadline exceeded while {label}")
+
+
 def canonical_path(value: str, *, label: str) -> str:
     if not value or "\x00" in value or "\\" in value:
         raise SDKError(f"unsafe {label} path: {value!r}")
@@ -99,6 +125,8 @@ def canonical_path(value: str, *, label: str) -> str:
         raise SDKError(f"{label} path is not UTF-8") from exc
     if len(encoded) > MAX_PATH_BYTES:
         raise SDKError(f"{label} path exceeds {MAX_PATH_BYTES} bytes")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        raise SDKError(f"{label} path contains a control character")
     path = PurePosixPath(value)
     if path.is_absolute() or (path.parts and ":" in path.parts[0]):
         raise SDKError(f"unsafe absolute {label} path: {value!r}")
@@ -119,7 +147,8 @@ def root_source_path(path: str) -> bool:
     return path == "./source" or path.startswith("./source/")
 
 
-def parse_manifest(path: pathlib.Path) -> dict[str, ManifestRecord]:
+def parse_manifest(path: pathlib.Path, deadline: float) -> Manifest:
+    check_deadline(deadline, "opening the manifest")
     flags = (
         os.O_RDONLY
         | getattr(os, "O_CLOEXEC", 0)
@@ -138,6 +167,7 @@ def parse_manifest(path: pathlib.Path) -> dict[str, ManifestRecord]:
             if manifest_stat.st_size > MAX_MANIFEST_BYTES:
                 raise SDKError(f"SDK manifest exceeds {MAX_MANIFEST_BYTES} bytes")
             raw = source.read(MAX_MANIFEST_BYTES + 1)
+            check_deadline(deadline, "reading the manifest")
             final_stat = os.fstat(source.fileno())
             identity = lambda value: (
                 value.st_dev,
@@ -163,16 +193,25 @@ def parse_manifest(path: pathlib.Path) -> dict[str, ManifestRecord]:
         raise SDKError("SDK manifest must be ASCII") from exc
 
     lines = text.splitlines()
-    if not lines or lines[0] != f"schema\t{SCHEMA}":
-        raise SDKError(f"SDK manifest first record must be schema\\t{SCHEMA}")
+    if not lines or not lines[0].startswith("schema\t"):
+        raise SDKError("SDK manifest first record must declare a supported schema")
+    schema = lines[0].removeprefix("schema\t")
+    if schema not in SUPPORTED_SCHEMAS:
+        raise SDKError(f"SDK manifest has unsupported schema: {schema!r}")
+    if len(lines) - 1 > MAX_ARCHIVE_MEMBERS:
+        raise SDKError(f"SDK manifest has more than {MAX_ARCHIVE_MEMBERS} records")
 
     records: dict[str, ManifestRecord] = {}
     previous_path: str | None = None
     for number, line in enumerate(lines[1:], start=2):
+        check_deadline(deadline, "parsing the manifest")
         if line.count("\t") != 3:
             raise SDKError(f"SDK manifest record {number} must contain exactly four fields")
         kind, digest, mode_text, raw_path = line.split("\t")
-        if kind not in {"file", "symlink"}:
+        allowed_kinds = {"file", "symlink"}
+        if schema == SCHEMA_V2:
+            allowed_kinds.add("directory")
+        if kind not in allowed_kinds:
             raise SDKError(f"SDK manifest record {number} has unsupported type: {kind!r}")
         if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
             raise SDKError(f"SDK manifest record {number} has invalid SHA-256")
@@ -185,9 +224,12 @@ def parse_manifest(path: pathlib.Path) -> dict[str, ManifestRecord]:
         record_path = canonical_path(raw_path, label="SDK manifest")
         if record_path != raw_path:
             raise SDKError(f"SDK manifest record {number} path is not canonical")
-        if record_path in OPTIONAL_EMPTY_DIRECTORY_ROOTS or any(
-            record_path.startswith(directory + "/")
-            for directory in OPTIONAL_EMPTY_DIRECTORY_ROOTS
+        if schema == SCHEMA_V1 and (
+            record_path in OPTIONAL_EMPTY_DIRECTORY_ROOTS
+            or any(
+                record_path.startswith(directory + "/")
+                for directory in OPTIONAL_EMPTY_DIRECTORY_ROOTS
+            )
         ):
             raise SDKError(
                 "SDK manifest optional structural directories must remain empty: "
@@ -207,6 +249,11 @@ def parse_manifest(path: pathlib.Path) -> dict[str, ManifestRecord]:
             raise SDKError(f"SDK manifest record {number} has unsupported file mode: {mode:o}")
         if kind == "symlink" and mode != SYMLINK_MODE:
             raise SDKError(f"SDK manifest record {number} symlink mode must be {SYMLINK_MODE:o}")
+        if kind == "directory" and (mode != DIRECTORY_MODE or digest != EMPTY_SHA256):
+            raise SDKError(
+                f"SDK manifest record {number} directory must be mode {DIRECTORY_MODE:o} "
+                "with the empty SHA-256"
+            )
 
     for required in REQUIRED_FILES:
         record = records.get(required)
@@ -214,13 +261,35 @@ def parse_manifest(path: pathlib.Path) -> dict[str, ManifestRecord]:
             raise SDKError(f"SDK manifest is missing required regular file: {required}")
         if record.mode != 0o644:
             raise SDKError(f"SDK manifest required file mode must be 644: {required}")
-    return records
+    if schema == SCHEMA_V2:
+        for record_path in records:
+            check_deadline(deadline, "validating SDK v2 manifest parents")
+            for parent in parent_paths(record_path):
+                parent_record = records.get(parent)
+                if parent_record is None or parent_record.kind != "directory":
+                    raise SDKError(
+                        "SDK v2 manifest path lacks an explicit directory parent: "
+                        f"{record_path} via {parent}"
+                    )
+    check_deadline(deadline, "finishing manifest validation")
+    return Manifest(schema, records)
 
 
-def digest_stream(source, *, limit: int | None = None) -> str:
+def digest_stream(
+    source,
+    *,
+    limit: int | None = None,
+    deadline: float | None = None,
+    label: str = "reading a stream",
+) -> str:
     digest = hashlib.sha256()
     total = 0
-    while chunk := source.read(1024 * 1024):
+    while True:
+        if deadline is not None:
+            check_deadline(deadline, label)
+        chunk = source.read(1024 * 1024)
+        if not chunk:
+            break
         total += len(chunk)
         if limit is not None and total > limit:
             raise SDKError(f"stream exceeds {limit} bytes")
@@ -235,6 +304,8 @@ def digest_link_target(target: str, *, label: str) -> str:
         raise SDKError(f"{label} symlink target is not UTF-8") from exc
     if len(encoded) > MAX_LINK_TARGET_BYTES:
         raise SDKError(f"{label} symlink target exceeds {MAX_LINK_TARGET_BYTES} bytes")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in target):
+        raise SDKError(f"{label} symlink target contains a control character")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -249,6 +320,8 @@ def resolve_contained_symlink(path: str, target: str) -> str | None:
     except UnicodeEncodeError:
         return None
     if len(encoded) > MAX_LINK_TARGET_BYTES:
+        return None
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in target):
         return None
     target_parts = tuple(part for part in parsed.parts if part not in ("", "."))
     if len(target_parts) > MAX_PATH_COMPONENTS:
@@ -270,19 +343,31 @@ def parent_paths(path: str) -> set[str]:
     return {"./" + "/".join(parts[:depth]) for depth in range(1, len(parts))}
 
 
-def structural_directories(records: dict[str, ManifestRecord]) -> set[str]:
+def structural_directories(
+    records: dict[str, ManifestRecord], deadline: float
+) -> set[str]:
     directories: set[str] = set()
     for path in records:
+        check_deadline(deadline, "calculating structural directories")
         directories.update(parent_paths(path))
+        if len(directories) > MAX_ARCHIVE_MEMBERS:
+            raise SDKError("SDK namespace has too many structural directories")
+    check_deadline(deadline, "finishing structural directory calculation")
     return directories
 
 
 def require_exact_directory_members(
-    records: dict[str, ManifestRecord], directories: set[str], *, label: str
+    records: dict[str, ManifestRecord],
+    directories: set[str],
+    deadline: float,
+    *,
+    label: str,
 ) -> None:
-    required = structural_directories(records)
+    required = structural_directories(records, deadline)
     missing = sorted(required - directories)
+    check_deadline(deadline, f"comparing {label} required directories")
     unexpected = sorted(directories - required - OPTIONAL_EMPTY_DIRECTORY_MEMBERS)
+    check_deadline(deadline, f"comparing {label} unexpected directories")
     if missing or unexpected:
         raise SDKError(
             f"{label} directory members differ from the SDK contract: "
@@ -290,16 +375,61 @@ def require_exact_directory_members(
         )
 
 
+def require_manifest_directory_members(
+    manifest: Manifest, directories: set[str], deadline: float, *, label: str
+) -> None:
+    if manifest.schema == SCHEMA_V1:
+        require_exact_directory_members(
+            manifest.records, directories, deadline, label=label
+        )
+        return
+    expected: set[str] = set()
+    for path, record in manifest.records.items():
+        check_deadline(deadline, f"collecting {label} manifest directories")
+        if record.kind == "directory":
+            expected.add(path)
+    missing = sorted(expected - directories)
+    check_deadline(deadline, f"comparing {label} manifest directories")
+    unexpected = sorted(directories - expected)
+    check_deadline(deadline, f"finishing {label} directory comparison")
+    if missing or unexpected:
+        raise SDKError(
+            f"{label} directory members differ from the SDK v2 manifest: "
+            f"missing={missing!r} unexpected={unexpected!r}"
+        )
+
+
+def require_manifest_records(
+    manifest: Manifest,
+    actual: dict[str, ManifestRecord],
+    deadline: float,
+    *,
+    label: str,
+) -> None:
+    if manifest.schema == SCHEMA_V1:
+        comparable: dict[str, ManifestRecord] = {}
+        for path, record in actual.items():
+            check_deadline(deadline, f"collecting {label} records")
+            if record.kind != "directory":
+                comparable[path] = record
+    else:
+        comparable = actual
+    require_identical_records(manifest.records, comparable, deadline, label=label)
+
+
 def validate_archive_namespace(
     member_kinds: dict[str, str],
     records: dict[str, ManifestRecord],
     link_targets: dict[str, str],
+    deadline: float,
 ) -> None:
-    known_directories = structural_directories(records) | {
+    known_directories = structural_directories(records, deadline) | {
         path for path, kind in member_kinds.items() if kind == "directory"
     }
+    check_deadline(deadline, "collecting SDK namespace directories")
 
     for path, kind in member_kinds.items():
+        check_deadline(deadline, "validating SDK namespace parents")
         for parent in parent_paths(path):
             parent_kind = member_kinds.get(parent)
             if parent_kind is not None and parent_kind != "directory":
@@ -309,10 +439,12 @@ def validate_archive_namespace(
 
     resolved_cache: dict[str, str] = {}
     for path, target in link_targets.items():
+        check_deadline(deadline, "validating SDK symlink namespace")
         chain: list[str] = []
         seen: set[str] = set()
         current = path
         while True:
+            check_deadline(deadline, "resolving SDK symlink namespace")
             if current in resolved_cache:
                 terminal = resolved_cache[current]
                 break
@@ -345,6 +477,7 @@ def validate_archive_namespace(
             current = resolved
         for link in chain:
             resolved_cache[link] = terminal
+    check_deadline(deadline, "finishing SDK namespace validation")
 
 
 class BoundedTarInfo(tarfile.TarInfo):
@@ -365,19 +498,31 @@ class BoundedTarInfo(tarfile.TarInfo):
 
     def _proc_pax(self, handle: tarfile.TarFile):
         self._account_extension(handle, self.size)
-        return super()._proc_pax(handle)
+        # The deterministic SDK contract has no PAX producer. Reject before
+        # tarfile reads or interprets attacker-controlled extension payloads.
+        raise SDKError("SDK archive uses unsupported PAX metadata")
 
     def _proc_gnulong(self, handle: tarfile.TarFile):
         self._account_extension(handle, self.size)
         return super()._proc_gnulong(handle)
 
+    def _proc_sparse(self, handle: tarfile.TarFile):
+        # tarfile otherwise follows an attacker-controlled sparse-extension
+        # chain before the normal member validation loop sees this member.
+        raise SDKError("SDK archive uses unsupported GNU sparse metadata")
+
 
 class _TarTailScanner:
     """Consume a decompressed tar stream and reject bytes after its end marker."""
 
+    _PAX_TYPES = (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE)
+    _GNU_EXTENSION_TYPES = (tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK)
+
     def __init__(self) -> None:
         self.buffer = bytearray()
         self.remaining = 0
+        self.extension_count = 0
+        self.extension_bytes = 0
         self.zero_blocks = 0
         self.ended = False
         self.total = 0
@@ -412,12 +557,30 @@ class _TarTailScanner:
                     self.buffer.clear()
                 continue
             self.zero_blocks = 0
+            member_type = block[156:157]
+            if member_type == tarfile.GNUTYPE_SPARSE:
+                raise SDKError("SDK archive uses unsupported GNU sparse metadata")
             try:
                 size = tarfile.nti(block[124:136])
             except (TypeError, ValueError) as exc:
                 raise SDKError("SDK archive has an invalid tar member size") from exc
             if size < 0:
                 raise SDKError("SDK archive has a negative tar member size")
+            if member_type in self._PAX_TYPES:
+                raise SDKError("SDK archive uses unsupported PAX metadata")
+            if member_type in self._GNU_EXTENSION_TYPES:
+                if size > MAX_EXTENSION_BYTES:
+                    raise SDKError(
+                        f"SDK archive extension payload exceeds {MAX_EXTENSION_BYTES} bytes"
+                    )
+                self.extension_count += 1
+                self.extension_bytes += size
+                if self.extension_count > MAX_ARCHIVE_MEMBERS:
+                    raise SDKError("SDK archive has too many extension headers")
+                if self.extension_bytes > MAX_ARCHIVE_TOTAL_BYTES:
+                    raise SDKError(
+                        "SDK archive extension payloads exceed the total size limit"
+                    )
             self.remaining = ((size + 511) // 512) * 512
 
     def finish(self) -> None:
@@ -425,7 +588,36 @@ class _TarTailScanner:
             raise SDKError("SDK archive tar stream ended before its complete end marker")
 
 
-def _strict_tar_stream(descriptor: int, archive_bytes: int) -> None:
+def _feed_decompressed(
+    decompressor, compressed: bytes, scanner: _TarTailScanner, deadline: float
+) -> None:
+    pending = compressed
+    while True:
+        check_deadline(deadline, "validating the compressed archive stream")
+        try:
+            output = decompressor.decompress(pending, 1024 * 1024)
+        except TypeError as exc:
+            raise SDKError("SDK archive decompressor lacks bounded output") from exc
+        scanner.feed(output)
+        if getattr(decompressor, "eof", False):
+            if getattr(decompressor, "unused_data", b""):
+                raise SDKError("SDK archive contains trailing compressed bytes")
+            return
+        unconsumed = getattr(decompressor, "unconsumed_tail", b"")
+        if unconsumed:
+            if unconsumed == pending and not output:
+                raise SDKError("SDK archive decompressor made no progress")
+            pending = unconsumed
+            continue
+        if not getattr(decompressor, "needs_input", True):
+            if not output:
+                raise SDKError("SDK archive decompressor made no progress")
+            pending = b""
+            continue
+        return
+
+
+def _strict_tar_stream(descriptor: int, archive_bytes: int, deadline: float) -> None:
     """Validate compression termination and tar trailing bytes on a pinned FD."""
     os.lseek(descriptor, 0, os.SEEK_SET)
     raw = os.fdopen(os.dup(descriptor), "rb")
@@ -442,15 +634,18 @@ def _strict_tar_stream(descriptor: int, archive_bytes: int) -> None:
         else:
             decompressor = None
         while True:
-            chunk = raw.read(1024 * 1024)
+            check_deadline(deadline, "reading the compressed archive stream")
+            chunk = raw.read(64 * 1024)
             if not chunk:
                 break
             if decompressor is None:
                 scanner.feed(chunk)
                 continue
             try:
-                scanner.feed(decompressor.decompress(chunk))
+                _feed_decompressed(decompressor, chunk, scanner, deadline)
             except (OSError, EOFError, ValueError, zlib.error, lzma.LZMAError) as exc:
+                if isinstance(exc, SDKError):
+                    raise
                 raise SDKError(f"SDK archive compression stream is corrupt: {exc}") from exc
             if getattr(decompressor, "eof", False) and getattr(decompressor, "unused_data", b""):
                 raise SDKError("SDK archive contains trailing compressed bytes")
@@ -461,7 +656,10 @@ def _strict_tar_stream(descriptor: int, archive_bytes: int) -> None:
         raw.close()
 
 
-def archive_records(archive: pathlib.Path) -> tuple[dict[str, ManifestRecord], set[str]]:
+def archive_records(
+    archive: pathlib.Path, deadline: float
+) -> tuple[dict[str, ManifestRecord], set[str]]:
+    check_deadline(deadline, "opening the archive")
     flags = (
         os.O_RDONLY
         | getattr(os, "O_CLOEXEC", 0)
@@ -508,6 +706,7 @@ def archive_records(archive: pathlib.Path) -> tuple[dict[str, ManifestRecord], s
         root_header_seen = False
         members = iter(handle)
         while True:
+            check_deadline(deadline, "walking archive members")
             try:
                 member = next(members)
             except StopIteration:
@@ -562,6 +761,9 @@ def archive_records(archive: pathlib.Path) -> tuple[dict[str, ManifestRecord], s
             if member.isdir():
                 if member.mode & 0o7777 != DIRECTORY_MODE:
                     raise SDKError(f"SDK archive directory mode must be {DIRECTORY_MODE:o}: {member_path}")
+                records[member_path] = ManifestRecord(
+                    "directory", EMPTY_SHA256, DIRECTORY_MODE, member_path
+                )
                 member_kinds[member_path] = "directory"
                 directory_members.add(member_path)
                 continue
@@ -573,14 +775,17 @@ def archive_records(archive: pathlib.Path) -> tuple[dict[str, ManifestRecord], s
                 total_bytes += member.size
                 if total_bytes > MAX_ARCHIVE_TOTAL_BYTES:
                     raise SDKError("SDK archive expands beyond the total size limit")
-                if total_bytes > archive_bytes * MAX_COMPRESSION_RATIO:
-                    raise SDKError("SDK archive compression ratio exceeds the safety limit")
                 try:
                     source = handle.extractfile(member)
                     if source is None:
                         raise SDKError(f"cannot read SDK archive member: {member_path}")
                     with source:
-                        digest = digest_stream(source, limit=MAX_ARCHIVE_FILE_BYTES)
+                        digest = digest_stream(
+                            source,
+                            limit=MAX_ARCHIVE_FILE_BYTES,
+                            deadline=deadline,
+                            label=f"hashing archive member {member_path}",
+                        )
                 except SDKError:
                     raise
                 except ARCHIVE_READ_ERRORS as exc:
@@ -592,14 +797,19 @@ def archive_records(archive: pathlib.Path) -> tuple[dict[str, ManifestRecord], s
                 if member.mode & 0o7777 != SYMLINK_MODE:
                     raise SDKError(f"SDK archive symlink mode must be {SYMLINK_MODE:o}: {member_path}")
                 digest = digest_link_target(member.linkname, label="SDK archive")
+                total_bytes += len(member.linkname.encode("utf-8"))
+                if total_bytes > MAX_ARCHIVE_TOTAL_BYTES:
+                    raise SDKError("SDK archive expands beyond the total size limit")
                 kind = "symlink"
                 link_targets[member_path] = member.linkname
             else:
                 raise SDKError(f"SDK archive has unsupported member type: {member_path}")
+            if total_bytes > archive_bytes * MAX_COMPRESSION_RATIO:
+                raise SDKError("SDK archive compression ratio exceeds the safety limit")
             records[member_path] = ManifestRecord(kind, digest, member.mode & 0o7777, member_path)
             member_kinds[member_path] = kind
-        validate_archive_namespace(member_kinds, records, link_targets)
-        _strict_tar_stream(archive_file.fileno(), archive_bytes)
+        validate_archive_namespace(member_kinds, records, link_targets, deadline)
+        _strict_tar_stream(archive_file.fileno(), archive_bytes, deadline)
         final_metadata = os.fstat(archive_file.fileno())
         final_identity = (
             final_metadata.st_dev,
@@ -610,23 +820,32 @@ def archive_records(archive: pathlib.Path) -> tuple[dict[str, ManifestRecord], s
         )
         if final_identity != identity:
             raise SDKError("SDK archive changed while it was being verified")
+        check_deadline(deadline, "finishing archive validation")
     return records, directory_members
 
 
-def direct_root_candidates(records: dict[str, ManifestRecord]) -> set[str]:
+def direct_root_candidates(
+    records: dict[str, ManifestRecord], deadline: float
+) -> set[str]:
     paths = set(records)
+    check_deadline(deadline, "indexing SDK root candidates")
     candidates: set[str] = set()
+    anchor = REQUIRED_FILES[0]
+    anchor_suffix = anchor[1:]
     for path in paths:
-        parts = path[2:].split("/")
-        for depth in range(len(parts)):
-            prefix = parts[:depth]
-            candidate = "./" + "/".join(prefix) if prefix else "."
-            required = {
-                "./" + "/".join((*prefix, required_path[2:]))
-                for required_path in REQUIRED_FILES
-            }
-            if required <= paths:
-                candidates.add(candidate)
+        check_deadline(deadline, "discovering SDK root candidates")
+        if path == anchor:
+            candidate = "."
+            prefix = ""
+        elif path.endswith(anchor_suffix):
+            candidate = path[: -len(anchor_suffix)]
+            prefix = candidate[2:] + "/"
+        else:
+            continue
+        required = {f"./{prefix}{required_path[2:]}" for required_path in REQUIRED_FILES}
+        if required <= paths:
+            candidates.add(candidate)
+    check_deadline(deadline, "finishing SDK root discovery")
     return candidates
 
 
@@ -662,7 +881,11 @@ def _open_extracted_directory(parent_fd: int, name: str, path: str) -> tuple[int
 
 
 def _extracted_regular_digest(
-    parent_fd: int, name: str, path: str, initial: os.stat_result
+    parent_fd: int,
+    name: str,
+    path: str,
+    initial: os.stat_result,
+    deadline: float,
 ) -> str:
     flags = (
         os.O_RDONLY
@@ -681,7 +904,12 @@ def _extracted_regular_digest(
         source = os.fdopen(descriptor, "rb")
         descriptor = -1
         try:
-            digest = digest_stream(source, limit=MAX_EXTRACTED_FILE_BYTES)
+            digest = digest_stream(
+                source,
+                limit=MAX_EXTRACTED_FILE_BYTES,
+                deadline=deadline,
+                label=f"hashing extracted file {path}",
+            )
             final = os.fstat(source.fileno())
             if _metadata_identity(final) != _metadata_identity(initial):
                 raise SDKError(f"extracted SDK file changed while reading: {path}")
@@ -693,7 +921,10 @@ def _extracted_regular_digest(
             os.close(descriptor)
 
 
-def extracted_records(root: pathlib.Path) -> tuple[dict[str, ManifestRecord], set[str]]:
+def extracted_records(
+    root: pathlib.Path, deadline: float
+) -> tuple[dict[str, ManifestRecord], set[str]]:
+    check_deadline(deadline, "opening the extracted tree")
     flags = (
         os.O_RDONLY
         | getattr(os, "O_DIRECTORY", 0)
@@ -708,6 +939,8 @@ def extracted_records(root: pathlib.Path) -> tuple[dict[str, ManifestRecord], se
         root_stat = os.fstat(root_fd)
         if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
             raise SDKError("extracted SDK root must be a real directory")
+        if root_stat.st_mode & 0o7777 != DIRECTORY_MODE:
+            raise SDKError(f"extracted SDK root mode must be {DIRECTORY_MODE:o}")
 
         records: dict[str, ManifestRecord] = {}
         member_kinds: dict[str, str] = {}
@@ -730,6 +963,8 @@ def extracted_records(root: pathlib.Path) -> tuple[dict[str, ManifestRecord], se
                 raise SDKError("extracted SDK expands beyond the total size limit")
 
         def walk(directory_fd: int, prefix: tuple[str, ...]) -> None:
+            nonlocal total_bytes
+            check_deadline(deadline, "walking the extracted tree")
             before = os.fstat(directory_fd)
             try:
                 entries = os.scandir(directory_fd)
@@ -739,6 +974,7 @@ def extracted_records(root: pathlib.Path) -> tuple[dict[str, ManifestRecord], se
                 ) from exc
             try:
                 for entry in entries:
+                    check_deadline(deadline, "walking extracted members")
                     name = entry.name
                     if name in ("", ".", "..") or "/" in name or "\\" in name:
                         raise SDKError(f"extracted SDK has an unsafe member name: {name!r}")
@@ -771,6 +1007,13 @@ def extracted_records(root: pathlib.Path) -> tuple[dict[str, ManifestRecord], se
                         records[path] = ManifestRecord(
                             "symlink", digest_link_target(target, label="extracted SDK"), mode & 0o7777, path
                         )
+                        total_target_bytes = len(target.encode("utf-8"))
+                        if total_target_bytes:
+                            total_bytes += total_target_bytes
+                            if total_bytes > MAX_EXTRACTED_TOTAL_BYTES:
+                                raise SDKError(
+                                    "extracted SDK expands beyond the total size limit"
+                                )
                         member_kinds[path] = "symlink"
                         link_targets[path] = target
                     elif stat.S_ISDIR(mode):
@@ -779,6 +1022,9 @@ def extracted_records(root: pathlib.Path) -> tuple[dict[str, ManifestRecord], se
                                 f"extracted SDK directory mode must be {DIRECTORY_MODE:o}: {path}"
                             )
                         account_member(path)
+                        records[path] = ManifestRecord(
+                            "directory", EMPTY_SHA256, DIRECTORY_MODE, path
+                        )
                         member_kinds[path] = "directory"
                         directory_members.add(path)
                         child_fd, child_stat = _open_extracted_directory(directory_fd, name, path)
@@ -794,8 +1040,14 @@ def extracted_records(root: pathlib.Path) -> tuple[dict[str, ManifestRecord], se
                             raise SDKError(f"extracted SDK has unsupported file mode: {path}")
                         if initial.st_size > MAX_EXTRACTED_FILE_BYTES:
                             raise SDKError(f"extracted SDK member exceeds size limit: {path}")
+                        if initial.st_nlink != 1:
+                            raise SDKError(
+                                f"extracted SDK has hard-linked regular file: {path}"
+                            )
                         account_member(path, initial.st_size)
-                        digest = _extracted_regular_digest(directory_fd, name, path, initial)
+                        digest = _extracted_regular_digest(
+                            directory_fd, name, path, initial, deadline
+                        )
                         records[path] = ManifestRecord("file", digest, mode & 0o7777, path)
                         member_kinds[path] = "file"
                     else:
@@ -812,13 +1064,17 @@ def extracted_records(root: pathlib.Path) -> tuple[dict[str, ManifestRecord], se
         final_root = os.fstat(root_fd)
         if _metadata_identity(final_root) != _metadata_identity(root_stat):
             raise SDKError("extracted SDK root changed while it was being verified")
-        validate_archive_namespace(member_kinds, records, link_targets)
+        validate_archive_namespace(member_kinds, records, link_targets, deadline)
+        check_deadline(deadline, "finishing extracted SDK validation")
         return records, directory_members
     finally:
         os.close(root_fd)
 
 
-def validate_kernel_release_identity(records: dict[str, ManifestRecord], release: str) -> None:
+def validate_kernel_release_identity(
+    records: dict[str, ManifestRecord], release: str, deadline: float
+) -> None:
+    check_deadline(deadline, "validating SDK release identity")
     if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+~-]{0,127}", release):
         raise SDKError(f"invalid expected kernel release: {release!r}")
     expected = {
@@ -832,16 +1088,28 @@ def validate_kernel_release_identity(records: dict[str, ManifestRecord], release
             raise SDKError(f"SDK release identity differs from expected kernel release: {path}")
     if records["./Module.symvers"].digest == EMPTY_SHA256:
         raise SDKError("SDK Module.symvers must be non-empty")
+    check_deadline(deadline, "finishing SDK release identity validation")
 
 
 def require_identical_records(
-    expected: dict[str, ManifestRecord], actual: dict[str, ManifestRecord], *, label: str
+    expected: dict[str, ManifestRecord],
+    actual: dict[str, ManifestRecord],
+    deadline: float,
+    *,
+    label: str,
 ) -> None:
-    missing = sorted(set(expected) - set(actual))
-    extra = sorted(set(actual) - set(expected))
+    check_deadline(deadline, f"indexing {label} records")
+    expected_paths = set(expected)
+    actual_paths = set(actual)
+    check_deadline(deadline, f"comparing {label} paths")
+    missing = sorted(expected_paths - actual_paths)
+    check_deadline(deadline, f"sorting missing {label} paths")
+    extra = sorted(actual_paths - expected_paths)
+    check_deadline(deadline, f"sorting extra {label} paths")
     if missing or extra:
         raise SDKError(f"{label} paths differ from SDK manifest: missing={missing!r} extra={extra!r}")
     for path, expected_record in expected.items():
+        check_deadline(deadline, f"comparing {label} records")
         actual_record = actual[path]
         if actual_record != expected_record:
             raise SDKError(
@@ -849,38 +1117,53 @@ def require_identical_records(
                 f"expected={expected_record.kind}:{expected_record.digest}:{expected_record.mode:o} "
                 f"actual={actual_record.kind}:{actual_record.digest}:{actual_record.mode:o}"
             )
+    check_deadline(deadline, f"finishing {label} record comparison")
 
 
 def verify_archive(
-    archive: pathlib.Path, manifest: pathlib.Path, kernel_release: str | None = None
-) -> tuple[dict[str, ManifestRecord], set[str]]:
-    expected = parse_manifest(manifest)
+    archive: pathlib.Path,
+    manifest_path: pathlib.Path,
+    deadline: float,
+    kernel_release: str | None = None,
+) -> tuple[Manifest, set[str]]:
+    manifest = parse_manifest(manifest_path, deadline)
     try:
-        archived, archived_directories = archive_records(archive)
+        archived, archived_directories = archive_records(archive, deadline)
     except SDKError:
         raise
     except (OSError, tarfile.TarError, EOFError, ValueError, zlib.error) as exc:
         raise SDKError(f"cannot safely parse SDK archive {archive}: {exc}") from exc
-    roots = direct_root_candidates(archived)
+    check_deadline(deadline, "starting archive contract comparison")
+    roots = direct_root_candidates(archived, deadline)
     if roots != {"."}:
         raise SDKError(f"SDK archive must have exactly one direct Kbuild root, found {sorted(roots)!r}")
-    require_identical_records(expected, archived, label="SDK archive")
-    require_exact_directory_members(expected, archived_directories, label="SDK archive")
+    require_manifest_records(manifest, archived, deadline, label="SDK archive")
+    require_manifest_directory_members(
+        manifest, archived_directories, deadline, label="SDK archive"
+    )
     if kernel_release is not None:
-        validate_kernel_release_identity(expected, kernel_release)
-    return expected, archived_directories
+        validate_kernel_release_identity(manifest.records, kernel_release, deadline)
+    check_deadline(deadline, "finishing archive contract verification")
+    return manifest, archived_directories
 
 
 def verify(
     archive: pathlib.Path,
     manifest: pathlib.Path,
     extracted: pathlib.Path,
+    deadline: float,
     kernel_release: str | None = None,
 ) -> None:
-    expected, archived_directories = verify_archive(archive, manifest, kernel_release)
-    extracted, extracted_directories = extracted_records(extracted)
-    require_identical_records(expected, extracted, label="extracted SDK")
-    require_exact_directory_members(expected, extracted_directories, label="extracted SDK")
+    expected, archived_directories = verify_archive(
+        archive, manifest, deadline, kernel_release
+    )
+    extracted_records_map, extracted_directories = extracted_records(extracted, deadline)
+    require_manifest_records(
+        expected, extracted_records_map, deadline, label="extracted SDK"
+    )
+    require_manifest_directory_members(
+        expected, extracted_directories, deadline, label="extracted SDK"
+    )
     if extracted_directories != archived_directories:
         missing = sorted(archived_directories - extracted_directories)
         extra = sorted(extracted_directories - archived_directories)
@@ -888,6 +1171,7 @@ def verify(
             "extracted SDK directory members differ from the archive: "
             f"missing={missing!r} extra={extra!r}"
         )
+    check_deadline(deadline, "finishing extracted SDK comparison")
 
 
 def main() -> int:
@@ -905,14 +1189,22 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
+        deadline = verification_deadline()
         if args.archive_only:
             if args.extracted_root is not None:
                 raise SDKError("--archive-only does not accept an extracted SDK root")
-            verify_archive(args.archive, args.manifest, args.kernel_release)
+            verify_archive(args.archive, args.manifest, deadline, args.kernel_release)
         elif args.extracted_root is None:
             raise SDKError("an extracted SDK root is required without --archive-only")
         else:
-            verify(args.archive, args.manifest, args.extracted_root, args.kernel_release)
+            verify(
+                args.archive,
+                args.manifest,
+                args.extracted_root,
+                deadline,
+                args.kernel_release,
+            )
+        check_deadline(deadline, "finishing kernel SDK verification")
     except VERIFICATION_ERRORS as exc:
         print(f"kernel SDK verification failed: {exc}", file=sys.stderr)
         return 1

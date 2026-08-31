@@ -751,6 +751,84 @@ def main() -> None:
         bison_fixture.mkdir(mode=0o755)
         (bison_fixture / "data").write_bytes(b"fixture\n")
         (bison_fixture / "data").chmod(0o644)
+        fixture_uid = os.getuid()
+        fixture_gid = os.getgid()
+
+        def fixture_bison_digest(
+            directory: pathlib.Path,
+            tar_expected_digest: str | None = None,
+            tar_command: pathlib.Path = pathlib.Path("/usr/bin/tar"),
+        ) -> str:
+            return VERIFIER.canonical_bison_data_sha256(
+                directory,
+                tar_expected_digest,
+                tar_command,
+                expected_uid=fixture_uid,
+                expected_gid=fixture_gid,
+            )
+
+        def require_bison_failure(
+            directory: pathlib.Path, expected: str,
+        ) -> None:
+            try:
+                fixture_bison_digest(directory)
+            except VERIFIER.BundleError as exc:
+                if expected not in str(exc):
+                    raise SystemExit(
+                        f"wrong Bison boundary rejection: {exc}"
+                    ) from exc
+            else:
+                raise SystemExit(
+                    f"unsafe Bison fixture was accepted: {directory}"
+                )
+
+        bison_fixture.chmod(0o775)
+        require_bison_failure(bison_fixture, "canonical root-owned mode-0755")
+        bison_fixture.chmod(0o755)
+
+        bison_descriptor = os.open(
+            bison_fixture,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            VERIFIER.scan_bison_tree(
+                bison_descriptor,
+                expected_uid=fixture_uid + 1,
+                expected_gid=fixture_gid,
+            )
+        except VERIFIER.BundleError as exc:
+            if "unexpected owner" not in str(exc):
+                raise SystemExit(
+                    f"wrong non-root-capable Bison owner rejection: {exc}"
+                ) from exc
+        else:
+            raise SystemExit("Bison nested owner mismatch was accepted")
+        finally:
+            os.close(bison_descriptor)
+
+        bison_link = root / "bison-link"
+        bison_link.symlink_to(bison_fixture, target_is_directory=True)
+        require_bison_failure(bison_link, "cannot open Bison data directory")
+        if fixture_uid == 0:
+            os.chown(bison_fixture, 65534, 65534)
+            require_bison_failure(bison_fixture, "canonical root-owned mode-0755")
+            os.chown(bison_fixture, fixture_uid, fixture_gid)
+            data_path = bison_fixture / "data"
+            os.chown(data_path, 65534, 65534)
+            try:
+                fixture_bison_digest(bison_fixture)
+            except VERIFIER.BundleError as exc:
+                if "unexpected owner" not in str(exc):
+                    raise SystemExit(
+                        f"wrong Bison nested-owner rejection: {exc}"
+                    ) from exc
+            else:
+                raise SystemExit("Bison nested non-root owner was accepted")
+            os.chown(data_path, fixture_uid, fixture_gid)
+
         original_bounded_command = VERIFIER._bounded_command
 
         def timed_out_bison(*args, **kwargs):
@@ -758,7 +836,7 @@ def main() -> None:
 
         VERIFIER._bounded_command = timed_out_bison
         try:
-            VERIFIER.canonical_bison_data_sha256(bison_fixture)
+            fixture_bison_digest(bison_fixture)
         except VERIFIER.BundleError as exc:
             if "Bison data tree hash timed out" not in str(exc):
                 raise SystemExit(f"wrong Bison hash timeout rejection: {exc}") from exc
@@ -799,7 +877,7 @@ def main() -> None:
 
         VERIFIER.os.scandir = counting_scandir
         try:
-            VERIFIER.canonical_bison_data_sha256(bison_overflow)
+            fixture_bison_digest(bison_overflow)
         except VERIFIER.BundleError as exc:
             if "unsafe entry count" not in str(exc):
                 raise SystemExit(f"wrong Bison entry-limit rejection: {exc}") from exc
@@ -818,7 +896,7 @@ def main() -> None:
 
         VERIFIER.os.scandir = failed_scandir
         try:
-            VERIFIER.canonical_bison_data_sha256(bison_fixture)
+            fixture_bison_digest(bison_fixture)
         except VERIFIER.BundleError as exc:
             if "cannot scan Bison data tree" not in str(exc):
                 raise SystemExit(f"wrong Bison traversal failure: {exc}") from exc
@@ -852,7 +930,7 @@ def main() -> None:
 
         VERIFIER.os.scandir = lambda _descriptor: CrossDeviceScandir()
         try:
-            VERIFIER.canonical_bison_data_sha256(bison_fixture)
+            fixture_bison_digest(bison_fixture)
         except VERIFIER.BundleError as exc:
             if "cross-device entry" not in str(exc):
                 raise SystemExit(f"wrong cross-device Bison rejection: {exc}") from exc
@@ -875,7 +953,7 @@ def main() -> None:
         tar_first.chmod(0o700)
         tar_link.symlink_to(tar_first)
         try:
-            VERIFIER.canonical_bison_data_sha256(
+            fixture_bison_digest(
                 bison_fixture,
                 reference_file_digest(tar_first, allow_symlink=False),
                 tar_link,

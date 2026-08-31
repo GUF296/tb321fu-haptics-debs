@@ -6,10 +6,11 @@ export LC_ALL=C
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 builder="$SCRIPT_DIR/build-tb321fu-haptics-deb.sh"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/tb321fu-haptics-systemd-unit.XXXXXX")
+tmp_prefix=${TMPDIR:-/tmp}/tb321fu-haptics-systemd-unit.
 
 cleanup() {
   case "$tmp" in
-    /tmp/tb321fu-haptics-systemd-unit.*) rm -rf -- "$tmp" ;;
+    "$tmp_prefix"*) rm -rf -- "$tmp" ;;
   esac
 }
 trap cleanup EXIT INT TERM

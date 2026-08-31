@@ -8,6 +8,7 @@ REFERENCE="$SCRIPT_DIR/HAPTICS-BUILD-TOOLS-REFERENCE.tsv"
 RELEASE_REFERENCE="$SCRIPT_DIR/HAPTICS-RELEASE-REFERENCE.tsv"
 VERIFIER="$SCRIPT_DIR/verify-haptics-live-build-tools.sh"
 INSTALLER="$SCRIPT_DIR/install-haptics-build-dependencies.sh"
+NORMALIZER="$SCRIPT_DIR/normalize-bison-data-directory.py"
 tmp=$(/usr/bin/mktemp -d /tmp/tb321fu-haptics-live-tools-test.XXXXXX)
 cleanup() {
   /usr/bin/rm -rf -- "$tmp"
@@ -38,6 +39,7 @@ trap 'exit 143' TERM
 /bin/bash -p "$INSTALLER" --self-test-apt-config >/dev/null
 /bin/bash -p "$INSTALLER" --self-test-apt-permissions >/dev/null
 /bin/bash -p "$INSTALLER" --self-test-apt-sandbox-log >/dev/null
+/usr/bin/python3 -I -B "$NORMALIZER" --self-test >/dev/null
 for transaction_gate in \
   --capture-system-state --verify-closure-plan --verify-host-plan \
   --verify-state-transition --download-only --prepare-manifest-runtime-reference \
@@ -63,12 +65,16 @@ install_line=$(/usr/bin/grep -nF -- '"${apt_command[@]}" install -y' "$INSTALLER
 marker_line=$(/usr/bin/grep -nF -- '--verify-marker' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
 post_line=$(/usr/bin/grep -nF -- '--verify-post' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
 sandbox_line=$(/usr/bin/grep -nF -- 'verify_no_apt_sandbox_fallback "$compat_apt_stderr"' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
+normalize_line=$(/usr/bin/grep -nF -- '/usr/bin/python3 -I -B "$BISON_NORMALIZER"' "$INSTALLER" | /usr/bin/cut -d: -f1)
+live_tools_line=$(/usr/bin/grep -nF -- '"$LIVE_TOOLS_VERIFIER"' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
 [ "$download_line" -lt "$prepare_line" ] &&
   [ "$prepare_line" -lt "$configure_line" ] &&
   [ "$configure_line" -lt "$install_line" ] &&
   [ "$install_line" -lt "$marker_line" ] &&
   [ "$marker_line" -lt "$post_line" ] &&
-  [ "$post_line" -lt "$sandbox_line" ] || {
+  [ "$post_line" -lt "$sandbox_line" ] &&
+  [ "$sandbox_line" -lt "$normalize_line" ] &&
+  [ "$normalize_line" -lt "$live_tools_line" ] || {
     echo 'dependency installer transaction gates are not in fail-closed order' >&2
     exit 1
   }

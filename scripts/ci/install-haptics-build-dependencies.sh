@@ -592,6 +592,12 @@ DPKG_STATE_VERIFIER="$SCRIPT_DIR/verify-haptics-dpkg-state.py"
 APT_TRANSACTION_VERIFIER="$SCRIPT_DIR/verify-haptics-apt-transaction.py"
 SNAPSHOT_VERIFIER="$SCRIPT_DIR/snapshot-bounded-regular-file.py"
 LIVE_TOOLS_VERIFIER="$SCRIPT_DIR/verify-haptics-live-build-tools.sh"
+BISON_NORMALIZER="$SCRIPT_DIR/normalize-bison-data-directory.py"
+
+[ -f "$BISON_NORMALIZER" ] && [ ! -L "$BISON_NORMALIZER" ] || {
+  echo 'Bison data-directory normalizer is not a regular non-symlink file' >&2
+  exit 1
+}
 
 work_dir=$(/usr/bin/mktemp -d /tmp/tb321fu-haptics-apt.XXXXXX)
 dpkg_home=/root
@@ -783,6 +789,7 @@ if ! verify_no_apt_sandbox_fallback "$compat_apt_stderr"; then
   exit 1
 fi
 /usr/bin/cat -- "$compat_apt_stderr" >&2
+/usr/bin/python3 -I -B "$BISON_NORMALIZER"
 /usr/bin/update-alternatives --set awk /usr/bin/gawk
 after_state="$work_dir/package-state.after.tsv"
 HOME="$dpkg_home" /usr/bin/python3 -I -B \
