@@ -2836,11 +2836,10 @@ def main() -> None:
                         REPOSITORY,
                         "--remote-ref",
                         REMOTE_REF,
-                        "--release-tag",
-                        release_tag,
-                        "--dispatch-state",
-                        str(state_path),
                     ]
+                    if release_tag:
+                        gate_arguments.extend(("--release-tag", release_tag))
+                    gate_arguments.extend(("--dispatch-state", str(state_path)))
                     dispatch = True
                 inner_started = time.monotonic()
                 gate_deadline = min(

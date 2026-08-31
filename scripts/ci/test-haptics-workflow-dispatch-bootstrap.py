@@ -12633,13 +12633,16 @@ def test_launcher_profile_wiring(
         captures.append(
             (list(arguments), dict(environment), tuple(pass_fds), deadline)
         )
-        release_index = arguments.index("--release-tag") + 1
+        release_tag = ""
+        if "--release-tag" in arguments:
+            release_index = arguments.index("--release-tag") + 1
+            release_tag = arguments[release_index]
         return launcher_module.BoundedResult(
             0,
             fixture_gate_transcript(
                 launcher_module,
                 dispatch=True,
-                release_tag=arguments[release_index],
+                release_tag=release_tag,
             ),
             b"",
         )
@@ -12711,11 +12714,10 @@ def test_launcher_profile_wiring(
             launcher_module.REPOSITORY,
             "--remote-ref",
             launcher_module.REMOTE_REF,
-            "--release-tag",
-            release_tag,
-            "--dispatch-state",
-            str(state),
         ]
+        if release_tag:
+            expected_arguments.extend(("--release-tag", release_tag))
+        expected_arguments.extend(("--dispatch-state", str(state)))
         fixed_environment = {
             "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
             "LANG": "C",
