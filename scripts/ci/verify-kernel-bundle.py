@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import hashlib
+import io
 import os
 import pathlib
 import re
@@ -14,6 +15,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 
 
@@ -27,6 +29,7 @@ MAX_COMMAND_STDERR_BYTES = 64 * 1024
 MAX_BISON_ENTRIES = 4096
 MAX_BISON_LOGICAL_BYTES = 16 * 1024 * 1024
 MAX_BISON_DEPTH = 64
+MAX_BISON_MEMBER_NAME_BYTES = 4096
 HEX40 = re.compile(r"[0-9a-f]{40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 HEX64_OR_UNUSED = re.compile(r"(?:[0-9a-f]{64}|unused)")
@@ -615,6 +618,126 @@ def scan_bison_tree(
     return entry_count, total_size
 
 
+def _validated_bison_member_parts(name: str) -> tuple[str, ...]:
+    try:
+        encoded = name.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise BundleError("Bison tar contains a non-ASCII member name") from exc
+    if not encoded or len(encoded) > MAX_BISON_MEMBER_NAME_BYTES:
+        raise BundleError("Bison tar contains an unsafe member name length")
+    if any(byte < 0x20 or byte > 0x7E for byte in encoded) or b"\\" in encoded:
+        raise BundleError("Bison tar contains an unsafe member name")
+    if name == ".":
+        return ()
+    if not name.startswith("./"):
+        raise BundleError("Bison tar member is not rooted at ./")
+    parts = tuple(name[2:].split("/"))
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise BundleError("Bison tar contains an unsafe member path")
+    return parts
+
+
+def validate_bison_tar_stream(
+    raw: bytes, *, expected_entry_count: int, expected_logical_size: int
+) -> None:
+    if not raw or len(raw) > MAX_BISON_TAR_BYTES or len(raw) % tarfile.BLOCKSIZE:
+        raise BundleError("Bison tar stream has an unsafe byte length")
+
+    entry_count = 0
+    logical_size = 0
+    next_offset = 0
+    names: set[str] = set()
+    directories: set[tuple[str, ...]] = set()
+    active_directories: list[tuple[str, ...]] = []
+    last_child_by_parent: dict[tuple[str, ...], bytes] = {}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+            for member in archive:
+                entry_count += 1
+                if entry_count > MAX_BISON_ENTRIES:
+                    raise BundleError("Bison tar stream has an unsafe entry count")
+                parts = _validated_bison_member_parts(member.name)
+                if member.name in names:
+                    raise BundleError("Bison tar stream contains a duplicate member")
+                names.add(member.name)
+
+                if entry_count == 1:
+                    if member.name != ".":
+                        raise BundleError("Bison tar stream does not start with its root")
+                else:
+                    parent_parts = parts[:-1]
+                    if parent_parts not in directories:
+                        raise BundleError("Bison tar member is missing its parent directory")
+                    while active_directories and active_directories[-1] != parent_parts:
+                        active_directories.pop()
+                    if not active_directories:
+                        raise BundleError(
+                            "Bison tar members are not in canonical depth-first order"
+                        )
+                    child_name = parts[-1].encode("ascii")
+                    previous_child = last_child_by_parent.get(parent_parts)
+                    if previous_child is not None and child_name <= previous_child:
+                        raise BundleError(
+                            "Bison tar siblings are not in canonical order"
+                        )
+                    last_child_by_parent[parent_parts] = child_name
+
+                if member.pax_headers:
+                    raise BundleError("Bison tar stream contains extended PAX metadata")
+                if (
+                    member.type == tarfile.GNUTYPE_SPARSE
+                    or member.sparse is not None
+                ):
+                    raise BundleError("Bison tar stream contains a sparse member")
+                if member.type not in (
+                    tarfile.REGTYPE,
+                    tarfile.AREGTYPE,
+                    tarfile.DIRTYPE,
+                ):
+                    raise BundleError("Bison tar stream contains an unsupported member type")
+                if member.linkname:
+                    raise BundleError("Bison tar stream contains a linked member")
+                if member.uid != 0 or member.gid != 0:
+                    raise BundleError("Bison tar stream contains an unexpected owner")
+                if member.mtime != 0:
+                    raise BundleError("Bison tar stream contains an unexpected timestamp")
+                if member.offset != next_offset or member.offset_data != member.offset + tarfile.BLOCKSIZE:
+                    raise BundleError("Bison tar stream has a noncanonical header layout")
+
+                if member.isdir():
+                    if member.mode != 0o755 or member.size != 0:
+                        raise BundleError("Bison tar stream contains an unsafe directory")
+                    directories.add(parts)
+                    active_directories.append(parts)
+                elif member.isfile():
+                    if member.mode != 0o644:
+                        raise BundleError("Bison tar stream contains an unexpected file mode")
+                    logical_size += member.size
+                    if logical_size > MAX_BISON_LOGICAL_BYTES:
+                        raise BundleError("Bison tar stream has an unsafe logical size")
+                else:
+                    raise BundleError("Bison tar stream contains an unsupported member type")
+
+                payload_blocks = (member.size + tarfile.BLOCKSIZE - 1) // tarfile.BLOCKSIZE
+                next_offset = member.offset_data + payload_blocks * tarfile.BLOCKSIZE
+                if next_offset > len(raw):
+                    raise BundleError("Bison tar stream contains a truncated member")
+    except BundleError:
+        raise
+    except (tarfile.TarError, OSError, OverflowError) as exc:
+        raise BundleError(f"cannot parse Bison tar stream: {exc}") from exc
+
+    if entry_count < 2 or logical_size <= 0:
+        raise BundleError("Bison tar stream has an unsafe logical size or entry count")
+    if entry_count != expected_entry_count:
+        raise BundleError("Bison tar stream entry count differs from the scanned tree")
+    if logical_size != expected_logical_size:
+        raise BundleError("Bison tar stream logical size differs from the scanned tree")
+    trailer = raw[next_offset:]
+    if len(trailer) < 2 * tarfile.BLOCKSIZE or any(trailer):
+        raise BundleError("Bison tar stream has an invalid end marker or trailing data")
+
+
 def canonical_bison_data_sha256(
     directory: pathlib.Path,
     tar_expected_digest: str | None = None,
@@ -651,7 +774,7 @@ def canonical_bison_data_sha256(
             "Bison data directory is not a canonical root-owned mode-0755 directory"
         )
     try:
-        scan_bison_tree(
+        scanned_entry_count, scanned_logical_size = scan_bison_tree(
             root_descriptor, expected_uid=expected_uid, expected_gid=expected_gid
         )
         opened_tar = open_verified_regular(
@@ -695,6 +818,11 @@ def canonical_bison_data_sha256(
     if returncode:
         detail = stderr.decode("utf-8", errors="replace").strip()
         raise BundleError(f"cannot hash Bison data tree: {detail}")
+    validate_bison_tar_stream(
+        stdout,
+        expected_entry_count=scanned_entry_count,
+        expected_logical_size=scanned_logical_size,
+    )
     return hashlib.sha256(stdout).hexdigest()
 
 

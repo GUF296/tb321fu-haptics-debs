@@ -336,7 +336,7 @@ CANONICAL_PROFILE_DEFAULTS = {
 }
 REVIEWED_RUN_SHA256 = {
     "Validate workflow and lifecycle boundaries": (
-        "54dbe5df5342c60ae73ea3176fbf6a966c5f1e56efaa01a49ef220af8ed03a0b"
+        "7c35a10f7b99f82b312395ce42128f3ee4308b829edd5263d7e5d563717554bd"
     ),
     "Validate build inputs": (
         "53620abb19b0354f1740f33345439bfa5f14d70aedd8f8587680bdfdff5b9fdc"
@@ -407,6 +407,7 @@ VALIDATION_RUN_FIXTURE = "\n".join((
     "/usr/bin/python3 -I -B scripts/ci/check-action-pins.py --self-test",
     "/usr/bin/python3 -I -B scripts/ci/check-action-pins.py .github/workflows/build.yml",
     "/usr/bin/python3 -I -B scripts/ci/test-kernel-bundle-metadata.py",
+    "/usr/bin/python3 -I -B scripts/ci/test-kernel-config-drift.py",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-release-reference.py",
     "/usr/bin/python3 -I -B scripts/ci/verify-haptics-build-packages.py --self-test",
     "/usr/bin/python3 -I -B scripts/ci/verify-haptics-build-packages.py \\",
@@ -910,6 +911,8 @@ def validate(data: dict) -> None:
     validation_run = require_reviewed_run(
         validation, "Validate workflow and lifecycle boundaries"
     )
+    if "test-kernel-config-drift.py" not in validation_run:
+        fail("workflow validation must execute kernel config drift fixtures")
     if "test-haptics-release-reference.py" not in validation_run:
         fail("workflow validation must execute the release-reference hostile fixtures")
     if "test-haptics-release-archive.sh" not in validation_run:

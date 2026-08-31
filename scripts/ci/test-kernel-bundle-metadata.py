@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import os
 import pathlib
 import select
@@ -13,6 +14,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
@@ -781,6 +783,283 @@ def main() -> None:
                 raise SystemExit(
                     f"unsafe Bison fixture was accepted: {directory}"
                 )
+
+        def bison_directory(
+            name: str,
+            *,
+            mode: int = 0o755,
+            uid: int = 0,
+            gid: int = 0,
+            mtime: int = 0,
+        ) -> tuple[tarfile.TarInfo, None]:
+            member = tarfile.TarInfo(name)
+            member.type = tarfile.DIRTYPE
+            member.mode = mode
+            member.uid = uid
+            member.gid = gid
+            member.mtime = mtime
+            member.size = 0
+            return member, None
+
+        def bison_regular(
+            name: str,
+            payload: bytes = b"fixture\n",
+            *,
+            mode: int = 0o644,
+            uid: int = 0,
+            gid: int = 0,
+            mtime: int = 0,
+        ) -> tuple[tarfile.TarInfo, bytes]:
+            member = tarfile.TarInfo(name)
+            member.type = tarfile.REGTYPE
+            member.mode = mode
+            member.uid = uid
+            member.gid = gid
+            member.mtime = mtime
+            member.size = len(payload)
+            return member, payload
+
+        def render_bison_tar(
+            members: list[tuple[tarfile.TarInfo, bytes | None]],
+            *,
+            archive_format: int = tarfile.GNU_FORMAT,
+        ) -> bytes:
+            stream = io.BytesIO()
+            with tarfile.open(
+                fileobj=stream, mode="w", format=archive_format
+            ) as archive:
+                for member, payload in members:
+                    archive.addfile(
+                        member,
+                        io.BytesIO(payload) if payload is not None else None,
+                    )
+            return stream.getvalue()
+
+        def require_bison_stream_failure(
+            raw: bytes,
+            expected: str,
+            *,
+            expected_count: int = 2,
+            expected_size: int = len(b"fixture\n"),
+        ) -> None:
+            try:
+                VERIFIER.validate_bison_tar_stream(
+                    raw,
+                    expected_entry_count=expected_count,
+                    expected_logical_size=expected_size,
+                )
+            except VERIFIER.BundleError as exc:
+                if expected not in str(exc):
+                    raise SystemExit(
+                        f"wrong Bison tar-stream rejection: {exc}"
+                    ) from exc
+            else:
+                raise SystemExit("unsafe Bison tar stream was accepted")
+
+        canonical_bison_tar = render_bison_tar(
+            [bison_directory("."), bison_regular("./data")]
+        )
+        VERIFIER.validate_bison_tar_stream(
+            canonical_bison_tar,
+            expected_entry_count=2,
+            expected_logical_size=len(b"fixture\n"),
+        )
+        nested_prefix_bison_tar = render_bison_tar(
+            [
+                bison_directory("."),
+                bison_directory("./a"),
+                bison_regular("./a/data"),
+                bison_regular("./a-z"),
+            ]
+        )
+        VERIFIER.validate_bison_tar_stream(
+            nested_prefix_bison_tar,
+            expected_entry_count=4,
+            expected_logical_size=2 * len(b"fixture\n"),
+        )
+        require_bison_stream_failure(
+            render_bison_tar(
+                [
+                    bison_directory("."),
+                    bison_regular("./data"),
+                    bison_regular("./data"),
+                ]
+            ),
+            "duplicate member",
+            expected_count=3,
+            expected_size=2 * len(b"fixture\n"),
+        )
+        require_bison_stream_failure(
+            render_bison_tar(
+                [
+                    bison_directory("."),
+                    bison_directory("./nested"),
+                    bison_regular("./nested/z-data"),
+                    bison_regular("./nested/a-data"),
+                ]
+            ),
+            "canonical order",
+            expected_count=4,
+            expected_size=2 * len(b"fixture\n"),
+        )
+        require_bison_stream_failure(
+            render_bison_tar(
+                [
+                    bison_directory("."),
+                    bison_directory("./a"),
+                    bison_regular("./a/data"),
+                    bison_regular("./a-z"),
+                    bison_regular("./a/late"),
+                ]
+            ),
+            "canonical depth-first order",
+            expected_count=5,
+            expected_size=3 * len(b"fixture\n"),
+        )
+        require_bison_stream_failure(
+            render_bison_tar(
+                [
+                    bison_directory("."),
+                    bison_regular("./z-data"),
+                    bison_regular("./a-data"),
+                ]
+            ),
+            "canonical order",
+            expected_count=3,
+            expected_size=2 * len(b"fixture\n"),
+        )
+        require_bison_stream_failure(
+            render_bison_tar(
+                [bison_directory("."), bison_regular("./nested/data")]
+            ),
+            "missing its parent directory",
+        )
+        require_bison_stream_failure(
+            render_bison_tar(
+                [bison_directory("."), bison_regular("./../escape")]
+            ),
+            "unsafe member path",
+        )
+
+        linked_member = tarfile.TarInfo("./linked")
+        linked_member.type = tarfile.SYMTYPE
+        linked_member.mode = 0o777
+        linked_member.uid = linked_member.gid = linked_member.mtime = 0
+        linked_member.linkname = "data"
+        require_bison_stream_failure(
+            render_bison_tar(
+                [bison_directory("."), (linked_member, None)]
+            ),
+            "unsupported member type",
+            expected_size=0,
+        )
+        require_bison_stream_failure(
+            render_bison_tar(
+                [bison_directory("."), bison_regular("./data", mode=0o600)]
+            ),
+            "unexpected file mode",
+        )
+        require_bison_stream_failure(
+            render_bison_tar(
+                [bison_directory("."), bison_regular("./data", uid=1)]
+            ),
+            "unexpected owner",
+        )
+        require_bison_stream_failure(
+            render_bison_tar(
+                [bison_directory("."), bison_regular("./data", mtime=1)]
+            ),
+            "unexpected timestamp",
+        )
+
+        sparse_member = tarfile.TarInfo("./sparse")
+        sparse_member.type = tarfile.GNUTYPE_SPARSE
+        sparse_member.mode = 0o644
+        sparse_member.uid = sparse_member.gid = sparse_member.mtime = 0
+        sparse_member.size = 0
+        require_bison_stream_failure(
+            render_bison_tar(
+                [bison_directory("."), (sparse_member, None)]
+            ),
+            "sparse member",
+            expected_size=0,
+        )
+
+        pax_member, pax_payload = bison_regular("./pax-data")
+        pax_member.pax_headers = {"comment": "fixture"}
+        require_bison_stream_failure(
+            render_bison_tar(
+                [bison_directory("."), (pax_member, pax_payload)],
+                archive_format=tarfile.PAX_FORMAT,
+            ),
+            "extended PAX metadata",
+        )
+        require_bison_stream_failure(
+            render_bison_tar(
+                [bison_directory("."), bison_regular("./" + "x" * 101)]
+            ),
+            "noncanonical header layout",
+        )
+        require_bison_stream_failure(
+            canonical_bison_tar + b"x" * tarfile.BLOCKSIZE,
+            "invalid end marker or trailing data",
+        )
+        require_bison_stream_failure(
+            canonical_bison_tar,
+            "entry count differs from the scanned tree",
+            expected_count=3,
+        )
+        require_bison_stream_failure(
+            canonical_bison_tar,
+            "logical size differs from the scanned tree",
+            expected_size=len(b"fixture\n") + 1,
+        )
+
+        original_entry_limit = VERIFIER.MAX_BISON_ENTRIES
+        VERIFIER.MAX_BISON_ENTRIES = 1
+        try:
+            require_bison_stream_failure(
+                canonical_bison_tar, "unsafe entry count"
+            )
+        finally:
+            VERIFIER.MAX_BISON_ENTRIES = original_entry_limit
+        original_logical_limit = VERIFIER.MAX_BISON_LOGICAL_BYTES
+        VERIFIER.MAX_BISON_LOGICAL_BYTES = len(b"fixture\n") - 1
+        try:
+            require_bison_stream_failure(
+                canonical_bison_tar, "unsafe logical size"
+            )
+        finally:
+            VERIFIER.MAX_BISON_LOGICAL_BYTES = original_logical_limit
+
+        fixture_bison_digest(bison_fixture)
+        nested_bison_fixture = root / "nested-bison-data"
+        (nested_bison_fixture / "a").mkdir(parents=True, mode=0o755)
+        (nested_bison_fixture / "a" / "data").write_bytes(b"fixture\n")
+        (nested_bison_fixture / "a" / "data").chmod(0o644)
+        (nested_bison_fixture / "a-z").write_bytes(b"fixture\n")
+        (nested_bison_fixture / "a-z").chmod(0o644)
+        fixture_bison_digest(nested_bison_fixture)
+        forged_bison_tar = render_bison_tar(
+            [
+                bison_directory("."),
+                bison_regular("./data"),
+                bison_regular("./extra", b""),
+            ]
+        )
+        original_stream_command = VERIFIER._bounded_command
+
+        def return_forged_bison_stream(*_args, **_kwargs):
+            return 0, forged_bison_tar, b""
+
+        VERIFIER._bounded_command = return_forged_bison_stream
+        try:
+            require_bison_failure(
+                bison_fixture,
+                "entry count differs from the scanned tree",
+            )
+        finally:
+            VERIFIER._bounded_command = original_stream_command
 
         bison_fixture.chmod(0o775)
         require_bison_failure(bison_fixture, "canonical root-owned mode-0755")

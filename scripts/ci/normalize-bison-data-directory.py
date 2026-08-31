@@ -204,7 +204,12 @@ def _require_directory(path: pathlib.Path, expected_uid: int, expected_gid: int)
 
 
 def _open_flags(*, directory: bool = False) -> int:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     if directory:
         flags |= getattr(os, "O_DIRECTORY", 0)
     return flags
@@ -817,6 +822,46 @@ def self_test() -> None:
             or stat.S_IMODE(child_race_payload.stat().st_mode) != 0o640
         ):
             raise SystemExit("Bison child-replacement preflight changed modes")
+
+        child_fifo_tree = root / "child-fifo-tree"
+        child_fifo_tree.mkdir(mode=0o755)
+        child_fifo_tree.chmod(0o770)
+        child_fifo_payload = child_fifo_tree / "payload"
+        child_fifo_payload.write_bytes(b"authenticated FIFO race input\n")
+        child_fifo_payload.chmod(0o600)
+        child_fifo_authenticated = child_fifo_tree / "authenticated"
+        child_fifo_swapped = False
+
+        def swap_child_to_fifo_before_open(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal child_fifo_swapped
+            if path == "payload" and dir_fd is not None and not child_fifo_swapped:
+                nonblock = getattr(os, "O_NONBLOCK", 0)
+                if not nonblock or not flags & nonblock:
+                    raise SystemExit("Bison FIFO race open omitted O_NONBLOCK")
+                child_fifo_payload.rename(child_fifo_authenticated)
+                os.mkfifo(child_fifo_payload, mode=0o600)
+                child_fifo_swapped = True
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        os.open = swap_child_to_fifo_before_open
+        try:
+            _expect_failure(child_fifo_tree, expected_uid=uid, expected_gid=gid)
+        finally:
+            os.open = original_open
+        if not child_fifo_swapped:
+            raise SystemExit("Bison regular-to-FIFO fixture did not execute")
+        if (
+            stat.S_IMODE(child_fifo_tree.stat().st_mode) != 0o770
+            or stat.S_IMODE(child_fifo_authenticated.stat().st_mode) != 0o600
+            or not stat.S_ISFIFO(child_fifo_payload.lstat().st_mode)
+        ):
+            raise SystemExit("Bison regular-to-FIFO preflight changed authenticated state")
 
         close_fixture = root / "close-fixture"
         close_fixture.write_bytes(b"close fixture\n")

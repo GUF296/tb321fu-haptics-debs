@@ -65,6 +65,17 @@ grep -F 'fetch-depth: 0' "$REPO_ROOT/.github/workflows/build.yml" >/dev/null ||
   fail "workflow checkout lacks full producer history"
 grep -F 'test-haptics-deb-contract.sh' "$REPO_ROOT/.github/workflows/build.yml" >/dev/null ||
   fail "workflow omits lightweight final DEB fixtures"
+grep -F 'test-kernel-config-drift.py' "$REPO_ROOT/.github/workflows/build.yml" >/dev/null ||
+  fail "workflow omits bounded kernel config drift fixtures"
+for token in \
+  prepare_kernel_config_diagnostics \
+  report_kernel_config_drift \
+  report-kernel-config-drift.py \
+  KERNEL-CONFIG.before-build \
+  '--signal=TERM --kill-after=1s 7s'; do
+  grep -F -- "$token" "$build_script" >/dev/null ||
+    fail "builder omits kernel config drift contract token: $token"
+done
 grep -F 'wait_event_timeout(haptics->play_wait' "$driver" >/dev/null
 grep -F 'wake_up_all(&haptics->play_wait)' "$driver" >/dev/null
 grep -F 'cancel_work_sync(&haptics->play_work)' "$driver" >/dev/null

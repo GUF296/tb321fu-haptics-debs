@@ -219,6 +219,9 @@ kernel_fixdep_path=
 kernel_fixdep_sha256=
 kernel_modpost_path=
 kernel_modpost_sha256=
+kernel_config_baseline_path=
+kernel_config_reporter_path=
+kernel_config_reporter_sha256=
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/tb321fu-haptics-build.XXXXXX")
 
@@ -624,6 +627,77 @@ validate_haptics_maintainer_source_contract() {
   chmod 0444 "$haptics_maintainer_template_snapshot_dir"/*.in
 }
 
+prepare_kernel_config_diagnostics() {
+  local relative=scripts/ci/report-kernel-config-drift.py
+  local live_reporter="$haptics_root/scripts/ci/report-kernel-config-drift.py"
+  local baseline_sha256
+
+  [ "$kernel_bundle_id" != unbound ] || return 0
+  [ -f "$live_reporter" ] && [ ! -L "$live_reporter" ] ||
+    ci_die "missing regular kernel config drift reporter"
+  kernel_config_reporter_path="$work_dir/report-kernel-config-drift.py"
+  ci_export_git_file "$haptics_root" "$EXPECTED_HAPTICS_PRODUCER_COMMIT" \
+    "$relative" "$kernel_config_reporter_path" "$HAPTICS_GIT_DIR"
+  cmp -s -- "$live_reporter" "$kernel_config_reporter_path" ||
+    ci_die "kernel config drift reporter differs from the verified producer commit"
+  chmod 0444 -- "$kernel_config_reporter_path"
+  kernel_config_reporter_sha256=$(haptics_sha256_file "$kernel_config_reporter_path")
+
+  kernel_config_baseline_path="$work_dir/KERNEL-CONFIG.before-build"
+  install -m 0400 -- "$kernel_build_root/.config" "$kernel_config_baseline_path"
+  baseline_sha256=$(haptics_sha256_file "$kernel_config_baseline_path")
+  [ "$baseline_sha256" = "$kernel_bundle_config_sha256" ] ||
+    ci_die "kernel config baseline differs from KERNEL-BUNDLE.tsv"
+  cmp -s -- "$kernel_build_root/.config" "$kernel_config_baseline_path" ||
+    ci_die "kernel config changed while its diagnostic baseline was captured"
+  ci_log "captured private kernel config diagnostic baseline: $baseline_sha256"
+}
+
+report_kernel_config_drift() {
+  local phase=$1 actual_sha256=$2
+  local baseline_sha256 reporter_sha256
+
+  ci_log "kernel config drift detected $phase: expected $kernel_bundle_config_sha256, got $actual_sha256"
+  if [ ! -f "$kernel_config_baseline_path" ] ||
+     [ -L "$kernel_config_baseline_path" ] ||
+     [ "$(stat -c '%a' -- "$kernel_config_baseline_path" 2>/dev/null || true)" != 400 ] ||
+     [ ! -f "$kernel_config_reporter_path" ] ||
+     [ -L "$kernel_config_reporter_path" ] ||
+     [ "$(stat -c '%a' -- "$kernel_config_reporter_path" 2>/dev/null || true)" != 444 ]; then
+    ci_log "kernel config drift diagnostic unavailable: private inputs changed"
+    return 0
+  fi
+  baseline_sha256=$(haptics_sha256_file "$kernel_config_baseline_path" 2>/dev/null) || {
+    ci_log "kernel config drift diagnostic unavailable: cannot hash baseline"
+    return 0
+  }
+  reporter_sha256=$(haptics_sha256_file "$kernel_config_reporter_path" 2>/dev/null) || {
+    ci_log "kernel config drift diagnostic unavailable: cannot hash reporter"
+    return 0
+  }
+  if [ "$baseline_sha256" != "$kernel_bundle_config_sha256" ] ||
+     [ "$reporter_sha256" != "$kernel_config_reporter_sha256" ]; then
+    ci_log "kernel config drift diagnostic unavailable: private input digest changed"
+    return 0
+  fi
+
+  if ! haptics_run_isolated_tool timeout \
+      --signal=TERM --kill-after=1s 7s \
+      python3 -I -B \
+      "$kernel_config_reporter_path" \
+      "$kernel_config_baseline_path" \
+      "$kernel_build_root/.config"; then
+    ci_log "kernel config drift diagnostic reporter failed"
+  fi
+  if [ "$(haptics_sha256_file "$kernel_config_baseline_path" 2>/dev/null || true)" != \
+       "$kernel_bundle_config_sha256" ] ||
+     [ "$(haptics_sha256_file "$kernel_config_reporter_path" 2>/dev/null || true)" != \
+       "$kernel_config_reporter_sha256" ]; then
+    ci_log "kernel config drift diagnostic private inputs changed during reporting"
+  fi
+  return 0
+}
+
 verify_kernel_source_state() {
   local phase=$1 actual
 
@@ -645,8 +719,10 @@ verify_kernel_build_state() {
     [ "$actual_release" = "$kernel_bundle_release" ] ||
       ci_die "kernel build release differs from KERNEL-BUNDLE.tsv $phase"
     actual_config_sha256=$(haptics_sha256_file "$kernel_build_root/.config")
-    [ "$actual_config_sha256" = "$kernel_bundle_config_sha256" ] ||
+    if [ "$actual_config_sha256" != "$kernel_bundle_config_sha256" ]; then
+      report_kernel_config_drift "$phase" "$actual_config_sha256"
       ci_die "kernel build config differs from KERNEL-BUNDLE.tsv $phase: expected $kernel_bundle_config_sha256, got $actual_config_sha256"
+    fi
   fi
   ci_log "kernel build state verified $phase: $actual_release"
 }
@@ -1466,6 +1542,7 @@ finalize_haptics_output() {
 
 prepare_inputs
 verify_haptics_producer_state "before package build"
+prepare_kernel_config_diagnostics
 validate_haptics_maintainer_source_contract
 prepare_haptics_source_snapshot
 create_haptics_producer_bundle

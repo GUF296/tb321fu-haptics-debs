@@ -243,6 +243,86 @@ for expected in \
     fail "isolated external-tool invocation omitted: $expected"
 done
 
+(
+config_diagnostic_functions="$tmp/kernel-config-diagnostic-functions.sh"
+awk '
+  /^prepare_kernel_config_diagnostics\(\)/ { emit = 1 }
+  emit { print }
+  emit && /^}$/ { exit }
+' "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" > "$config_diagnostic_functions"
+awk '
+  /^report_kernel_config_drift\(\)/ { emit = 1 }
+  emit { print }
+  emit && /^}$/ { exit }
+' "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" >> "$config_diagnostic_functions"
+. "$config_diagnostic_functions"
+
+haptics_root="$tmp/kernel-config-diagnostic-repo"
+kernel_build_root="$tmp/kernel-config-diagnostic-build"
+work_dir="$tmp/kernel-config-diagnostic-work"
+mkdir -m 0700 -p -- "$haptics_root/scripts/ci" "$kernel_build_root" "$work_dir"
+cp -- "$SCRIPT_DIR/report-kernel-config-drift.py" \
+  "$haptics_root/scripts/ci/report-kernel-config-drift.py"
+printf '%s\n' CONFIG_A=y '# CONFIG_B is not set' > "$kernel_build_root/.config"
+kernel_bundle_id=3333333333333333333333333333333333333333333333333333333333333333
+kernel_bundle_config_sha256=$(haptics_sha256_file "$kernel_build_root/.config")
+EXPECTED_HAPTICS_PRODUCER_COMMIT=1111111111111111111111111111111111111111
+HAPTICS_GIT_DIR=
+kernel_config_baseline_path=
+kernel_config_reporter_path=
+kernel_config_reporter_sha256=
+ci_export_git_file() {
+  [ "$#" -eq 5 ] || fail "config diagnostic export received wrong arguments"
+  mkdir -p -- "$(dirname -- "$4")"
+  cp -- "$haptics_root/$3" "$4"
+  chmod 0644 -- "$4"
+}
+
+prepare_kernel_config_diagnostics
+[ "$(stat -c '%a' -- "$kernel_config_baseline_path")" = 400 ] ||
+  fail "kernel config diagnostic baseline mode is not 0400"
+[ "$(stat -c '%a' -- "$kernel_config_reporter_path")" = 444 ] ||
+  fail "kernel config diagnostic reporter mode is not 0444"
+printf '%s\n' CONFIG_A=y CONFIG_B=y CONFIG_C=m > "$kernel_build_root/.config"
+actual_config_sha256=$(haptics_sha256_file "$kernel_build_root/.config")
+diagnostic=$(report_kernel_config_drift "after fixture build" "$actual_config_sha256")
+for expected in \
+  'KERNEL_CONFIG_DRIFT_DIAGNOSTIC=v1' \
+  "baseline-sha256=$kernel_bundle_config_sha256" \
+  "live-sha256=$actual_config_sha256" \
+  'KERNEL_CONFIG_DRIFT_DIAGNOSTIC_END'; do
+  grep -Fxq -- "$expected" <<<"$diagnostic" ||
+    fail "kernel config drift integration omitted: $expected"
+done
+[ -z "$(find "$work_dir" \
+  \( -type d -name __pycache__ -o -type f -name '*.py[co]' \) \
+  -print -quit)" ] ||
+  fail "kernel config drift reporter left Python cache residue"
+
+chmod 0644 -- "$kernel_config_reporter_path"
+printf '# tampered\n' >> "$kernel_config_reporter_path"
+chmod 0444 -- "$kernel_config_reporter_path"
+diagnostic=$(report_kernel_config_drift "after reporter tamper" "$actual_config_sha256")
+grep -Fq 'kernel config drift diagnostic unavailable: private input digest changed' \
+  <<<"$diagnostic" ||
+  fail "tampered config drift reporter did not fail diagnostics closed"
+
+chmod 0644 -- "$kernel_config_reporter_path"
+printf '%s\n' \
+  '#!/usr/bin/env python3' \
+  'import time' \
+  'time.sleep(30)' > "$kernel_config_reporter_path"
+chmod 0444 -- "$kernel_config_reporter_path"
+kernel_config_reporter_sha256=$(haptics_sha256_file "$kernel_config_reporter_path")
+diagnostic_started=$SECONDS
+diagnostic=$(report_kernel_config_drift "after hanging reporter" "$actual_config_sha256")
+diagnostic_elapsed=$((SECONDS - diagnostic_started))
+grep -Fq 'kernel config drift diagnostic reporter failed' <<<"$diagnostic" ||
+  fail "timed-out config drift reporter did not remain diagnostic-only"
+[ "$diagnostic_elapsed" -ge 6 ] && [ "$diagnostic_elapsed" -le 12 ] ||
+  fail "config drift reporter process deadline was not bounded: ${diagnostic_elapsed}s"
+)
+
 kernel_make_fixture="$tmp/kernel-make-function.sh"
 awk '
   /^kernel_make\(\)/ { emit = 1 }
