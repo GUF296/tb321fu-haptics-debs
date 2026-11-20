@@ -127,7 +127,6 @@ jobs:
           /usr/bin/sudo /usr/bin/sha256sum -- "$reference" > "$checksum"
           /usr/bin/sudo /usr/bin/chmod 0600 "$checksum"
           /usr/bin/sudo /usr/bin/sha256sum -c -- "$checksum"
-          /usr/bin/sudo /usr/bin/chmod 0644 "$reference"
           /bin/bash -p scripts/ci/build-haptics-toolchain-image.sh "$RUNNER_TEMP/haptics-toolchain.iid"
           /usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/verify-haptics-dpkg-state.py \
             --verify-host-reference /var/lib/dpkg 0 0 "$reference"

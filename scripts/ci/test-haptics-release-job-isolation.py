@@ -338,7 +338,7 @@ CANONICAL_PROFILE_DEFAULTS = {
 # independent of the fixtures so simultaneous workflow/fixture drift fails closed.
 REVIEWED_RUN_SHA256 = {
     "Install dependencies": (
-        "c73f6876df535fa53c883fa4bbaf056bdc37ab14fc55822976508090fb0678c3"
+        "66c7d9110e247d535e4fd1761c82ccfc16f12680c8e0213f665132f10aa1cf15"
     ),
     "Validate workflow and lifecycle boundaries": (
         "842470458d358225bed5c8696f29ca08ec6d9b10947ac7e831b2ec5815cd43e6"
@@ -422,7 +422,6 @@ DEPENDENCY_RUN = "\n".join((
     "/usr/bin/sudo /usr/bin/sha256sum -- \"$reference\" > \"$checksum\"",
     "/usr/bin/sudo /usr/bin/chmod 0600 \"$checksum\"",
     "/usr/bin/sudo /usr/bin/sha256sum -c -- \"$checksum\"",
-    "/usr/bin/sudo /usr/bin/chmod 0644 \"$reference\"",
     '/bin/bash -p scripts/ci/build-haptics-toolchain-image.sh "$RUNNER_TEMP/haptics-toolchain.iid"',
     "/usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/verify-haptics-dpkg-state.py \\",
     '  --verify-host-reference /var/lib/dpkg 0 0 "$reference"',
@@ -1030,6 +1029,8 @@ def validate(data: dict) -> None:
     host_capture_index = dependencies_run.index("--capture-host-reference")
     installer_index = dependencies_run.index("scripts/ci/build-haptics-toolchain-image.sh")
     host_recheck_index = dependencies_run.rindex("--verify-host-reference")
+    if 'chmod 0644 "$reference"' in dependencies_run:
+        fail("host reference must retain its verified owner-only mode")
     preflight_guard_index = dependencies_run.index(
         '[ "$preflight_status" -eq 0 ] || exit "$preflight_status"'
     )
