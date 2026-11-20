@@ -880,7 +880,7 @@ verify_private_apt_source() {
       return 1
     }
   digest=$(/usr/bin/sha256sum -- "$sources_file" | /usr/bin/cut -d' ' -f1)
-  [ "$digest" = 96379d39707e38712509e7db3197cd13663a1486c0401347cbac75ffcc181f0b ] || {
+  [ "$digest" = 6830ab53648a1d88d8acc90786e638f593cac1c833ad37234e14755618230496 ] || {
     echo 'private apt source differs from the reviewed snapshot contract' >&2
     return 1
   }
