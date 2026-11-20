@@ -75,31 +75,31 @@ CANONICAL_INPUTS: dict[str, object] = {
     "dispatch_id": "",
     "release_tag": "",
     "prerelease": True,
-    "haptics_deb_version": "20260730.2",
-    "kernel_source_commit": "570b90203d97f67321fa0fb2d0af73c31d7111af",
+    "haptics_deb_version": "20261120.1",
+    "kernel_source_commit": "11bbf0262857f2dcb5c35afc1fd4296d6ceffaf7",
     "kernel_build_archive": (
         "https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/"
-        "tb321fu-kernel-bootstrap-570b90203d97-20260729.4/"
-        "tb321fu-kernel-build-sdk-7.1.1-00009-g570b90203d97.tar.gz"
+        "tb321fu-kernel-bootstrap-11bbf0262857-20261120.1/"
+        "tb321fu-kernel-build-sdk-7.1.1-00011-g11bbf0262857.tar.gz"
     ),
     "kernel_build_archive_sha256": (
-        "7f9b12bd02c1155c9900a33c823d088e1a9f72689dea28c8ee582a31304c7c49"
+        "0b84cd9bec6c41d7c55c143cd7e945820971e4267aed66728126e6b96f753e87"
     ),
     "kernel_bundle_metadata": (
         "https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/"
-        "tb321fu-kernel-bootstrap-570b90203d97-20260729.4/KERNEL-BUNDLE.tsv"
+        "tb321fu-kernel-bootstrap-11bbf0262857-20261120.1/KERNEL-BUNDLE.tsv"
     ),
     "kernel_bundle_metadata_sha256": (
-        "9b11d12fab79eb4f10acb7eddf9c5e11e3f4242f2877658627ff3b11dd231998"
+        "3e12149ff2e1c99abefec913676cf71560ef0537c5d21397428c8cdec8d730cb"
     ),
     "kernel_sdk_manifest": (
         "https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/"
-        "tb321fu-kernel-bootstrap-570b90203d97-20260729.4/"
+        "tb321fu-kernel-bootstrap-11bbf0262857-20261120.1/"
         "KERNEL-SDK-MANIFEST.tsv"
     ),
     "kernel_toolchain_manifest": (
         "https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/"
-        "tb321fu-kernel-bootstrap-570b90203d97-20260729.4/KERNEL-TOOLCHAIN.tsv"
+        "tb321fu-kernel-bootstrap-11bbf0262857-20261120.1/KERNEL-TOOLCHAIN.tsv"
     ),
 }
 

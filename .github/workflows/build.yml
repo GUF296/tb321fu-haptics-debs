@@ -21,42 +21,42 @@ on:
       haptics_deb_version:
         description: Debian package version
         required: true
-        default: "20260730.2"
+        default: "20261120.1"
         type: string
       kernel_source_commit:
         description: Exact 40-hex GUF296/linux commit paired with the kernel SDK.
         required: true
-        default: 570b90203d97f67321fa0fb2d0af73c31d7111af
+        default: 11bbf0262857f2dcb5c35afc1fd4296d6ceffaf7
         type: string
       kernel_build_archive:
         description: Kernel build SDK archive URL
         required: true
-        default: https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-570b90203d97-20260729.4/tb321fu-kernel-build-sdk-7.1.1-00009-g570b90203d97.tar.gz
+        default: https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-11bbf0262857-20261120.1/tb321fu-kernel-build-sdk-7.1.1-00011-g11bbf0262857.tar.gz
         type: string
       kernel_build_archive_sha256:
         description: SHA-256 of the exact kernel build SDK archive.
         required: true
-        default: 7f9b12bd02c1155c9900a33c823d088e1a9f72689dea28c8ee582a31304c7c49
+        default: 0b84cd9bec6c41d7c55c143cd7e945820971e4267aed66728126e6b96f753e87
         type: string
       kernel_bundle_metadata:
         description: HTTPS KERNEL-BUNDLE.tsv v2 URL paired with the source and SDK archive.
         required: true
-        default: https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-570b90203d97-20260729.4/KERNEL-BUNDLE.tsv
+        default: https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-11bbf0262857-20261120.1/KERNEL-BUNDLE.tsv
         type: string
       kernel_bundle_metadata_sha256:
         description: SHA-256 of the paired KERNEL-BUNDLE.tsv v2.
         required: true
-        default: 9b11d12fab79eb4f10acb7eddf9c5e11e3f4242f2877658627ff3b11dd231998
+        default: 3e12149ff2e1c99abefec913676cf71560ef0537c5d21397428c8cdec8d730cb
         type: string
       kernel_sdk_manifest:
         description: HTTPS KERNEL-SDK-MANIFEST.tsv URL paired with the kernel SDK archive.
         required: true
-        default: https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-570b90203d97-20260729.4/KERNEL-SDK-MANIFEST.tsv
+        default: https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-11bbf0262857-20261120.1/KERNEL-SDK-MANIFEST.tsv
         type: string
       kernel_toolchain_manifest:
         description: HTTPS KERNEL-TOOLCHAIN.tsv v2 URL bound by KERNEL-BUNDLE.tsv.
         required: true
-        default: https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-570b90203d97-20260729.4/KERNEL-TOOLCHAIN.tsv
+        default: https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-11bbf0262857-20261120.1/KERNEL-TOOLCHAIN.tsv
         type: string
 
 concurrency:
