@@ -1198,7 +1198,7 @@ fi
 
 if [ "${1:-}" = --check-apt-isolation ]; then
   [ "$#" -eq 1 ] || exit 1
-  snapshot=https://snapshot.ubuntu.com/ubuntu/20260730T000000Z/
+  snapshot=https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/
   work_dir=$(/usr/bin/mktemp -d /tmp/tb321fu-haptics-apt-check.XXXXXX)
   prepare_private_apt_state 0
   echo 'HAPTICS_APT_CONFIGURATION=PASS'
@@ -1226,7 +1226,7 @@ fi
 
 if [ "${1:-}" = --self-test-apt-source ]; then
   [ "$#" -eq 1 ] || exit 1
-  snapshot=https://snapshot.ubuntu.com/ubuntu/20260730T000000Z/
+  snapshot=https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/
   work_dir=$(/usr/bin/mktemp -d /tmp/tb321fu-haptics-apt-source-test.XXXXXX)
   prepare_private_apt_state 0
   printf 'Trusted: yes\n' >> "$sources_file"
@@ -1240,7 +1240,7 @@ fi
 
 if [ "${1:-}" = --self-test-apt-config ]; then
   [ "$#" -eq 1 ] || exit 1
-  snapshot=https://snapshot.ubuntu.com/ubuntu/20260730T000000Z/
+  snapshot=https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/
   work_dir=$(/usr/bin/mktemp -d /tmp/tb321fu-haptics-apt-config-test.XXXXXX)
   prepare_private_apt_state 0
   echo 'DPkg::Pre-Invoke { "/bin/false"; };' >> "$apt_config"
@@ -1360,7 +1360,7 @@ fi
 
 if [ "${1:-}" = --self-test-apt-permissions ]; then
   [ "$#" -eq 1 ] || exit 1
-  snapshot=https://snapshot.ubuntu.com/ubuntu/20260730T000000Z/
+  snapshot=https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/
   work_dir=$(/usr/bin/mktemp -d /tmp/tb321fu-haptics-apt-permission-test.XXXXXX)
   prepare_private_apt_state 0
   /usr/bin/chmod 0700 "$work_dir"

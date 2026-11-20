@@ -3377,7 +3377,7 @@ Priority: 0
     if "dpkg" not in verifier.BOOTSTRAP_PACKAGES:
         raise SystemExit("native dpkg is not locked before the first transaction")
     lock_text = b"""schema\ttb321fu.haptics-build-packages/v2
-snapshot\thttps://snapshot.ubuntu.com/ubuntu/20260730T000000Z/
+snapshot\thttps://snapshot.ubuntu.com/ubuntu/20260913T000000Z/
 package\tapt\tamd64\t2.8.3\tbootstrap
 package\troot-tool\tamd64\t1.0\trequested
 package\ttransitive\tall\t2.0\tclosure

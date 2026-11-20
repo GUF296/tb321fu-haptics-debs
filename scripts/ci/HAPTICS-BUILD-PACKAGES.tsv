@@ -1,7 +1,7 @@
 schema	tb321fu.haptics-build-packages/v2
-snapshot	https://snapshot.ubuntu.com/ubuntu/20260730T000000Z/
+snapshot	https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/
 package	apt	amd64	2.8.3	bootstrap
-package	base-files	amd64	13ubuntu10.4	closure
+package	base-files	amd64	13ubuntu10.5	closure
 package	base-passwd	amd64	3.6.3build1	closure
 package	bash	amd64	5.2.21-2ubuntu4	requested
 package	bc	amd64	1.07.1-3ubuntu4	requested
@@ -10,20 +10,20 @@ package	binutils-aarch64-linux-gnu	amd64	2.42-4ubuntu2.10	requested
 package	binutils-common	amd64	2.42-4ubuntu2.10	requested
 package	binutils-x86-64-linux-gnu	amd64	2.42-4ubuntu2.10	requested
 package	bison	amd64	2:3.8.2+dfsg-1build2	requested
-package	bzip2	amd64	1.0.8-5.1build0.1	closure
+package	bzip2	amd64	1.0.8-5.1ubuntu0.1	closure
 package	ca-certificates	all	20260601~24.04.1	bootstrap
-package	coreutils	amd64	9.4-3ubuntu6	requested
+package	coreutils	amd64	9.4-3ubuntu6.3	requested
 package	cpp	amd64	4:13.2.0-7ubuntu1	closure
 package	cpp-13	amd64	13.3.0-6ubuntu2~24.04.1	closure
 package	cpp-13-aarch64-linux-gnu	amd64	13.3.0-6ubuntu2~24.04cross1	requested
 package	cpp-13-x86-64-linux-gnu	amd64	13.3.0-6ubuntu2~24.04.1	closure
 package	cpp-aarch64-linux-gnu	amd64	4:13.2.0-7ubuntu1	requested
 package	cpp-x86-64-linux-gnu	amd64	4:13.2.0-7ubuntu1	closure
-package	curl	amd64	8.5.0-2ubuntu10.11	requested
+package	curl	amd64	8.5.0-2ubuntu10.13	requested
 package	dash	amd64	0.5.12-6ubuntu5	requested
 package	debconf	all	1.5.86ubuntu1	closure
 package	debianutils	amd64	5.17build1	closure
-package	diffutils	amd64	1:3.10-1build1	requested
+package	diffutils	amd64	1:3.10-1ubuntu0.1	requested
 package	dpkg	amd64	1.22.6ubuntu6.6	bootstrap
 package	dpkg-dev	all	1.22.6ubuntu6.6	requested
 package	findutils	amd64	4.9.0-5build1	requested
@@ -45,7 +45,7 @@ package	gcc-aarch64-linux-gnu	amd64	4:13.2.0-7ubuntu1	requested
 package	gcc-x86-64-linux-gnu	amd64	4:13.2.0-7ubuntu1	closure
 package	git	amd64	1:2.43.0-1ubuntu7.3	requested
 package	git-man	all	1:2.43.0-1ubuntu7.3	closure
-package	gpgv	amd64	2.4.4-2ubuntu17.4	closure
+package	gpgv	amd64	2.4.4-2ubuntu17.6	closure
 package	grep	amd64	3.11-4build1	requested
 package	gzip	amd64	1.12-1ubuntu3.2	requested
 package	init-system-helpers	all	1.66ubuntu1	closure
@@ -58,11 +58,11 @@ package	libasan8-arm64-cross	all	14.2.0-4ubuntu2~24.04.1cross1	closure
 package	libassuan0	amd64	2.5.6-1build1	closure
 package	libatomic1	amd64	14.2.0-4ubuntu2~24.04.1	closure
 package	libatomic1-arm64-cross	all	14.2.0-4ubuntu2~24.04.1cross1	closure
-package	libattr1	amd64	1:2.5.2-1build1.1	requested
+package	libattr1	amd64	1:2.5.2-1ubuntu0.1	requested
 package	libbinutils	amd64	2.42-4ubuntu2.10	requested
 package	libbrotli1	amd64	1.1.0-2build2	requested
 package	libbsd0	amd64	0.12.1-1build1.1	closure
-package	libbz2-1.0	amd64	1.0.8-5.1build0.1	requested
+package	libbz2-1.0	amd64	1.0.8-5.1ubuntu0.1	requested
 package	libc6-arm64-cross	all	2.39-0ubuntu8cross1	closure
 package	libc6-dev-arm64-cross	all	2.39-0ubuntu8cross1	requested
 package	libcap2	amd64	1:2.66-5ubuntu2.4	closure
@@ -72,8 +72,8 @@ package	libcrypt-dev	amd64	1:4.4.36-4build1	closure
 package	libcrypt1	amd64	1:4.4.36-4build1	closure
 package	libctf-nobfd0	amd64	2.42-4ubuntu2.10	requested
 package	libctf0	amd64	2.42-4ubuntu2.10	requested
-package	libcurl3t64-gnutls	amd64	8.5.0-2ubuntu10.11	requested
-package	libcurl4t64	amd64	8.5.0-2ubuntu10.11	requested
+package	libcurl3t64-gnutls	amd64	8.5.0-2ubuntu10.13	requested
+package	libcurl4t64	amd64	8.5.0-2ubuntu10.13	requested
 package	libdb5.3t64	amd64	5.3.28+dfsg2-7	closure
 package	libdebconfclient0	amd64	0.271ubuntu3	closure
 package	libdeflate0	amd64	1.19-1build1.1	closure
@@ -87,7 +87,7 @@ package	libgcc-13-dev	amd64	13.3.0-6ubuntu2~24.04.1	closure
 package	libgcc-13-dev-arm64-cross	all	13.3.0-6ubuntu2~24.04cross1	requested
 package	libgcc-s1	amd64	14.2.0-4ubuntu2~24.04.1	closure
 package	libgcc-s1-arm64-cross	all	14.2.0-4ubuntu2~24.04.1cross1	closure
-package	libgcrypt20	amd64	1.10.3-2ubuntu0.1	closure
+package	libgcrypt20	amd64	1.10.3-2ubuntu0.2	closure
 package	libgd3	amd64	2.3.3-9ubuntu5	closure
 package	libgdbm-compat4t64	amd64	1.23-5.1build1	closure
 package	libgdbm6t64	amd64	1.23-5.1build1	closure
@@ -98,8 +98,8 @@ package	libgomp1-arm64-cross	all	14.2.0-4ubuntu2~24.04.1cross1	closure
 package	libgpg-error0	amd64	1.47-3build2.1	closure
 package	libgprofng0	amd64	2.42-4ubuntu2.10	requested
 package	libgssapi-krb5-2	amd64	1.20.1-6ubuntu2.7	requested
-package	libheif-plugin-aomdec	amd64	1.17.6-1ubuntu4.6	closure
-package	libheif1	amd64	1.17.6-1ubuntu4.6	closure
+package	libheif-plugin-aomdec	amd64	1.17.6-1ubuntu4.8	closure
+package	libheif1	amd64	1.17.6-1ubuntu4.8	closure
 package	libhogweed6t64	amd64	3.9.1-2.2build1.1	requested
 package	libhwasan0	amd64	14.2.0-4ubuntu2~24.04.1	closure
 package	libhwasan0-arm64-cross	all	14.2.0-4ubuntu2~24.04.1cross1	closure
@@ -124,19 +124,19 @@ package	liblzma5	amd64	5.6.1+really5.4.5-1ubuntu0.3	requested
 package	libmd0	amd64	1.1.0-2build1.1	requested
 package	libmpc3	amd64	1.3.1-1build1.1	requested
 package	libmpfr6	amd64	4.2.1-1build1.1	requested
-package	libncursesw6	amd64	6.4+20240113-1ubuntu2.1	closure
+package	libncursesw6	amd64	6.4+20240113-1ubuntu2.2	closure
 package	libnettle8t64	amd64	3.9.1-2.2build1.1	requested
 package	libnghttp2-14	amd64	1.59.0-1ubuntu0.4	requested
 package	libnpth0t64	amd64	1.6-3.1build1	closure
-package	libp11-kit0	amd64	0.25.3-4ubuntu2.1	requested
+package	libp11-kit0	amd64	0.25.3-4ubuntu2.2	requested
 package	libpcre2-8-0	amd64	10.42-4ubuntu2.1	requested
-package	libperl5.38t64	amd64	5.38.2-3.2ubuntu0.3	closure
+package	libperl5.38t64	amd64	5.38.2-3.2ubuntu0.4	closure
 package	libpng16-16t64	amd64	1.6.43-5ubuntu0.6	closure
 package	libpopt0	amd64	1.19+dfsg-1build1	requested
 package	libpsl5t64	amd64	0.21.2-1.1build1	requested
 package	libpython3-stdlib	amd64	3.12.3-0ubuntu2.1	requested
-package	libpython3.12-minimal	amd64	3.12.3-1ubuntu0.15	requested
-package	libpython3.12-stdlib	amd64	3.12.3-1ubuntu0.15	requested
+package	libpython3.12-minimal	amd64	3.12.3-1ubuntu0.17	requested
+package	libpython3.12-stdlib	amd64	3.12.3-1ubuntu0.17	requested
 package	libquadmath0	amd64	14.2.0-4ubuntu2~24.04.1	closure
 package	libreadline8t64	amd64	8.2-4build1	requested
 package	librtmp1	amd64	2.4+20151223.gitfa8646d.1-2build7	requested
@@ -148,14 +148,14 @@ package	libsframe1	amd64	2.42-4ubuntu2.10	requested
 package	libsharpyuv0	amd64	1.3.2-0.4build3	closure
 package	libsigsegv2	amd64	2.14-1ubuntu2	requested
 package	libsqlite3-0	amd64	3.45.1-1ubuntu2.7	closure
-package	libssh-4	amd64	0.10.6-2ubuntu0.4	requested
-package	libssl-dev	amd64	3.0.13-0ubuntu3.11	requested
-package	libssl3t64	amd64	3.0.13-0ubuntu3.11	requested
+package	libssh-4	amd64	0.10.6-2ubuntu0.5	requested
+package	libssl-dev	amd64	3.0.13-0ubuntu3.15	requested
+package	libssl3t64	amd64	3.0.13-0ubuntu3.15	requested
 package	libstdc++6	amd64	14.2.0-4ubuntu2~24.04.1	closure
 package	libstdc++6-arm64-cross	all	14.2.0-4ubuntu2~24.04.1cross1	closure
 package	libtasn1-6	amd64	4.19.0-3ubuntu0.24.04.2	requested
 package	libtiff6	amd64	4.5.1+git230720-4ubuntu2.5	closure
-package	libtinfo6	amd64	6.4+20240113-1ubuntu2.1	requested
+package	libtinfo6	amd64	6.4+20240113-1ubuntu2.2	requested
 package	libtsan2	amd64	14.2.0-4ubuntu2~24.04.1	closure
 package	libtsan2-arm64-cross	all	14.2.0-4ubuntu2~24.04.1cross1	closure
 package	libubsan1	amd64	14.2.0-4ubuntu2~24.04.1	closure
@@ -171,7 +171,7 @@ package	libxpm4	amd64	1:3.5.17-1ubuntu0.24.04.1	closure
 package	libxxhash0	amd64	0.8.2-2build1	requested
 package	libyaml-0-2	amd64	0.2.5-1build1	requested
 package	libzstd1	amd64	1.5.5+dfsg2-2build1.1	requested
-package	linux-libc-dev	amd64	6.8.0-136.136	closure
+package	linux-libc-dev	amd64	6.8.0-139.139	closure
 package	linux-libc-dev-arm64-cross	all	6.8.0-25.25cross1	closure
 package	lsb-base	all	11.6	closure
 package	lto-disabled-list	all	47	closure
@@ -179,16 +179,16 @@ package	m4	amd64	1.4.19-4build1	requested
 package	make	amd64	4.3-4.1build2	requested
 package	media-types	all	10.1.0	closure
 package	netbase	all	6.4	closure
-package	openssl	amd64	3.0.13-0ubuntu3.11	requested
+package	openssl	amd64	3.0.13-0ubuntu3.15	requested
 package	patch	amd64	2.7.6-7build3	closure
-package	perl	amd64	5.38.2-3.2ubuntu0.3	closure
-package	perl-base	amd64	5.38.2-3.2ubuntu0.3	closure
-package	perl-modules-5.38	all	5.38.2-3.2ubuntu0.3	closure
+package	perl	amd64	5.38.2-3.2ubuntu0.4	closure
+package	perl-base	amd64	5.38.2-3.2ubuntu0.4	closure
+package	perl-modules-5.38	all	5.38.2-3.2ubuntu0.4	closure
 package	python3	amd64	3.12.3-0ubuntu2.1	requested
 package	python3-minimal	amd64	3.12.3-0ubuntu2.1	requested
 package	python3-yaml	amd64	6.0.1-2build2	requested
-package	python3.12	amd64	3.12.3-1ubuntu0.15	requested
-package	python3.12-minimal	amd64	3.12.3-1ubuntu0.15	requested
+package	python3.12	amd64	3.12.3-1ubuntu0.17	requested
+package	python3.12-minimal	amd64	3.12.3-1ubuntu0.17	requested
 package	readline-common	all	8.2-4build1	closure
 package	rpcsvc-proto	amd64	1.4.2-0ubuntu7	closure
 package	rsync	amd64	3.2.7-1ubuntu1.5	requested
@@ -199,16 +199,16 @@ package	tzdata	all	2026c-0ubuntu0.24.04.1	closure
 package	ubuntu-keyring	all	2023.11.28.1	bootstrap
 package	unzip	amd64	6.0-28ubuntu4.1	requested
 package	xz-utils	amd64	5.6.1+really5.4.5-1ubuntu0.3	requested
-package	zlib1g	amd64	1:1.3.dfsg-3.1ubuntu2.1	requested
+package	zlib1g	amd64	1:1.3.dfsg-3.1ubuntu2.2	requested
 package	zstd	amd64	1.5.5+dfsg2-2build1.1	requested
-compat-package	libc-bin	amd64	2.39-0ubuntu8.8	requested	https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc-bin_2.39-0ubuntu8.8_amd64.deb	64625a2e1b51e736c71f4916268c496278bbc789b1b189d1621607a33f455473
-compat-package	libc-dev-bin	amd64	2.39-0ubuntu8.8	requested	https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc-dev-bin_2.39-0ubuntu8.8_amd64.deb	c894e5a5f137429657d09e853fbbb19d53fc164c60804c396cd43873b0b4f734
-compat-package	libc-devtools	amd64	2.39-0ubuntu8.8	requested	https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc-devtools_2.39-0ubuntu8.8_amd64.deb	c0a2294cac9b422bdf38af709c0cce2b75b3ab09c7f48c6b880ed0d7870958a2
-compat-package	libc6	amd64	2.39-0ubuntu8.8	requested	https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc6_2.39-0ubuntu8.8_amd64.deb	3b8d5391b6b484a4c81fd000b6064885ad967ec3cb966bc57603f3fb3ebf0ed5
-compat-package	libc6-dev	amd64	2.39-0ubuntu8.8	requested	https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc6-dev_2.39-0ubuntu8.8_amd64.deb	bb8741966e7c1d2e2c0b84bb311717a0908fb563d9b2247b7212710e3cd88b94
+compat-package	libc-bin	amd64	2.39-0ubuntu8.9	requested	https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/pool/main/g/glibc/libc-bin_2.39-0ubuntu8.9_amd64.deb	066398a06ef1a218d4109461d4c636eafe83322ad19b179de9ef7af42b3fec58
+compat-package	libc-dev-bin	amd64	2.39-0ubuntu8.9	requested	https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/pool/main/g/glibc/libc-dev-bin_2.39-0ubuntu8.9_amd64.deb	77db23aba4582d034d9a95e4818a16e7e51a2d4fb17a9204439688e288d67f4c
+compat-package	libc-devtools	amd64	2.39-0ubuntu8.9	requested	https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/pool/main/g/glibc/libc-devtools_2.39-0ubuntu8.9_amd64.deb	3eff6f67712cfb5b4586e1276fbb5cd481102a28241058a8a8258f8ce0c660b0
+compat-package	libc6	amd64	2.39-0ubuntu8.9	requested	https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/pool/main/g/glibc/libc6_2.39-0ubuntu8.9_amd64.deb	ff5557d99b51f761c4b7c92368b9cc45565eda17df9bf9eb4b134d09825008be
+compat-package	libc6-dev	amd64	2.39-0ubuntu8.9	requested	https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/pool/main/g/glibc/libc6-dev_2.39-0ubuntu8.9_amd64.deb	e13d5fcc1b2a86f75bca8e0026a8e39f24fe97ca86e92be79991f8697eb1306f
 compat-package	libldap-common	all	2.6.7+dfsg-1~exp1ubuntu8.2	requested	https://snapshot.ubuntu.com/ubuntu/20260201T000000Z/pool/main/o/openldap/libldap-common_2.6.7+dfsg-1~exp1ubuntu8.2_all.deb	f1da79d8033ba0fe5e6167f27361c4619eb8822143ca65c0ac983565f57520bd
 compat-package	libldap2	amd64	2.6.7+dfsg-1~exp1ubuntu8.2	requested	https://snapshot.ubuntu.com/ubuntu/20260201T000000Z/pool/main/o/openldap/libldap2_2.6.7+dfsg-1~exp1ubuntu8.2_amd64.deb	17000967a1fae30c8dbb92b2183ec6e245c6d802aacf2c2945a20ee89298b8e9
 compat-package	libsystemd0	amd64	255.4-1ubuntu8.17	closure	https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/s/systemd/libsystemd0_255.4-1ubuntu8.17_amd64.deb	4776d2ac7e21efe2ae31f3f7955a7ccd97277225eecf36910a26faf4544979ae
 compat-package	libudev1	amd64	255.4-1ubuntu8.17	closure	https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/s/systemd/libudev1_255.4-1ubuntu8.17_amd64.deb	6efea3770f738db2fd43ebdaed3d91ef0cde8aa8387b4803080af473326ebdb0
-compat-package	locales	all	2.39-0ubuntu8.8	requested	https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/locales_2.39-0ubuntu8.8_all.deb	cdd2d347a357da6b9b1f2bd9e08c10a2a3a4686fad050791d30915d0ce0bb506
+compat-package	locales	all	2.39-0ubuntu8.9	requested	https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/pool/main/g/glibc/locales_2.39-0ubuntu8.9_all.deb	f8310ef4ba442845cf5d44a5ce3d5d7accb659bae96b3a0999002132209cd367
 alternative	awk	manual	/usr/bin/gawk

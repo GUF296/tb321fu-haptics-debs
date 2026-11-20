@@ -60,7 +60,7 @@ post-regeneration config identity gate rejects that drift before packaging.
 their complete 101-package selected dependency closure. All 211 package records
 carry exact `amd64`/`all` architecture, version, and
 `bootstrap`/`requested`/`closure` role. The only general apt source is Ubuntu's signed
-`20260730T000000Z` snapshot, restricted to `main`; runner sources, lists and
+`20260913T000000Z` snapshot, restricted to `main`; runner sources, lists and
 package caches are excluded through private apt directories. A first-stage
 private `APT_CONFIG` also excludes runner apt configuration, hooks, preferences,
 authentication files and global trust directories before apt parses them, and
@@ -69,9 +69,9 @@ state is removed after the transaction. Native dpkg must itself match the locked
 bootstrap version before package mutation. `/etc/dpkg/dpkg.cfg` is bound to the
 reviewed Ubuntu digest and ownership/mode/link contract, `dpkg.cfg.d` must be
 empty, and `/root/.dpkg.cfg` must not exist; appended native dpkg hooks or path
-filters therefore fail before apt update. The glibc 2.39 `.8`,
-OpenLDAP 2.6.7, and systemd 255.4 `.17` packages that are absent from the
-primary snapshot are ten explicit compatibility records, each bound
+filters therefore fail before apt update. The six glibc 2.39 `.9` packages use the primary snapshot. The two
+OpenLDAP 2.6.7 and two systemd 255.4 `.17` packages retain their reviewed
+snapshot URLs. These ten explicit compatibility records are each bound
 to one immutable Ubuntu snapshot URL, SHA-256, Package, Version and
 Architecture. Downloads remain private through verification, then the same
 verified inode is atomically exposed root-owned and read-only through an

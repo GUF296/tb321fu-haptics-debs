@@ -22,13 +22,13 @@ from dataclasses import dataclass
 
 SCHEMA = "tb321fu.haptics-build-packages/v2"
 SNAPSHOTS = (
-    "https://snapshot.ubuntu.com/ubuntu/20260730T000000Z/",
+    "https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/",
 )
 PACKAGE_NAME = re.compile(r"[a-z0-9][a-z0-9+.-]{0,79}")
 PACKAGE_VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+:~\-]{0,159}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 MAX_LOCK_BYTES = 32768
-EXPECTED_LOCK_SHA256 = "d1e376eb51a52d76ee8fab7c87626b385a23758187f061e9ff1138e70a5ff784"
+EXPECTED_LOCK_SHA256 = "3a92b87bad75ab7fa1cf81e96b29b14d9af0f1cb6b21eec8a70054f95971a086"
 EXPECTED_PACKAGE_COUNT = 211
 EXPECTED_CLOSURE_COUNT = 101
 EXPECTED_ALTERNATIVES = {"awk": ("manual", "/usr/bin/gawk")}
@@ -82,29 +82,29 @@ EXPECTED_CROSS_LINK_PACKAGES = {
 }
 COMPAT_PACKAGES = (
     (
-        "libc-bin", "amd64", "2.39-0ubuntu8.8", "requested",
-        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc-bin_2.39-0ubuntu8.8_amd64.deb",
-        "64625a2e1b51e736c71f4916268c496278bbc789b1b189d1621607a33f455473",
+        "libc-bin", "amd64", "2.39-0ubuntu8.9", "requested",
+        "https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/pool/main/g/glibc/libc-bin_2.39-0ubuntu8.9_amd64.deb",
+        "066398a06ef1a218d4109461d4c636eafe83322ad19b179de9ef7af42b3fec58",
     ),
     (
-        "libc-dev-bin", "amd64", "2.39-0ubuntu8.8", "requested",
-        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc-dev-bin_2.39-0ubuntu8.8_amd64.deb",
-        "c894e5a5f137429657d09e853fbbb19d53fc164c60804c396cd43873b0b4f734",
+        "libc-dev-bin", "amd64", "2.39-0ubuntu8.9", "requested",
+        "https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/pool/main/g/glibc/libc-dev-bin_2.39-0ubuntu8.9_amd64.deb",
+        "77db23aba4582d034d9a95e4818a16e7e51a2d4fb17a9204439688e288d67f4c",
     ),
     (
-        "libc-devtools", "amd64", "2.39-0ubuntu8.8", "requested",
-        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc-devtools_2.39-0ubuntu8.8_amd64.deb",
-        "c0a2294cac9b422bdf38af709c0cce2b75b3ab09c7f48c6b880ed0d7870958a2",
+        "libc-devtools", "amd64", "2.39-0ubuntu8.9", "requested",
+        "https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/pool/main/g/glibc/libc-devtools_2.39-0ubuntu8.9_amd64.deb",
+        "3eff6f67712cfb5b4586e1276fbb5cd481102a28241058a8a8258f8ce0c660b0",
     ),
     (
-        "libc6", "amd64", "2.39-0ubuntu8.8", "requested",
-        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc6_2.39-0ubuntu8.8_amd64.deb",
-        "3b8d5391b6b484a4c81fd000b6064885ad967ec3cb966bc57603f3fb3ebf0ed5",
+        "libc6", "amd64", "2.39-0ubuntu8.9", "requested",
+        "https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/pool/main/g/glibc/libc6_2.39-0ubuntu8.9_amd64.deb",
+        "ff5557d99b51f761c4b7c92368b9cc45565eda17df9bf9eb4b134d09825008be",
     ),
     (
-        "libc6-dev", "amd64", "2.39-0ubuntu8.8", "requested",
-        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/libc6-dev_2.39-0ubuntu8.8_amd64.deb",
-        "bb8741966e7c1d2e2c0b84bb311717a0908fb563d9b2247b7212710e3cd88b94",
+        "libc6-dev", "amd64", "2.39-0ubuntu8.9", "requested",
+        "https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/pool/main/g/glibc/libc6-dev_2.39-0ubuntu8.9_amd64.deb",
+        "e13d5fcc1b2a86f75bca8e0026a8e39f24fe97ca86e92be79991f8697eb1306f",
     ),
     (
         "libldap-common", "all", "2.6.7+dfsg-1~exp1ubuntu8.2", "requested",
@@ -127,9 +127,9 @@ COMPAT_PACKAGES = (
         "6efea3770f738db2fd43ebdaed3d91ef0cde8aa8387b4803080af473326ebdb0",
     ),
     (
-        "locales", "all", "2.39-0ubuntu8.8", "requested",
-        "https://snapshot.ubuntu.com/ubuntu/20260811T000000Z/pool/main/g/glibc/locales_2.39-0ubuntu8.8_all.deb",
-        "cdd2d347a357da6b9b1f2bd9e08c10a2a3a4686fad050791d30915d0ce0bb506",
+        "locales", "all", "2.39-0ubuntu8.9", "requested",
+        "https://snapshot.ubuntu.com/ubuntu/20260913T000000Z/pool/main/g/glibc/locales_2.39-0ubuntu8.9_all.deb",
+        "f8310ef4ba442845cf5d44a5ce3d5d7accb659bae96b3a0999002132209cd367",
     ),
 )
 BOOTSTRAP_PACKAGES = ("apt", "ca-certificates", "dpkg", "ubuntu-keyring")
@@ -2340,7 +2340,7 @@ def self_test() -> None:
                 "invalid package identity or policy",
             ),
             "wrong-snapshot.tsv": (
-                fixture_text().replace("20260730T000000Z", "latest"),
+                fixture_text().replace("20260913T000000Z", "latest"),
                 "package snapshot set differs from the reviewed contract",
             ),
             "wrong-compat-url.tsv": (
