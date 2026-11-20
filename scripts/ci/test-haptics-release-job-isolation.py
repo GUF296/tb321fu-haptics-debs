@@ -338,16 +338,16 @@ CANONICAL_PROFILE_DEFAULTS = {
 # independent of the fixtures so simultaneous workflow/fixture drift fails closed.
 REVIEWED_RUN_SHA256 = {
     "Install dependencies": (
-        "9f8390ded78b4fa40da51d198746fd5e60c6aaa59cb6153cd8a0fe7dcd6decd4"
+        "c73f6876df535fa53c883fa4bbaf056bdc37ab14fc55822976508090fb0678c3"
     ),
     "Validate workflow and lifecycle boundaries": (
-        "b600bc1df1974bb1054bd9a355fc8f04476c3d9b75f04ac9169d6ecc2242c970"
+        "842470458d358225bed5c8696f29ca08ec6d9b10947ac7e831b2ec5815cd43e6"
     ),
     "Validate build inputs": (
         "53620abb19b0354f1740f33345439bfa5f14d70aedd8f8587680bdfdff5b9fdc"
     ),
     "Build haptics deb": (
-        "d83334c6946b136e652681cd4fb826c62ab0c888556fdd9c02680353616de7be"
+        "4407d216589900e938fc73f92f63527f2b1756647523a21772ebb9573f1cf892"
     ),
 }
 BUILD_STEP_KEYS = {
@@ -410,10 +410,7 @@ DEPENDENCY_RUN = "\n".join((
     "}",
     '/usr/bin/rm -f -- "$preflight_audit"',
     '[ "$preflight_status" -eq 0 ] || exit "$preflight_status"',
-    "# GitHub-hosted ubuntu-24.04 images change their preinstalled package",
-    "# versions and maintainer scripts. Capture the verified host state on",
-    "# this runner immediately before the transaction instead of binding",
-    "# the build to a different runner image.",
+    "# Verify that image provisioning preserves the host package state.",
     'reference="$RUNNER_TEMP/HAPTICS-DPKG-HOST-REFERENCE.tsv"',
     'checksum="$RUNNER_TEMP/HAPTICS-DPKG-HOST-REFERENCE.sha256"',
     "/usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/verify-haptics-dpkg-state.py \\",
@@ -426,11 +423,9 @@ DEPENDENCY_RUN = "\n".join((
     "/usr/bin/sudo /usr/bin/chmod 0600 \"$checksum\"",
     "/usr/bin/sudo /usr/bin/sha256sum -c -- \"$checksum\"",
     "/usr/bin/sudo /usr/bin/chmod 0644 \"$reference\"",
-    "/usr/bin/sudo /bin/bash -p scripts/ci/install-haptics-build-dependencies.sh \\",
-    "  scripts/ci/HAPTICS-BUILD-PACKAGES.tsv \\",
-    "  scripts/ci/HAPTICS-BUILD-TOOLS-REFERENCE.tsv \\",
-    "  scripts/ci/HAPTICS-RELEASE-REFERENCE.tsv \\",
-    "  \"$reference\"",
+    '/bin/bash -p scripts/ci/build-haptics-toolchain-image.sh "$RUNNER_TEMP/haptics-toolchain.iid"',
+    "/usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/verify-haptics-dpkg-state.py \\",
+    '  --verify-host-reference /var/lib/dpkg 0 0 "$reference"',
     "canary_status=0",
     "dpkg_status_before_canary=$(/usr/bin/sudo /usr/bin/sha256sum -- \\",
     "  /var/lib/dpkg/status | /usr/bin/cut -d' ' -f1)",
@@ -464,8 +459,7 @@ VALIDATION_RUN_FIXTURE = "\n".join((
     "/usr/bin/python3 -I -B scripts/ci/verify-haptics-build-packages.py --self-test",
     "/usr/bin/python3 -I -B scripts/ci/verify-haptics-build-packages.py \\",
     "  scripts/ci/HAPTICS-BUILD-PACKAGES.tsv",
-    "/bin/bash -p scripts/ci/test-haptics-cross-link-closure.sh \\",
-    "  scripts/ci/HAPTICS-BUILD-PACKAGES.tsv",
+    '/bin/bash -p scripts/ci/run-in-haptics-toolchain.sh "$RUNNER_TEMP/haptics-toolchain.iid" cross-link',
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-dpkg-configuration.py",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-package-transaction.py",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-apt-phase.py",
@@ -496,7 +490,7 @@ VALIDATION_RUN_FIXTURE = "\n".join((
     "/bin/bash -p -n scripts/ci/stage-haptics-release-assets.sh",
     "/bin/bash -p scripts/ci/test-haptics-lifecycle.sh",
     "/bin/bash -p scripts/ci/test-haptics-provenance.sh",
-    "/bin/bash -p scripts/ci/test-haptics-build-environment.sh",
+    '/bin/bash -p scripts/ci/run-in-haptics-toolchain.sh "$RUNNER_TEMP/haptics-toolchain.iid" build-environment',
     "/bin/bash -p scripts/ci/test-haptics-epoch-contract.sh",
     "/bin/bash -p scripts/ci/test-haptics-deb-contract.sh",
     "/bin/bash -p scripts/ci/test-haptics-kernel-sdk-contract.sh",
@@ -609,7 +603,7 @@ BUILD_RUN_FIXTURE = "\n".join((
     '  KERNEL_SDK_MANIFEST="$KERNEL_SDK_MANIFEST" \\',
     '  KERNEL_TOOLCHAIN_MANIFEST="$KERNEL_TOOLCHAIN_MANIFEST" \\',
     '  SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \\',
-    "  /bin/bash scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh",
+    '  /bin/bash -p scripts/ci/run-in-haptics-toolchain.sh "$RUNNER_TEMP/haptics-toolchain.iid" build',
 )) + "\n"
 BUILD_STEP_NAMES = tuple(BUILD_STEP_KEYS)
 
@@ -983,7 +977,7 @@ def validate(data: dict) -> None:
         fail("workflow validation must execute the package-lock hostile fixtures")
     if "scripts/ci/HAPTICS-BUILD-PACKAGES.tsv" not in validation_run:
         fail("workflow validation must validate the committed package lock")
-    if "test-haptics-cross-link-closure.sh" not in validation_run:
+    if 'run-in-haptics-toolchain.sh "$RUNNER_TEMP/haptics-toolchain.iid" cross-link' not in validation_run:
         fail("workflow validation must execute the cross-link closure fixture")
     if "test-haptics-dpkg-configuration.py" not in validation_run:
         fail("workflow validation must execute native dpkg configuration fixtures")
@@ -1034,9 +1028,8 @@ def validate(data: dict) -> None:
     if dependencies_run.rstrip("\n") != DEPENDENCY_RUN:
         fail("dependency installation must invoke the exact reviewed entry point")
     host_capture_index = dependencies_run.index("--capture-host-reference")
-    installer_index = dependencies_run.rindex(
-        "scripts/ci/install-haptics-build-dependencies.sh"
-    )
+    installer_index = dependencies_run.index("scripts/ci/build-haptics-toolchain-image.sh")
+    host_recheck_index = dependencies_run.rindex("--verify-host-reference")
     preflight_guard_index = dependencies_run.index(
         '[ "$preflight_status" -eq 0 ] || exit "$preflight_status"'
     )
@@ -1075,6 +1068,7 @@ def validate(data: dict) -> None:
     )
     if not (
         installer_index
+        < host_recheck_index
         < canary_before_status_index
         < canary_index
         < canary_after_status_index

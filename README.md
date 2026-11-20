@@ -59,7 +59,15 @@ post-regeneration config identity gate rejects that drift before packaging.
 `HAPTICS-BUILD-PACKAGES.tsv` v2 locks 110 A12 command-provider/runtime roots and
 their complete 101-package selected dependency closure. All 211 package records
 carry exact `amd64`/`all` architecture, version, and
-`bootstrap`/`requested`/`closure` role. The only general apt source is Ubuntu's signed
+`bootstrap`/`requested`/`closure` role. GitHub Actions provisions these packages
+in a digest-pinned Ubuntu amd64 image. The cross-link test, build-environment
+test and SDK build share its verified local image ID. The build runs as the
+checkout owner with read-only source and separate writable scratch and output
+directories. The runner verifies its own dpkg state before and after image
+provisioning. An image update must still reproduce the compiler/tool manifest,
+kernel module, helper and DEB recorded in the release reference.
+
+The standalone Ubuntu dependency installer's only general apt source is Ubuntu's signed
 `20260913T000000Z` snapshot, restricted to `main`; runner sources, lists and
 package caches are excluded through private apt directories. A first-stage
 private `APT_CONFIG` also excludes runner apt configuration, hooks, preferences,

@@ -1045,7 +1045,7 @@ build_env = source.index('KERNEL_SDK_MANIFEST="$KERNEL_SDK_MANIFEST"')
 toolchain_build_env = source.index(
     'KERNEL_TOOLCHAIN_MANIFEST="$KERNEL_TOOLCHAIN_MANIFEST"', build_env
 )
-wrapper = source.index('bash scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh', build_env)
+wrapper = source.index('scripts/ci/run-in-haptics-toolchain.sh "$RUNNER_TEMP/haptics-toolchain.iid" build', build_env)
 assert declaration < input_env < validation < export < build_env < wrapper
 assert (
     toolchain_declaration

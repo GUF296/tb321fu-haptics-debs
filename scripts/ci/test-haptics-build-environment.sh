@@ -1191,9 +1191,16 @@ done
 for token in \
   '/usr/bin/env -i' \
   'PATH=/usr/sbin:/usr/bin:/sbin:/bin' \
-  '/bin/bash scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh'; do
+  '/bin/bash -p scripts/ci/run-in-haptics-toolchain.sh "$RUNNER_TEMP/haptics-toolchain.iid" build'; do
   grep -Fq -- "$token" "$REPO_ROOT/.github/workflows/build.yml" ||
     fail "workflow omits canonical producer boundary: $token"
+done
+
+for token in '--pull=never' '--user "$uid:$gid"' '--cap-drop=ALL' \
+    'src=$repo,dst=/workspace,readonly' 'src=$repo/out,dst=/workspace/out' \
+    'scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh'; do
+  grep -Fq -- "$token" "$SCRIPT_DIR/run-in-haptics-toolchain.sh" ||
+    fail "container runtime omits the reviewed producer boundary: $token"
 done
 
 printf 'HAPTICS_BUILD_ENVIRONMENT=PASS\n'
