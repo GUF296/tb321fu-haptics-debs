@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-if [[ $# != 2 || ( $2 != build && $2 != cross-link && $2 != build-environment ) ]]; then
-  echo 'usage: run-in-haptics-toolchain.sh IMAGE_ID_FILE build|cross-link|build-environment' >&2
+if [[ $# != 2 ]]; then
+  echo 'usage: run-in-haptics-toolchain.sh IMAGE_ID_FILE MODE' >&2
   exit 2
 fi
 iid_file=$1
@@ -20,7 +20,7 @@ gid=$(/usr/bin/id -g)
 scratch=$(/usr/bin/mktemp -d -- "${iid_file%/*}/haptics-container.XXXXXXXX")
 trap '/usr/bin/rm -rf -- "$scratch"' EXIT
 [[ $scratch != *,* ]]
-opts=(--rm --pull=never --platform=linux/amd64 --read-only
+opts=(--rm --init --pull=never --platform=linux/amd64 --read-only
       --cap-drop=ALL --security-opt=no-new-privileges
       --user "$uid:$gid" --workdir /workspace
       --mount "type=bind,src=$repo,dst=/workspace,readonly"
@@ -30,10 +30,13 @@ opts=(--rm --pull=never --platform=linux/amd64 --read-only
 if [[ $mode == cross-link ]]; then
   /usr/bin/docker run "${opts[@]}" --network=none "$iid" /bin/bash -p \
     scripts/ci/test-haptics-cross-link-closure.sh scripts/ci/HAPTICS-BUILD-PACKAGES.tsv
+elif [[ $mode == kernel-metadata ]]; then
+  /usr/bin/docker run "${opts[@]}" --network=none "$iid" /usr/bin/python3 -I -B \
+    scripts/ci/test-kernel-bundle-metadata.py
 elif [[ $mode == build-environment ]]; then
   /usr/bin/docker run "${opts[@]}" --network=none "$iid" /bin/bash -p \
     scripts/ci/test-haptics-build-environment.sh
-else
+elif [[ $mode == build ]]; then
   [[ ${OUTPUT_DIR:-} == out/tb321fu-haptics-debs ]]
   # The SDK wrapper creates its own output tree by atomic rename within out/.
   /usr/bin/mkdir -p -- "$repo/out"
@@ -48,4 +51,7 @@ else
   done
   /usr/bin/docker run "${opts[@]}" "$iid" /bin/bash -p \
     scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh
+else
+  echo "unknown toolchain mode: $mode" >&2
+  exit 2
 fi

@@ -341,7 +341,7 @@ REVIEWED_RUN_SHA256 = {
         "66c7d9110e247d535e4fd1761c82ccfc16f12680c8e0213f665132f10aa1cf15"
     ),
     "Validate workflow and lifecycle boundaries": (
-        "842470458d358225bed5c8696f29ca08ec6d9b10947ac7e831b2ec5815cd43e6"
+        "abe7bbe60d7248717aa6216ed959fcccd7685d98265f478f13adfce7ddf2f60f"
     ),
     "Validate build inputs": (
         "53620abb19b0354f1740f33345439bfa5f14d70aedd8f8587680bdfdff5b9fdc"
@@ -452,7 +452,7 @@ VALIDATION_RUN_FIXTURE = "\n".join((
     "/usr/bin/python3 -I -B scripts/ci/check-workflow-input-boundaries.py .github/workflows/build.yml",
     "/usr/bin/python3 -I -B scripts/ci/check-action-pins.py --self-test",
     "/usr/bin/python3 -I -B scripts/ci/check-action-pins.py .github/workflows/build.yml",
-    "/usr/bin/python3 -I -B scripts/ci/test-kernel-bundle-metadata.py",
+    '/bin/bash -p scripts/ci/run-in-haptics-toolchain.sh "$RUNNER_TEMP/haptics-toolchain.iid" kernel-metadata',
     "/usr/bin/python3 -I -B scripts/ci/test-kernel-config-drift.py",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-release-reference.py",
     "/usr/bin/python3 -I -B scripts/ci/verify-haptics-build-packages.py --self-test",

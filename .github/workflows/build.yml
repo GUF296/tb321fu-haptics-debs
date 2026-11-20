@@ -161,7 +161,7 @@ jobs:
           /usr/bin/python3 -I -B scripts/ci/check-workflow-input-boundaries.py .github/workflows/build.yml
           /usr/bin/python3 -I -B scripts/ci/check-action-pins.py --self-test
           /usr/bin/python3 -I -B scripts/ci/check-action-pins.py .github/workflows/build.yml
-          /usr/bin/python3 -I -B scripts/ci/test-kernel-bundle-metadata.py
+          /bin/bash -p scripts/ci/run-in-haptics-toolchain.sh "$RUNNER_TEMP/haptics-toolchain.iid" kernel-metadata
           /usr/bin/python3 -I -B scripts/ci/test-kernel-config-drift.py
           /usr/bin/python3 -I -B scripts/ci/test-haptics-release-reference.py
           /usr/bin/python3 -I -B scripts/ci/verify-haptics-build-packages.py --self-test
