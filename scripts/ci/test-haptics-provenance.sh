@@ -153,6 +153,14 @@ ci_create_exact_git_bundle "$history" "$history_commit" "$bundle" "$bundle_ref"
 ci_create_exact_git_bundle "$history" "$history_commit" "$tmp/repeated.bundle" "$bundle_ref"
 cmp -s -- "$bundle" "$tmp/repeated.bundle" ||
   fail "repeated producer bundle differs at the same commit"
+# A fresh pack has a different storage layout and compression from the loose
+# originals. Both independently readable object stores must give the same bytes.
+packed_history="$tmp/packed-history"
+ci_git clone --quiet --no-hardlinks "$history" "$packed_history"
+ci_git -C "$packed_history" -c pack.compression=0 repack -a -d -F --window=0
+ci_create_exact_git_bundle "$packed_history" "$history_commit" "$tmp/repacked.bundle" "$bundle_ref"
+cmp -s -- "$bundle" "$tmp/repacked.bundle" ||
+  fail "producer bundle depends on source object storage layout"
 verify_git="$tmp/bundle-verify.git"
 ci_git init -q --bare "$verify_git"
 ci_git --git-dir="$verify_git" bundle verify "$bundle" >/dev/null

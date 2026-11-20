@@ -329,9 +329,16 @@ ci_create_exact_git_bundle() (
   ci_git --git-dir="$tmp/source.git" cat-file -e "$commit^{commit}" ||
     ci_die "bundle commit is absent from the source object database"
   ci_git --git-dir="$tmp/source.git" update-ref "$bundle_ref" "$commit"
-  # Parallel delta search can produce different pack bytes for the same commit.
-  if ! ci_git -c pack.threads=1 --git-dir="$tmp/source.git" \
-       bundle create "$tmp_bundle" "$bundle_ref"; then
+  # The v2 header advertises exactly one SHA-1 ref and no prerequisites.
+  # Canonical object order and full recompression make its pack independent
+  # of the source clone's existing packs, delta chains and compression level.
+  printf '# v2 git bundle\n%s %s\n\n' "$commit" "$bundle_ref" > "$tmp_bundle"
+  if ! ci_git --git-dir="$tmp/source.git" rev-list \
+         --objects --no-object-names "$commit" |
+       LC_ALL=C sort -u |
+       ci_git --git-dir="$tmp/source.git" -c pack.threads=1 pack-objects \
+         --stdout --window=0 --no-reuse-object --no-reuse-delta \
+         --compression=6 >> "$tmp_bundle"; then
     ci_die "cannot create a self-contained Git bundle from the available history"
   fi
 

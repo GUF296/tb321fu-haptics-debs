@@ -3216,7 +3216,9 @@ marker = pathlib.Path(os.environ["HAPTICS_TEST_BOOTSTRAP_MARKER"])
 release = pathlib.Path(os.environ["HAPTICS_TEST_BOOTSTRAP_RELEASE"])
 signal.signal(signal.SIGINT, signal.SIG_IGN)
 ignored = int(signal.getsignal(signal.SIGINT) is signal.SIG_IGN)
-marker.write_text(f"ignored={ignored}\\npid={os.getpid()}\\n", encoding="ascii")
+ready = marker.with_suffix(".preparing")
+ready.write_text(f"ignored={ignored}\\npid={os.getpid()}\\n", encoding="ascii")
+ready.replace(marker)
 while not release.exists():
     time.sleep(0.005)
 python = "/usr/bin/python3"
