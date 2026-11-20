@@ -12779,7 +12779,12 @@ def run(
 
 
 def git(repo: pathlib.Path, *arguments: str) -> str:
-    result = run(["/usr/bin/git", "-C", str(repo), *arguments], repo)
+    # Each disposable operation ends when its direct Git process exits.
+    result = run(
+        ["/usr/bin/git", "-c", "maintenance.auto=false", "-c", "gc.auto=0",
+         "-C", str(repo), *arguments],
+        repo,
+    )
     if result.returncode:
         raise SystemExit(f"git {' '.join(arguments)} failed: {result.stderr.strip()}")
     return result.stdout.strip()

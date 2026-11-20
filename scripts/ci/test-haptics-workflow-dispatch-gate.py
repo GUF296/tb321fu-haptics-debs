@@ -1955,7 +1955,11 @@ def run(
         fixture_raise_selected_failure(selected)
     invoked = list(arguments)
     if invoked and invoked[0] == "/usr/bin/git":
-        invoked = [invoked[0], "-C", str(cwd), *invoked[1:]]
+        # These short-lived repositories never require background maintenance.
+        invoked = [
+            invoked[0], "-c", "maintenance.auto=false", "-c", "gc.auto=0",
+            "-C", str(cwd), *invoked[1:],
+        ]
     environment = {
         "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
         "LANG": "C",
