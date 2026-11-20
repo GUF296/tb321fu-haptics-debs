@@ -144,6 +144,16 @@ PATH="$shadow_bin:/usr/bin:/bin" BASH_ENV="$hostile_bash_env" \
   "$REPO_ROOT/scripts/ci/build-tb321fu-haptics-deb.sh" --help >/dev/null
 [ ! -e "$shadow_marker" ] || fail "hostile PATH replaced the direct-builder interpreter"
 [ ! -e "$bash_env_marker" ] || fail "direct-builder entry sourced hostile BASH_ENV"
+marker_bash_env="$tmp/marker-bash-env.sh"
+marker_bash_env_ran="$tmp/marker-bash-env-ran"
+cat > "$marker_bash_env" <<EOF_MARKER_BASH_ENV
+trap '/usr/bin/touch -- "$marker_bash_env_ran"' EXIT
+unset BASH_ENV
+EOF_MARKER_BASH_ENV
+HAPTICS_BUILDER_CLEAN_ENV=1 BASH_ENV="$marker_bash_env" \
+  "$REPO_ROOT/scripts/ci/build-tb321fu-haptics-deb.sh" --help >/dev/null
+[ ! -e "$marker_bash_env_ran" ] ||
+  fail "forged builder clean marker crossed the execute boundary"
 require_failure 'invalid HAPTICS_PRODUCER_COMMIT' \
   env PATH="$shadow_bin:/usr/bin:/bin" BASH_ENV="$hostile_bash_env" \
     "$REPO_ROOT/scripts/ci/build-tb321fu-haptics-deb-from-kernel-sdk.sh"
@@ -960,6 +970,16 @@ require_failure 'refusing existing haptics output target' \
 [ "$(cat "$blocked_source/payload")" = candidate ] &&
   [ "$(cat "$blocked_target/payload")" = foreign ] ||
   fail "blocked haptics promotion modified the candidate or foreign target"
+
+dangling_source="$tmp/dangling-source"
+dangling_target="$tmp/dangling-target"
+mkdir -p "$dangling_source"
+printf 'candidate\n' > "$dangling_source/payload"
+ln -s -- "$tmp/does-not-exist" "$dangling_target"
+require_failure 'refusing existing haptics output target' \
+  haptics_promote_directory_no_clobber "$dangling_source" "$dangling_target"
+[ -L "$dangling_target" ] && [ -f "$dangling_source/payload" ] ||
+  fail "dangling haptics output target was replaced or candidate changed"
 
 build_module_path_fixture() {
   local root=$1

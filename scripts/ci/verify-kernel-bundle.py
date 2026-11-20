@@ -24,6 +24,8 @@ LIVE_TOOL_TIMEOUT_SECONDS = 10
 MAX_LIVE_TOOL_BYTES = 256 * 1024 * 1024
 MAX_VERSION_OUTPUT_BYTES = 64 * 1024
 BISON_HASH_TIMEOUT_SECONDS = 30
+COMMAND_TERM_GRACE_SECONDS = 0.25
+COMMAND_KILL_REAP_SECONDS = 1.0
 MAX_BISON_TAR_BYTES = 64 * 1024 * 1024
 MAX_COMMAND_STDERR_BYTES = 64 * 1024
 MAX_BISON_ENTRIES = 4096
@@ -278,20 +280,61 @@ def _bounded_command(
     all_streams = (process.stdout, process.stderr)
     deadline = time.monotonic() + timeout
 
-    def kill_group(*, reap_parent: bool) -> None:
+    leader_reaped_early = False
+
+    def leader_exited_without_reaping() -> bool:
+        """Observe the group leader while retaining its PID ownership."""
+        nonlocal leader_reaped_early
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        if reap_parent and process.poll() is None:
+            result = os.waitid(
+                os.P_PID,
+                process.pid,
+                os.WEXITED | os.WNOHANG | os.WNOWAIT,
+            )
+        except ChildProcessError:
+            leader_reaped_early = True
+            return True
+        return result is not None and result.si_pid == process.pid
+
+    def wait_for_leader_exit(limit: float) -> bool:
+        while not leader_exited_without_reaping():
+            remaining = limit - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.01, remaining))
+        return True
+
+    def terminate_group(*, normal_completion: bool) -> None:
+        cleanup_deadline = time.monotonic() + COMMAND_KILL_REAP_SECONDS
+        leader_exited_without_reaping()
+        if leader_reaped_early:
+            raise BundleError(f"cannot retain {label} process ownership")
+        if normal_completion:
             try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                try:
-                    process.wait(timeout=1)
-                except subprocess.TimeoutExpired as exc:
-                    raise BundleError(f"cannot terminate {label}") from exc
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            term_deadline = min(
+                cleanup_deadline,
+                time.monotonic() + COMMAND_TERM_GRACE_SECONDS,
+            )
+            wait_for_leader_exit(term_deadline)
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        remaining = max(0.0, cleanup_deadline - time.monotonic())
+        try:
+            process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            raise BundleError(f"cannot terminate {label}") from exc
+        except ChildProcessError as exc:
+            raise BundleError(f"cannot retain {label} process ownership") from exc
 
     completed = False
     try:
@@ -312,19 +355,26 @@ def _bounded_command(
                 output.extend(chunk)
                 if len(output) > maximum:
                     raise BundleError(f"{label} {stream_name} exceeds its size bound")
-        returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        if not wait_for_leader_exit(deadline):
+            raise subprocess.TimeoutExpired(args, timeout)
         completed = True
-    except BaseException:
-        kill_group(reap_parent=True)
+    except BaseException as exc:
+        try:
+            terminate_group(normal_completion=False)
+        except BaseException as cleanup_exc:
+            exc.add_note(
+                "bounded command cleanup failed: "
+                f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+            )
         raise
     finally:
         if completed:
-            # A successful parent may leave a pipe-closing background descendant.
-            kill_group(reap_parent=False)
+            terminate_group(normal_completion=True)
         for stream in all_streams:
             if not stream.closed:
                 stream.close()
-    return returncode, bytes(stdout), bytes(stderr)
+    assert process.returncode is not None
+    return process.returncode, bytes(stdout), bytes(stderr)
 
 
 FileIdentity = tuple[int, int, int, int, int, int, int, int, int]

@@ -98,6 +98,38 @@ checks Kbuild compiler, binutils, generator, shell and Bison data-tree
 identities. Kbuild uses the manifest-bound GCC driver for `CPP=$(CC) -E`; it
 does not depend on the v2 manifest's omitted standalone CPP.
 
+APT acquisition phases use `Acquire::Retries=3`; only downloads are retried, never
+the package-changing transaction. Installation runs once with
+`Acquire::Retries=0` and `--no-download`, and its exact ordered command line is
+bound into the EIPP manifest. Compatibility downloads have a 590-second soft
+admission budget: once it expires, no next package starts. A curl retry already
+in progress or verification of the current package may finish later, including
+the tenth package. Curl resets `--max-time` on each retry, and
+`--retry-max-time` limits retry admission rather than interrupting an active
+attempt. The phase runner applies the 600-second execution deadline. The
+installer independently enforces a 610-second ceiling (execution plus ten
+seconds for the runner's cleanup/diagnostics), followed by bounded forced
+termination and cgroup settlement even if the runner itself is stopped. Caller
+cancellation has its own ten-second cooperative grace before forced cleanup;
+the download helper alone does not provide these hard boundaries.
+
+Supported production execution requires Ubuntu 24.04 with unified cgroup v2,
+permission to create and control a fresh exclusive `domain` leaf, and a normal
+host reaper with waitable children and default, unblocked `SIGCHLD` handling.
+The installer must exclusively own that leaf: unrelated writers moving tasks
+into it or renaming/replacing it are outside the supported host contract.
+Containment terminates live members still in the owned domain, including
+detached descendants. It does not roll back package files already changed, or
+undo legitimate service delegation to PID 1 outside that domain; normal package
+service startup is not disabled. Identity checks and fail-closed cleanup do not
+promise atomic directory removal against arbitrary concurrent root mutation.
+Killing live members is also distinct from reaping exited children, which relies
+on the runner/custodian and the normal host reaper. Non-root fake fixtures check
+control flow and evidence, not production cgroup permissions or kernel behavior;
+those require verification on the supported CI host. The network-free download
+contract checks run without root as
+`python3 -I -B scripts/ci/test-haptics-compat-downloads.py --fake-only`.
+
 These older packages are a compatibility lock for A12, not a permanent update
 policy. They temporarily replace newer runner security packages and therefore
 belong only in this isolated producer job. The long-term replacement is a
@@ -116,8 +148,9 @@ entries: the versioned DEB, `HAPTICS-SOURCE-LOCK.tsv`,
 files explicitly; it uses neither a DEB glob nor recursive directory selection.
 
 Both builders treat `OUTPUT_DIR` as a new publication target. They reject a
-pre-existing target, work in private sibling staging directories, validate
-exact root/member lists and portable checksums, and use one `mv -T` promotion.
+pre-existing or dangling target, work in private sibling staging directories,
+validate exact root/member lists and portable checksums, and use one
+`mv --no-clobber -T` promotion with a postcondition check.
 The outer archive is streamed once into its final staging filesystem, avoiding
 a second full archive copy before promotion.
 Before publication, the final DEB is unpacked and checked against a closed

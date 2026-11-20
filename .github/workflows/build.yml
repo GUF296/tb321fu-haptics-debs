@@ -83,8 +83,38 @@ jobs:
       - name: Install dependencies
         run: |
           set -euo pipefail
-          /usr/bin/sudo /bin/bash -p scripts/ci/test-haptics-dpkg-host-rejection.sh \
-            scripts/ci/HAPTICS-BUILD-PACKAGES.tsv
+          preflight_status=0
+          dpkg_status_before=$(/usr/bin/sudo /usr/bin/sha256sum -- \
+            /var/lib/dpkg/status | /usr/bin/cut -d' ' -f1)
+          (
+            set -euo pipefail
+            /bin/bash -p -n scripts/ci/install-haptics-build-dependencies.sh
+            /bin/bash -p -n scripts/ci/download-haptics-compat-packages.sh
+            /usr/bin/python3 -I -B scripts/ci/test-haptics-compat-downloads.py
+            /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-phase.py
+            /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-fixture-support.py
+            /usr/bin/python3 -I -B scripts/ci/test-haptics-installer-supervision.py
+            /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-transaction.py
+            /usr/bin/sudo /bin/bash -p scripts/ci/test-haptics-dpkg-host-rejection.sh \
+              scripts/ci/HAPTICS-BUILD-PACKAGES.tsv
+            /usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-sandbox.py
+            /usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-hook.py
+          ) || preflight_status=$?
+          dpkg_status_after=$(/usr/bin/sudo /usr/bin/sha256sum -- \
+            /var/lib/dpkg/status | /usr/bin/cut -d' ' -f1)
+          [ "$dpkg_status_after" = "$dpkg_status_before" ] || {
+            echo 'APT preflight changed /var/lib/dpkg/status' >&2
+            exit 1
+          }
+          preflight_audit="$RUNNER_TEMP/HAPTICS-DPKG-PREFLIGHT-AUDIT.txt"
+          /usr/bin/sudo /usr/bin/dpkg --audit > "$preflight_audit"
+          [ ! -s "$preflight_audit" ] || {
+            echo 'APT preflight left dpkg audit findings' >&2
+            /usr/bin/cat -- "$preflight_audit" >&2
+            exit 1
+          }
+          /usr/bin/rm -f -- "$preflight_audit"
+          [ "$preflight_status" -eq 0 ] || exit "$preflight_status"
           # GitHub-hosted ubuntu-24.04 images change their preinstalled package
           # versions and maintainer scripts. Capture the verified host state on
           # this runner immediately before the transaction instead of binding
@@ -106,9 +136,26 @@ jobs:
             scripts/ci/HAPTICS-BUILD-TOOLS-REFERENCE.tsv \
             scripts/ci/HAPTICS-RELEASE-REFERENCE.tsv \
             "$reference"
-          /usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-sandbox.py
-          /usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-hook.py
-          /usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-eipp-canary.py
+          canary_status=0
+          dpkg_status_before_canary=$(/usr/bin/sudo /usr/bin/sha256sum -- \
+            /var/lib/dpkg/status | /usr/bin/cut -d' ' -f1)
+          /usr/bin/sudo /usr/bin/python3 -I -B \
+            scripts/ci/test-haptics-apt-eipp-canary.py || canary_status=$?
+          dpkg_status_after_canary=$(/usr/bin/sudo /usr/bin/sha256sum -- \
+            /var/lib/dpkg/status | /usr/bin/cut -d' ' -f1)
+          [ "$dpkg_status_after_canary" = "$dpkg_status_before_canary" ] || {
+            echo 'disposable EIPP canary changed /var/lib/dpkg/status' >&2
+            exit 1
+          }
+          canary_audit="$RUNNER_TEMP/HAPTICS-DPKG-EIPP-CANARY-AUDIT.txt"
+          /usr/bin/sudo /usr/bin/dpkg --audit > "$canary_audit"
+          [ ! -s "$canary_audit" ] || {
+            echo 'disposable EIPP canary left dpkg audit findings' >&2
+            /usr/bin/cat -- "$canary_audit" >&2
+            exit 1
+          }
+          /usr/bin/rm -f -- "$canary_audit"
+          [ "$canary_status" -eq 0 ] || exit "$canary_status"
 
       - name: Validate workflow and lifecycle boundaries
         env:
@@ -130,6 +177,9 @@ jobs:
             scripts/ci/HAPTICS-BUILD-PACKAGES.tsv
           /usr/bin/python3 -I -B scripts/ci/test-haptics-dpkg-configuration.py
           /usr/bin/python3 -I -B scripts/ci/test-haptics-package-transaction.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-phase.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-fixture-support.py
+          /usr/bin/python3 -I -B scripts/ci/test-haptics-installer-supervision.py
           /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-transaction.py
           /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-preparation.py
           /usr/bin/python3 -I -B scripts/ci/test-haptics-dpkg-state.py
@@ -146,6 +196,7 @@ jobs:
           /usr/bin/python3 -I -B scripts/ci/test-haptics-release-job-isolation.py --self-test
           /usr/bin/python3 -I -B scripts/ci/test-haptics-release-job-isolation.py .github/workflows/build.yml
           /bin/bash -p -n scripts/ci/install-haptics-build-dependencies.sh
+          /bin/bash -p -n scripts/ci/download-haptics-compat-packages.sh
           /bin/bash -p -n scripts/ci/test-haptics-dpkg-host-rejection.sh
           /bin/bash -p -n scripts/ci/verify-haptics-compat-package.sh
           /bin/bash -p scripts/ci/test-haptics-compat-package.sh

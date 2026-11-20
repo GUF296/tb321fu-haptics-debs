@@ -45,6 +45,14 @@ EXPECTED_CONFIGURATION = (
     (f"DPkg::Tools::options::{HOOK_TOOL}::Version", "3"),
     ("Dir::Bin::dpkg", "/usr/bin/dpkg"),
 )
+SAFE_COMMAND_LINE = (
+    "/usr/bin/apt-get -o Acquire::Retries=0 install -y --no-download "
+    "--no-install-recommends --allow-downgrades --no-remove -- "
+    "example=1.0-1 /tmp/private/example_1.0-1_amd64.deb"
+)
+MANIFEST_CONFIGURATION = tuple(
+    sorted((*EXPECTED_CONFIGURATION, ("CommandLine::AsString", SAFE_COMMAND_LINE)))
+)
 
 
 def load_module():
@@ -322,6 +330,7 @@ def verify_disposable_dpkg_option_policy(verifier) -> None:
         sorted(
             (
                 *base_configuration,
+                ("CommandLine::AsString", SAFE_COMMAND_LINE),
                 ("DPkg::Pre-Install-Pkgs::", capture_command),
                 ("DPkg::Options::", f"--admindir={admin}"),
                 ("DPkg::Options::", f"--root={root}"),
@@ -359,6 +368,7 @@ def verify_disposable_dpkg_option_policy(verifier) -> None:
         sorted(
             (
                 *base_configuration,
+                ("CommandLine::AsString", SAFE_COMMAND_LINE),
                 ("DPkg::Pre-Install-Pkgs::", disposable_command),
                 ("DPkg::Options::", f"--admindir={admin}"),
                 ("DPkg::Options::", f"--root={root}"),
@@ -578,6 +588,19 @@ def main() -> None:
     document = verifier.parse_eipp_v3_bytes(VALID_EIPP_V3)
     if document.configuration != EXPECTED_CONFIGURATION:
         raise SystemExit("EIPP v3 parser changed the canonical configuration")
+    manifest_document = verifier.parse_eipp_v3_bytes(
+        VALID_EIPP_V3.replace(
+            b"\n\n",
+            (
+                "\nCommandLine::AsString="
+                + SAFE_COMMAND_LINE.replace(" ", "%20")
+                + "\n\n"
+            ).encode("ascii"),
+            1,
+        )
+    )
+    if manifest_document.configuration != MANIFEST_CONFIGURATION:
+        raise SystemExit("EIPP command-line record did not decode into the manifest")
     if not hasattr(verifier, "verify_eipp_configuration"):
         raise SystemExit("EIPP v3 configuration verifier is missing")
     verifier.verify_eipp_configuration(document.configuration, EXPECTED_CONFIGURATION)
@@ -592,59 +615,106 @@ def main() -> None:
         benign_defaults.configuration,
         EXPECTED_CONFIGURATION,
     )
+    verifier.validate_runtime_command_line(SAFE_COMMAND_LINE)
     verifier.validate_runtime_command_line(
-        "/usr/bin/apt-get -qq -y install --no-install-recommends "
-        "--allow-downgrades --no-remove -- example=1.0-1 "
-        "/tmp/private/example_1.0-1_amd64.deb"
+        SAFE_COMMAND_LINE.replace(" /tmp/private/example_1.0-1_amd64.deb", "", 1)
+    )
+    if verifier.build_runtime_command_line(
+        ("example=1.0-1",),
+        ("/tmp/private/example_1.0-1_amd64.deb",),
+    ) != SAFE_COMMAND_LINE:
+        raise SystemExit("runtime APT command-line builder changed exact argv order")
+    require_rejected(
+        verifier,
+        lambda: verifier.build_runtime_command_line(("example=1.0-1",), ()),
+        "production command builder without compatibility archives",
+        "APT command-line preparation inputs are invalid",
+        exact=True,
     )
     for label, command in (
         (
             "executable prefix alias",
-            "/usr/bin/apt-get-evil -y install --no-install-recommends "
-            "--no-remove -- example=1.0-1",
+            SAFE_COMMAND_LINE.replace("/usr/bin/apt-get ", "/usr/bin/apt-get-evil ", 1),
         ),
         (
-            "option assignment bypass",
-            "/usr/bin/apt-get -y install --no-install-recommends "
-            "--no-remove --remove=example -- example=1.0-1",
+            "missing offline retry override",
+            SAFE_COMMAND_LINE.replace("-o Acquire::Retries=0 ", "", 1),
         ),
         (
-            "short config override",
-            "/usr/bin/apt-get -c APT::Get::AllowUnauthenticated=1 -y install "
-            "--no-install-recommends --allow-downgrades --no-remove -- "
-            "example=1.0-1",
+            "joined offline retry alias",
+            SAFE_COMMAND_LINE.replace("-o Acquire::Retries=0", "-oAcquire::Retries=0", 1),
         ),
         (
-            "config-file override",
-            "/usr/bin/apt-get --config-file=/tmp/evil.conf -y install "
-            "--no-install-recommends --allow-downgrades --no-remove -- "
-            "example=1.0-1",
+            "long option alias",
+            SAFE_COMMAND_LINE.replace("-o Acquire::Retries=0", "--option Acquire::Retries=0", 1),
         ),
         (
-            "long option override",
-            "/usr/bin/apt-get --option APT::Get::AllowUnauthenticated=1 -y install "
-            "--no-install-recommends --allow-downgrades --no-remove -- "
-            "example=1.0-1",
+            "yes alias",
+            SAFE_COMMAND_LINE.replace(" install -y ", " install --yes ", 1),
         ),
         (
-            "unknown install option",
-            "/usr/bin/apt-get -y install --allow-unauthenticated "
-            "--no-install-recommends --no-remove -- example=1.0-1",
+            "quiet option",
+            SAFE_COMMAND_LINE.replace(" install ", " -q install ", 1),
         ),
         (
-            "missing downgrade policy",
-            "/usr/bin/apt-get -y install --no-install-recommends "
-            "--no-remove -- example=1.0-1",
+            "double quiet option",
+            SAFE_COMMAND_LINE.replace(" install ", " -qq install ", 1),
+        ),
+        (
+            "duplicate option",
+            SAFE_COMMAND_LINE.replace(" --no-download ", " --no-download --no-download ", 1),
+        ),
+        (
+            "reordered options",
+            SAFE_COMMAND_LINE.replace(
+                "--no-install-recommends --allow-downgrades",
+                "--allow-downgrades --no-install-recommends",
+                1,
+            ),
+        ),
+        (
+            "missing yes option",
+            SAFE_COMMAND_LINE.replace(" -y ", " ", 1),
+        ),
+        (
+            "missing offline install policy",
+            SAFE_COMMAND_LINE.replace(" --no-download", "", 1),
         ),
         (
             "unpinned package",
-            "/usr/bin/apt-get -y install --no-install-recommends "
-            "--no-remove -- example",
+            SAFE_COMMAND_LINE.replace("example=1.0-1", "example", 1),
+        ),
+        (
+            "package after archive",
+            SAFE_COMMAND_LINE.replace(
+                "example=1.0-1 /tmp/private/example_1.0-1_amd64.deb",
+                "/tmp/private/example_1.0-1_amd64.deb example=1.0-1",
+                1,
+            ),
+        ),
+        (
+            "duplicate package argument",
+            SAFE_COMMAND_LINE.replace("example=1.0-1 ", "example=1.0-1 example=1.0-1 ", 1),
+        ),
+        (
+            "duplicate package name with another version",
+            SAFE_COMMAND_LINE.replace("example=1.0-1 ", "example=1.0-1 example=2.0-1 ", 1),
         ),
         (
             "noncanonical local archive",
-            "/usr/bin/apt-get -y install --no-install-recommends "
-            "--no-remove -- /tmp/private/../example.deb",
+            SAFE_COMMAND_LINE.replace(
+                "/tmp/private/example_1.0-1_amd64.deb",
+                "/tmp/private/../example.deb",
+                1,
+            ),
+        ),
+        (
+            "control byte in archive argument",
+            SAFE_COMMAND_LINE.replace(
+                "/tmp/private/example_1.0-1_amd64.deb",
+                "/tmp/private/example_1.0-1_amd64\x07.deb",
+                1,
+            ),
         ),
     ):
         require_rejected(
@@ -681,8 +751,8 @@ def main() -> None:
     require_rejected(
         verifier,
         lambda: verifier.verify_eipp_configuration(
-            EXPECTED_CONFIGURATION,
-            EXPECTED_CONFIGURATION,
+            MANIFEST_CONFIGURATION,
+            MANIFEST_CONFIGURATION,
             enforce_runtime_projection=True,
         ),
         "production hook without transaction layout",
@@ -741,9 +811,25 @@ def main() -> None:
         exact=True,
     )
     safe_command_line = (
-        "/usr/bin/apt-get -y install --no-install-recommends "
-        "--allow-downgrades --no-remove -- example=1.0-1 "
-        "/tmp/runtime/compat/example_1.0-1_amd64.deb"
+        "/usr/bin/apt-get -o Acquire::Retries=0 install -y --no-download "
+        "--no-install-recommends --allow-downgrades --no-remove -- "
+        "example=1.0-1 helper=2.0-1 "
+        "/tmp/runtime/compat/example_1.0-1_amd64.deb "
+        "/tmp/runtime/compat/helper_2.0-1_amd64.deb"
+    )
+    require_rejected(
+        verifier,
+        lambda: verifier.verify_eipp_configuration(
+            runtime_expected,
+            runtime_expected,
+            enforce_runtime_projection=True,
+        ),
+        "runtime manifest without command-line binding",
+        "manifest command-line binding is missing",
+        exact=False,
+    )
+    runtime_expected = tuple(
+        sorted((*runtime_expected, ("CommandLine::AsString", safe_command_line)))
     )
     runtime_actual = tuple(
         sorted(
@@ -753,7 +839,6 @@ def main() -> None:
                 *runtime_paths,
                 ("APT::Color", "0"),
                 ("Binary", "apt-get"),
-                ("CommandLine::AsString", safe_command_line),
                 ("Dir", "/"),
                 ("quiet", "1"),
             )
@@ -828,14 +913,125 @@ def main() -> None:
                 "CommandLine::AsString",
                 safe_command_line,
                 safe_command_line.replace(
-                    "-y install",
-                    "-o APT::Get::AllowUnauthenticated=1 -y install",
+                    "install -y",
+                    "-o APT::Get::AllowUnauthenticated=1 install -y",
                 ),
+            ),
+        ),
+        (
+            "missing APT command line",
+            remove_runtime_record("CommandLine::AsString", safe_command_line),
+        ),
+        (
+            "duplicate APT command line",
+            add_runtime_record("CommandLine::AsString", safe_command_line),
+        ),
+        (
+            "changed package version suffix",
+            replace_runtime_record(
+                "CommandLine::AsString",
+                safe_command_line,
+                safe_command_line.replace("example=1.0-1", "example=1.0-2", 1),
+            ),
+        ),
+        (
+            "extra canonical package suffix",
+            replace_runtime_record(
+                "CommandLine::AsString",
+                safe_command_line,
+                safe_command_line.replace(
+                    "example=1.0-1 ",
+                    "example=1.0-1 extra=2.0-1 ",
+                    1,
+                ),
+            ),
+        ),
+        (
+            "reordered package suffix",
+            replace_runtime_record(
+                "CommandLine::AsString",
+                safe_command_line,
+                safe_command_line.replace(
+                    "example=1.0-1 helper=2.0-1",
+                    "helper=2.0-1 example=1.0-1",
+                    1,
+                ),
+            ),
+        ),
+        (
+            "missing package suffix member",
+            replace_runtime_record(
+                "CommandLine::AsString",
+                safe_command_line,
+                safe_command_line.replace(" helper=2.0-1", "", 1),
+            ),
+        ),
+        (
+            "reordered archive suffix",
+            replace_runtime_record(
+                "CommandLine::AsString",
+                safe_command_line,
+                safe_command_line.replace(
+                    "/tmp/runtime/compat/example_1.0-1_amd64.deb "
+                    "/tmp/runtime/compat/helper_2.0-1_amd64.deb",
+                    "/tmp/runtime/compat/helper_2.0-1_amd64.deb "
+                    "/tmp/runtime/compat/example_1.0-1_amd64.deb",
+                    1,
+                ),
+            ),
+        ),
+        (
+            "missing archive suffix member",
+            replace_runtime_record(
+                "CommandLine::AsString",
+                safe_command_line,
+                safe_command_line.replace(
+                    " /tmp/runtime/compat/helper_2.0-1_amd64.deb",
+                    "",
+                    1,
+                ),
+            ),
+        ),
+        (
+            "extra archive suffix member",
+            replace_runtime_record(
+                "CommandLine::AsString",
+                safe_command_line,
+                safe_command_line
+                + " /tmp/runtime/compat/extra_3.0-1_amd64.deb",
             ),
         ),
         (
             "missing TLS verification policy",
             remove_runtime_record("Acquire::https::Verify-Peer", "1"),
+        ),
+        (
+            "missing acquisition retry policy",
+            remove_runtime_record("Acquire::Retries", "0"),
+        ),
+        (
+            "network retries enabled during offline install",
+            replace_runtime_record("Acquire::Retries", "0", "3"),
+        ),
+        (
+            "duplicate acquisition retry policy",
+            add_runtime_record("Acquire::Retries", "0"),
+        ),
+        (
+            "missing update failure policy",
+            remove_runtime_record("APT::Update::Error-Mode", "any"),
+        ),
+        (
+            "weakened update failure policy",
+            replace_runtime_record("APT::Update::Error-Mode", "any", "persistent"),
+        ),
+        (
+            "missing offline install policy",
+            remove_runtime_record("APT::Get::Download", "0"),
+        ),
+        (
+            "weakened offline install policy",
+            replace_runtime_record("APT::Get::Download", "0", "1"),
         ),
         (
             "private archive path drift",
@@ -1030,13 +1226,45 @@ def main() -> None:
         "1" * 64,
         "2" * 64,
         "3" * 64,
-        document.configuration,
+        MANIFEST_CONFIGURATION,
         document.actions,
         (archive_record,),
     )
+    for label, configuration in (
+        ("missing manifest command line", EXPECTED_CONFIGURATION),
+        (
+            "duplicate manifest command line",
+            tuple(
+                sorted(
+                    (*MANIFEST_CONFIGURATION, ("CommandLine::AsString", SAFE_COMMAND_LINE))
+                )
+            ),
+        ),
+    ):
+        require_rejected(
+            verifier,
+            lambda configuration=configuration: verifier.serialize_expected_transaction(
+                verifier.ExpectedTransaction(
+                    "1" * 64,
+                    "2" * 64,
+                    "3" * 64,
+                    configuration,
+                    document.actions,
+                    (archive_record,),
+                )
+            ),
+            label,
+            "expected transaction cannot be serialized canonically",
+            exact=True,
+        )
     manifest = verifier.serialize_expected_transaction(expected_transaction)
     if b"package-state-sha256\t" + b"1" * 64 + b"\n" not in manifest:
         raise SystemExit("expected APT transaction manifest lacks package-state binding")
+    command_record = (
+        "configuration\tCommandLine::AsString\t" + SAFE_COMMAND_LINE + "\n"
+    ).encode("ascii")
+    if manifest.count(command_record) != 1:
+        raise SystemExit("expected APT transaction manifest lacks one exact command line")
     expected_action_prefix = b"action\texample\t-\t-\tnone\t<\t1.0-1\tamd64\tno\t"
     if manifest.count(expected_action_prefix) != 2:
         raise SystemExit("expected APT transaction manifest changed absent identity encoding")
@@ -1095,7 +1323,7 @@ def main() -> None:
                 "1" * 64,
                 "2" * 64,
                 "3" * 64,
-                document.configuration,
+                MANIFEST_CONFIGURATION,
                 bulk_actions,
                 bulk_archives,
             )
@@ -1108,7 +1336,7 @@ def main() -> None:
         "1" * 64,
         "2" * 64,
         "3" * 64,
-        document.configuration,
+        MANIFEST_CONFIGURATION,
         bulk_actions[:64],
         bulk_archives[:32],
     )

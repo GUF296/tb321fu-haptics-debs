@@ -6983,19 +6983,30 @@ def test_dispatch_state_crash_publication(
 
     for failure_kind in ("oserror", "cancellation"):
         first_fstat_path = state_directory / f"first-fstat-{failure_kind}.tsv"
+        temporary_name = f".{first_fstat_path.name}.{TEST_DISPATCH_ID}.tmp"
+        original_open = gate_module.os.open
         original_fstat = gate_module.os.fstat
         injected = False
+        temporary_descriptor = -1
+
+        def track_temporary_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal temporary_descriptor
+            descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+            if path == temporary_name:
+                temporary_descriptor = descriptor
+            return descriptor
 
         def fail_first_temporary_fstat(descriptor: int):
             nonlocal injected
             metadata = original_fstat(descriptor)
-            if not injected and stat.S_ISREG(metadata.st_mode):
+            if not injected and descriptor == temporary_descriptor:
                 injected = True
                 if failure_kind == "cancellation":
                     raise KeyboardInterrupt("injected first-fstat cancellation")
                 raise OSError("injected first-fstat failure")
             return metadata
 
+        gate_module.os.open = track_temporary_open
         gate_module.os.fstat = fail_first_temporary_fstat
         try:
             try:
@@ -7024,7 +7035,12 @@ def test_dispatch_state_crash_publication(
                     f"dispatch state swallowed first-fstat {failure_kind}"
                 )
         finally:
+            gate_module.os.open = original_open
             gate_module.os.fstat = original_fstat
+        if not injected:
+            raise SystemExit(
+                f"dispatch state missed first-fstat {failure_kind} injection"
+            )
         residues = tuple(
             state_directory.glob(f".{first_fstat_path.name}.*.tmp")
         )

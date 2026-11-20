@@ -1,5 +1,5 @@
-#!/bin/sh
-if [ "${HAPTICS_WRAPPER_CLEAN_ENV:-}" != 1 ] || [ -z "${BASH_VERSION:-}" ]; then
+#!/usr/bin/bash -p
+if ! [[ -o privileged ]]; then
   script_path=$(/usr/bin/realpath -e -- "$0") || exit 1
   exec /usr/bin/env -i \
     PATH=/usr/sbin:/usr/bin:/sbin:/bin \
@@ -23,7 +23,7 @@ if [ "${HAPTICS_WRAPPER_CLEAN_ENV:-}" != 1 ] || [ -z "${BASH_VERSION:-}" ]; then
     http_proxy="${http_proxy-}" HTTP_PROXY="${HTTP_PROXY-}" \
     https_proxy="${https_proxy-}" HTTPS_PROXY="${HTTPS_PROXY-}" \
     no_proxy="${no_proxy-}" NO_PROXY="${NO_PROXY-}" \
-    /usr/bin/bash --noprofile --norc "$script_path" "$@"
+    /usr/bin/bash -p "$script_path" "$@"
 fi
 SCRIPT_SOURCE=${BASH_SOURCE[0]}
 case "$SCRIPT_SOURCE" in

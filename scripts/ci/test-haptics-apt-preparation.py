@@ -19,6 +19,9 @@ import tempfile
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 MODULE_PATH = SCRIPT_DIR / "verify-haptics-apt-transaction.py"
+PACKAGE_MODULE_PATH = SCRIPT_DIR / "verify-haptics-build-packages.py"
+PACKAGE_LOCK_PATH = SCRIPT_DIR / "HAPTICS-BUILD-PACKAGES.tsv"
+INSTALLER_PATH = SCRIPT_DIR / "install-haptics-build-dependencies.sh"
 
 
 def load_module():
@@ -67,7 +70,10 @@ class FakePlan:
 
 class FakePolicy:
     def expected_versions(self):
-        return {("example", "amd64"): "1.0-1"}
+        return {
+            ("example", "amd64"): "1.0-1",
+            ("repository-noop", "amd64"): "2.0-1",
+        }
 
     def compatibility_identities(self):
         return frozenset({("example", "amd64")})
@@ -105,7 +111,7 @@ class FakePackageVerifier:
         return FakePlan({("example", "amd64"): planned}, {("example", "amd64"): planned})
 
     def verify_host_plan(self, expected, before, plan) -> None:
-        if expected != {("example", "amd64"): "1.0-1"} or before is not self.state:
+        if expected != FakePolicy().expected_versions() or before is not self.state:
             raise ValueError("host plan inputs differ")
         if set(plan.installs) != {("example", "amd64")}:
             raise ValueError("host plan identity differs")
@@ -288,6 +294,472 @@ class MixedDpkgVerifier(FakeDpkgVerifier):
         self.verified_post = True
 
 
+def verify_real_lock_argument_projection(verifier) -> None:
+    installer = INSTALLER_PATH.read_text(encoding="ascii")
+    emit_repository = '--emit-apt-arguments "$runtime_package_lock"'
+    emit_compatibility = '--emit-compat-records "$runtime_package_lock"'
+    destination_assignment = (
+        'destination="$compat_dir/${name}_${version}_${architecture}.deb"'
+    )
+    append_compatibility = 'compat_debs+=("$destination")'
+    join_arguments = (
+        'transaction_arguments=("${package_arguments[@]}" "${compat_debs[@]}")'
+    )
+    use_arguments = '"${transaction_arguments[@]}"'
+    final_install = (
+        '  "${apt_command[@]}" -o Acquire::Retries=0 install -y --no-download \\\n'
+        "    --no-install-recommends --allow-downgrades --no-remove -- \\\n"
+        '    "${transaction_arguments[@]}"; then'
+    )
+    phase_markers = (
+        "if run_apt_phase closure-plan ",
+        "if run_apt_phase host-plan ",
+        "if run_apt_phase download ",
+        "--prepare-manifest-runtime-reference",
+        "if run_apt_phase install ",
+    )
+    unique_fragments = (
+        emit_repository,
+        emit_compatibility,
+        destination_assignment,
+        append_compatibility,
+        join_arguments,
+        final_install,
+        *phase_markers,
+    )
+    if (
+        any(installer.count(fragment) != 1 for fragment in unique_fragments)
+        or installer.count("destination") != 2
+        or installer.count("transaction_arguments") != 6
+    ):
+        raise SystemExit("installer exact argument-flow source contract changed")
+    use_positions: list[int] = []
+    cursor = 0
+    while True:
+        position = installer.find(use_arguments, cursor)
+        if position < 0:
+            break
+        use_positions.append(position)
+        cursor = position + len(use_arguments)
+    phase_positions = tuple(installer.index(marker) for marker in phase_markers)
+    if (
+        len(use_positions) != 4
+        or not (
+            installer.index(emit_repository)
+            < installer.index(emit_compatibility)
+            < installer.index(destination_assignment)
+            < installer.index(append_compatibility)
+            < installer.index(join_arguments)
+            < phase_positions[0]
+            < use_positions[0]
+            < phase_positions[1]
+            < use_positions[1]
+            < phase_positions[2]
+            < use_positions[2]
+            < phase_positions[3]
+            < phase_positions[4]
+            < use_positions[3]
+        )
+    ):
+        raise SystemExit(
+            "installer no longer preserves one repo-then-compat argument array"
+        )
+
+    lock_raw = PACKAGE_LOCK_PATH.read_bytes()
+    try:
+        lock_lines = lock_raw.decode("ascii").splitlines()
+    except UnicodeDecodeError as exc:
+        raise SystemExit("real package-lock fixture is not ASCII") from exc
+    repository_oracle: list[str] = []
+    compatibility_oracle: list[str] = []
+    for line in lock_lines:
+        fields = line.split("\t")
+        if len(fields) == 5 and fields[0] == "package":
+            _, name, _architecture, version, _role = fields
+            repository_oracle.append(f"{name}={version}")
+        elif len(fields) == 7 and fields[0] == "compat-package":
+            _, name, architecture, version, _role, url, digest = fields
+            compatibility_oracle.append(
+                "\t".join((name, architecture, version, url, digest))
+            )
+    if (len(repository_oracle), len(compatibility_oracle)) != (201, 10):
+        raise SystemExit(
+            "real package-lock fixture changed its 201+10 argument closure"
+        )
+
+    def decode_nul_records(raw: bytes, label: str) -> tuple[str, ...]:
+        if not raw or not raw.endswith(b"\0") or len(raw) > 64 * 1024:
+            raise SystemExit(f"NUL record framing changed: {label}")
+        try:
+            records = tuple(raw[:-1].decode("ascii").split("\0"))
+        except UnicodeDecodeError as exc:
+            raise SystemExit(f"NUL records are not ASCII: {label}") from exc
+        if not records or any(not record for record in records):
+            raise SystemExit(f"NUL output contains an empty record: {label}")
+        return records
+
+    def emit_records(mode: str) -> tuple[str, ...]:
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    str(PACKAGE_MODULE_PATH),
+                    mode,
+                    str(PACKAGE_LOCK_PATH),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise SystemExit(f"real package-lock emitter timed out: {mode}") from exc
+        if completed.returncode != 0 or completed.stderr:
+            raise SystemExit(
+                f"real package-lock emitter failed closed: {mode}: "
+                f"status={completed.returncode} stderr={completed.stderr!r}"
+            )
+        return decode_nul_records(completed.stdout, mode)
+
+    emitted_repository = emit_records("--emit-apt-arguments")
+    emitted_compatibility = emit_records("--emit-compat-records")
+    if emitted_repository != tuple(repository_oracle):
+        raise SystemExit(
+            "real repository argument order differs from package-lock order"
+        )
+    if emitted_compatibility != tuple(compatibility_oracle):
+        raise SystemExit(
+            "real compatibility record order differs from package-lock order"
+        )
+
+    compat_directory = pathlib.Path("/tmp/haptics-exact-order/compat")
+    expected_compatibility_paths = tuple(
+        str(
+            compat_directory
+            / f"{name}_{version}_{architecture}.deb"
+        )
+        for name, architecture, version, _url, _digest in (
+            record.split("\t") for record in emitted_compatibility
+        )
+    )
+    argument_block_start = "mapfile -d '' -t package_arguments < <(\n"
+    argument_block_end = (
+        '[ "${#transaction_arguments[@]}" -eq 211 ] || {\n'
+        "  echo 'package lock emitted an unexpected transaction argument count' >&2\n"
+        "  exit 1\n"
+        "}\n"
+    )
+    if (
+        installer.count(argument_block_start) != 1
+        or installer.count(argument_block_end) != 1
+    ):
+        raise SystemExit("installer executable argument block changed")
+    block_start = installer.index(argument_block_start)
+    block_end = installer.index(argument_block_end, block_start) + len(
+        argument_block_end
+    )
+    argument_block = installer[block_start:block_end]
+
+    def execute_argument_block(block: str, label: str) -> tuple[str, ...]:
+        with tempfile.TemporaryDirectory(
+            prefix=f"haptics-apt-order-{label}-"
+        ) as temporary:
+            shell_fixture = (
+                "set -euo pipefail\n"
+                'work_dir="$FIXTURE_ROOT/work"\n'
+                f"compat_dir={compat_directory}\n"
+                'compat_private_dir="$FIXTURE_ROOT/private"\n'
+                '/usr/bin/mkdir -p -- "$work_dir" "$compat_private_dir"\n'
+                "phase_count=0\n"
+                "run_apt_phase() {\n"
+                '  [ "$#" -ge 3 ] || return 90\n'
+                '  [ "$1" = compatibility-download ] || return 91\n'
+                "  phase_count=$((phase_count + 1))\n"
+                "  return 0\n"
+                "}\n"
+                f"{block}"
+                '[ "$phase_count" -eq 1 ] || exit 92\n'
+                'printf \'%s\\0\' "${transaction_arguments[@]}"\n'
+            )
+            shell_environment = {
+                "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                "LANG": "C",
+                "LC_ALL": "C",
+                "TZ": "UTC",
+                "HOME": "/nonexistent",
+                "TMPDIR": "/tmp",
+                "FIXTURE_ROOT": temporary,
+                "PACKAGE_VERIFIER": str(PACKAGE_MODULE_PATH),
+                "runtime_package_lock": str(PACKAGE_LOCK_PATH),
+                "COMPAT_DOWNLOADER": "/bin/false",
+                "COMPAT_VERIFIER": "/bin/false",
+            }
+            try:
+                completed = subprocess.run(
+                    ["/bin/bash", "-p", "-s"],
+                    input=shell_fixture.encode("ascii"),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=10,
+                    env=shell_environment,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise SystemExit(
+                    f"installer argument block fixture timed out: {label}"
+                ) from exc
+        if completed.returncode != 0 or completed.stderr:
+            raise SystemExit(
+                f"installer argument block fixture failed closed: {label}: "
+                f"status={completed.returncode} stderr={completed.stderr!r}"
+            )
+        return decode_nul_records(
+            completed.stdout, f"installer argument block: {label}"
+        )
+
+    expected_installer_arguments = (
+        *emitted_repository,
+        *expected_compatibility_paths,
+    )
+    installer_arguments = execute_argument_block(argument_block, "canonical")
+    if installer_arguments != expected_installer_arguments:
+        raise SystemExit("installer runtime argument projection differs from the lock")
+    destination_drift = argument_block.replace(
+        destination_assignment,
+        'destination="$compat_dir/${architecture}_${version}_${name}.deb"',
+        1,
+    )
+    rotated_arguments = argument_block.replace(
+        join_arguments,
+        join_arguments
+        + '\ntransaction_arguments=("${transaction_arguments[@]:1}" '
+        '"${transaction_arguments[0]}")',
+        1,
+    )
+    for label, hostile_block in (
+        ("destination-drift", destination_drift),
+        ("argument-rotation", rotated_arguments),
+    ):
+        if hostile_block == argument_block:
+            raise SystemExit(f"installer hostile mutation was not applied: {label}")
+        if execute_argument_block(hostile_block, label) == expected_installer_arguments:
+            raise SystemExit(
+                f"installer argument fixture missed hostile drift: {label}"
+            )
+
+    spec = importlib.util.spec_from_file_location(
+        "haptics_real_package_lock", PACKAGE_MODULE_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise SystemExit("cannot load the real package-lock verifier")
+    package_module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = package_module
+    spec.loader.exec_module(package_module)
+    policy = package_module.parse_lock(PACKAGE_LOCK_PATH)
+    repository_projection = tuple(
+        f"{name}={record.version}"
+        for (name, _architecture), record in policy.packages.items()
+        if record.source == "repo"
+    )
+    compatibility_projection = tuple(
+        "\t".join(
+            (
+                name,
+                architecture,
+                record.version,
+                record.url or "",
+                record.digest or "",
+            )
+        )
+        for (name, architecture), record in policy.packages.items()
+        if record.source == "compat"
+    )
+    if (
+        repository_projection != emitted_repository
+        or compatibility_projection != emitted_compatibility
+    ):
+        raise SystemExit("real package-lock parser and CLI projections differ")
+
+    expected_versions = policy.expected_versions()
+    compatibility_digests = policy.compatibility_digests()
+    compatibility_identities = tuple(
+        tuple(record.split("\t", 2)[:2]) for record in emitted_compatibility
+    )
+    if tuple(compatibility_digests) != compatibility_identities:
+        raise SystemExit("real compatibility digest order differs from its emitter")
+    repository_identity = next(
+        identity
+        for identity, record in policy.packages.items()
+        if record.source == "repo"
+    )
+    repository_version = expected_versions[repository_identity]
+    planned = FakePlannedPackage(
+        repository_version,
+        repository_identity[1],
+        None,
+    )
+    plan = FakePlan(
+        {repository_identity: planned},
+        {repository_identity: planned},
+    )
+
+    class RealLockPackageVerifier(FakePackageVerifier):
+        def parse_lock_bytes(self, raw: bytes):
+            if raw != lock_raw:
+                raise ValueError("wrong real package lock")
+            return policy
+
+        def parse_apt_plan_bytes(self, raw: bytes):
+            if raw != b"real-plan\n":
+                raise ValueError("wrong real package plan")
+            return plan
+
+        def verify_host_plan(self, expected, before, actual_plan) -> None:
+            if (
+                expected != expected_versions
+                or before is not self.state
+                or actual_plan is not plan
+            ):
+                raise ValueError("real package plan inputs differ")
+            self.verified_plan = True
+
+    installed_compatibility = {
+        identity: (
+            expected_versions[identity],
+            "install ok installed",
+            "same",
+        )
+        for identity in compatibility_digests
+    }
+
+    class RealLockDpkgVerifier(FakeDpkgVerifier):
+        def parse_status_identities(self, raw: bytes):
+            if raw != b"real-status\n":
+                raise ValueError("wrong real package status")
+            return installed_compatibility
+
+    cache_directory = pathlib.Path("/tmp/haptics-exact-order/cache")
+    repository_archive = verifier.ArchiveRecord(
+        str(
+            cache_directory
+            / (
+                f"{repository_identity[0]}_{repository_version}_"
+                f"{repository_identity[1]}.deb"
+            )
+        ),
+        1,
+        1,
+        0o644,
+        0,
+        0,
+        1,
+        1,
+        "1" * 64,
+        repository_identity[0],
+        repository_version,
+        repository_identity[1],
+        "no",
+    )
+    archives = [repository_archive]
+    compatibility_paths: list[str] = []
+    for index, identity in enumerate(compatibility_digests, start=2):
+        name, architecture = identity
+        version = expected_versions[identity]
+        path = compat_directory / f"{name}_{version}_{architecture}.deb"
+        compatibility_paths.append(str(path))
+        archives.append(
+            verifier.ArchiveRecord(
+                str(path),
+                1,
+                index,
+                0o644,
+                0,
+                0,
+                1,
+                index,
+                compatibility_digests[identity],
+                name,
+                version,
+                architecture,
+                "same",
+            )
+        )
+    if tuple(compatibility_paths) != expected_compatibility_paths:
+        raise SystemExit(
+            "manifest compatibility paths differ from installer runtime argv"
+        )
+    archive_by_path = {pathlib.Path(record.path): record for record in archives}
+    package = RealLockPackageVerifier()
+    dpkg = RealLockDpkgVerifier()
+    original_package_loader = verifier.load_package_verifier
+    original_dpkg_loader = verifier.load_dpkg_state_verifier
+    original_archive_capture = verifier.capture_deb_archive
+    verifier.load_package_verifier = lambda: package
+    verifier.load_dpkg_state_verifier = lambda: dpkg
+    verifier.capture_deb_archive = lambda path, uid, gid, **kwargs: (
+        archive_by_path[path]
+        if path in archive_by_path
+        and (uid, gid) == (0, 0)
+        and isinstance(kwargs.get("deadline"), float)
+        else (_ for _ in ()).throw(ValueError("wrong real-lock archive capture inputs"))
+    )
+    try:
+        transaction = verifier.prepare_expected_transaction(
+            "/usr/bin/python3 -I -B /tmp/private/verify-haptics-apt-transaction.py "
+            "--verify-hook /tmp/private/expected.tsv /tmp/private/hook.ok",
+            lock_raw,
+            b"package-state\n",
+            b"real-plan\n",
+            b"dpkg-state\n",
+            b"host-reference\n",
+            b"real-status\n",
+            tuple(sorted(archive_by_path)),
+            pathlib.Path("/tmp/dpkg-admin"),
+            0,
+            0,
+            compat_archive_directory=compat_directory,
+        )
+    finally:
+        verifier.capture_deb_archive = original_archive_capture
+        verifier.load_dpkg_state_verifier = original_dpkg_loader
+        verifier.load_package_verifier = original_package_loader
+    command_lines = tuple(
+        value
+        for key, value in transaction.configuration
+        if key == "CommandLine::AsString"
+    )
+    expected_command = " ".join(
+        (
+            "/usr/bin/apt-get",
+            "-o",
+            "Acquire::Retries=0",
+            "install",
+            "-y",
+            "--no-download",
+            "--no-install-recommends",
+            "--allow-downgrades",
+            "--no-remove",
+            "--",
+            *emitted_repository,
+            *compatibility_paths,
+        )
+    )
+    if (
+        command_lines != (expected_command,)
+        or len(emitted_repository) != 201
+        or len(compatibility_paths) != 10
+        or len((*emitted_repository, *compatibility_paths)) != 211
+        or transaction.archives != (repository_archive,)
+        or not package.verified_plan
+        or package.capture_count != 2
+        or dpkg.capture_count != 2
+    ):
+        raise SystemExit("real 201+10 package-lock command projection differs")
+
+
 def verify_whole_preparation_deadline(
     verifier,
     package,
@@ -421,10 +893,12 @@ def verify_whole_preparation_deadline(
             return result
 
         def timed_prepare(*args, **kwargs):
+            supplied_compat = kwargs.pop("compat_archive_directory", None)
             preparation_deadlines.append(kwargs.pop("deadline", None))
-            if kwargs:
+            if supplied_compat != compat or kwargs:
                 raise SystemExit(
-                    f"APT preparation received unexpected keywords: {kwargs!r}"
+                    "APT preparation received unexpected keywords: "
+                    f"compat={supplied_compat!r} remainder={kwargs!r}"
                 )
             second_clock[0] = verifier.PREPARATION_TIMEOUT_SECONDS - 0.1
             return transaction
@@ -466,10 +940,12 @@ def verify_whole_preparation_deadline(
         fsync_calls = 0
 
         def post_fsync_prepare(*args, **kwargs):
+            supplied_compat = kwargs.pop("compat_archive_directory", None)
             post_fsync_deadlines.append(kwargs.pop("deadline", None))
-            if kwargs:
+            if supplied_compat != compat or kwargs:
                 raise SystemExit(
-                    f"APT preparation received unexpected keywords: {kwargs!r}"
+                    "APT preparation received unexpected keywords: "
+                    f"compat={supplied_compat!r} remainder={kwargs!r}"
                 )
             post_fsync_clock[0] = verifier.PREPARATION_TIMEOUT_SECONDS - 0.1
             return transaction
@@ -511,10 +987,12 @@ def verify_whole_preparation_deadline(
 
             def prepin_prepare(*args, **kwargs):
                 del args
+                supplied_compat = kwargs.pop("compat_archive_directory", None)
                 kwargs.pop("deadline", None)
-                if kwargs:
+                if supplied_compat != compat or kwargs:
                     raise SystemExit(
-                        f"APT pre-pin preparation received unexpected keywords: {kwargs!r}"
+                        "APT pre-pin preparation received unexpected keywords: "
+                        f"compat={supplied_compat!r} remainder={kwargs!r}"
                     )
                 return transaction
 
@@ -1807,6 +2285,7 @@ def main() -> None:
     )
     if not hasattr(verifier, "prepare_expected_transaction"):
         raise SystemExit("APT transaction preparation interface is missing")
+    verify_real_lock_argument_projection(verifier)
     package = FakePackageVerifier()
     dpkg = FakeDpkgVerifier()
     archive = verifier.ArchiveRecord(
@@ -1998,8 +2477,26 @@ def main() -> None:
                 "APT preparation did not isolate the required downgrade from compat no-op"
             )
         mixed_manifest = verifier.serialize_expected_transaction(mixed_transaction)
-        if b"compat-noop" in mixed_manifest or mixed_manifest.count(b"\naction\trequired\t") != 2:
-            raise SystemExit("APT manifest serialized a compatibility no-op archive")
+        parsed_mixed = verifier.parse_expected_transaction_bytes(mixed_manifest)
+        command_lines = tuple(
+            value
+            for key, value in parsed_mixed.configuration
+            if key == "CommandLine::AsString"
+        )
+        expected_command_line = verifier.build_runtime_command_line(
+            ("required=1.0-1", "repository-noop=3.0-1"),
+            (compat_noop_archive.path,),
+        )
+        if (
+            parsed_mixed.actions != mixed_transaction.actions
+            or parsed_mixed.archives != (required_archive,)
+            or any(action.package == "compat-noop" for action in parsed_mixed.actions)
+            or any(archive.package == "compat-noop" for archive in parsed_mixed.archives)
+            or command_lines != (expected_command_line,)
+        ):
+            raise SystemExit(
+                "APT manifest did not isolate compat no-op records from exact argv"
+            )
 
         hostile_cases = []
         hostile_cases.append(
@@ -2319,6 +2816,7 @@ def main() -> None:
         if close_failure_manifest.exists():
             raise SystemExit("APT preparation leaked a close-failed manifest inode")
         second.unlink()
+        first = first.rename(compat / "example_1.0-1_amd64.deb")
         cli_archive = verifier.ArchiveRecord(
             str(first),
             archive.device,

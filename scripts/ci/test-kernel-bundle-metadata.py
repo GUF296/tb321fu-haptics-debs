@@ -415,7 +415,172 @@ def require_pid_gone(pid: int, label: str, timeout: float = 2.0) -> None:
     raise SystemExit(f"{label} left descendant PID {pid} running")
 
 
+def verify_bounded_command_process_group_ownership() -> None:
+    """Prove kernel-tool probes settle a group before releasing its leader PID."""
+    original_subprocess = VERIFIER.subprocess
+    original_select = VERIFIER.select
+    original_os = VERIFIER.os
+    original_time = VERIFIER.time
+
+    class FakeClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def monotonic(self) -> float:
+            return self.now
+
+        def sleep(self, amount: float) -> None:
+            self.now += amount
+
+    class FakeStream:
+        def __init__(self, descriptor: int) -> None:
+            self.descriptor = descriptor
+            self.closed = False
+
+        def fileno(self) -> int:
+            return self.descriptor
+
+        def close(self) -> None:
+            self.closed = True
+
+    for scenario, expected_signals in (
+        ("normal", [signal.SIGKILL]),
+        ("timeout", [signal.SIGTERM, signal.SIGKILL]),
+        ("read-error", [signal.SIGTERM, signal.SIGKILL]),
+    ):
+        clock = FakeClock()
+        signals: list[int] = []
+        read_sentinel = OSError("bounded-command ownership read failure")
+
+        class FakeProcess:
+            pid = 454545
+
+            def __init__(self) -> None:
+                self.stdout = FakeStream(30)
+                self.stderr = FakeStream(31)
+                self.returncode: int | None = None
+                self.exited = scenario == "normal"
+                self.reaped = False
+                self.wait_calls = 0
+
+            def poll(self):
+                raise SystemExit("bounded command used poll and released PID ownership")
+
+            def wait(self, timeout: float):
+                del timeout
+                self.wait_calls += 1
+                if self.reaped:
+                    raise ChildProcessError("leader reaped twice")
+                self.reaped = True
+                self.exited = True
+                self.returncode = 0
+                return 0
+
+        process = FakeProcess()
+
+        class FakePopen:
+            def __new__(cls, *args, **kwargs):
+                del cls, args, kwargs
+                return process
+
+            @staticmethod
+            def __init__(instance, *args, **kwargs):
+                del instance, args, kwargs
+
+        class FakeSubprocess:
+            def __getattr__(self, name):
+                return getattr(original_subprocess, name)
+
+            Popen = FakePopen
+
+        class FakeSelect:
+            @staticmethod
+            def select(readable, writable, exceptional, timeout):
+                del writable, exceptional, timeout
+                if scenario == "timeout":
+                    return [], [], []
+                return list(readable), [], []
+
+        class OwnershipOS:
+            def __getattr__(self, name):
+                return getattr(original_os, name)
+
+            @staticmethod
+            def read(descriptor, amount):
+                del descriptor, amount
+                if scenario == "read-error":
+                    raise read_sentinel
+                return b""
+
+            @staticmethod
+            def waitid(idtype, process_id, options):
+                if idtype != original_os.P_PID or process_id != process.pid:
+                    raise SystemExit("bounded command observed the wrong leader")
+                expected_options = (
+                    original_os.WEXITED
+                    | original_os.WNOHANG
+                    | original_os.WNOWAIT
+                )
+                if options != expected_options:
+                    raise SystemExit("bounded command changed the waitid ownership probe")
+                if process.reaped:
+                    raise ChildProcessError("leader identity was released early")
+                return (
+                    type("WaitResult", (), {"si_pid": process.pid})()
+                    if process.exited
+                    else None
+                )
+
+            @staticmethod
+            def killpg(process_group, signum):
+                if process_group != process.pid:
+                    raise SystemExit("bounded command signaled the wrong process group")
+                if process.reaped:
+                    raise SystemExit("bounded command signaled after leader reap")
+                signals.append(signum)
+                process.exited = True
+
+        VERIFIER.subprocess = FakeSubprocess()
+        VERIFIER.select = FakeSelect
+        VERIFIER.os = OwnershipOS()
+        VERIFIER.time = clock
+        try:
+            try:
+                result = VERIFIER._bounded_command(
+                    ["/usr/bin/kernel-probe-fixture"],
+                    f"{scenario} kernel probe fixture",
+                    timeout=0.5,
+                    max_stdout=1024,
+                    max_stderr=1024,
+                )
+            except BaseException as exc:
+                if scenario == "normal":
+                    raise SystemExit("normal kernel probe ownership fixture failed") from exc
+                if scenario == "timeout":
+                    if not isinstance(exc, original_subprocess.TimeoutExpired):
+                        raise SystemExit("kernel probe timeout sentinel was replaced") from exc
+                elif exc is not read_sentinel:
+                    raise SystemExit("kernel probe read sentinel was replaced") from exc
+            else:
+                if scenario != "normal" or result != (0, b"", b""):
+                    raise SystemExit(f"kernel probe accepted {scenario}: {result!r}")
+        finally:
+            VERIFIER.subprocess = original_subprocess
+            VERIFIER.select = original_select
+            VERIFIER.os = original_os
+            VERIFIER.time = original_time
+        if signals != expected_signals:
+            raise SystemExit(
+                f"kernel probe group signal order changed for {scenario}: {signals!r}"
+            )
+        if process.wait_calls != 1 or not process.reaped:
+            raise SystemExit("kernel probe did not perform one final leader reap")
+        if not process.stdout.closed or not process.stderr.closed:
+            raise SystemExit("kernel probe ownership fixture leaked a pipe")
+
+
 def main() -> None:
+    verify_bounded_command_process_group_ownership()
     actual_field_names = tuple(key for key, _ in VERIFIER.TOOLCHAIN_FIELDS)
     if len(actual_field_names) != 154:
         raise SystemExit("toolchain verifier does not expose the exact 154-field v2 schema")

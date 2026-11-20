@@ -334,9 +334,14 @@ CANONICAL_PROFILE_DEFAULTS = {
         "tb321fu-kernel-bootstrap-570b90203d97-20260729.4/KERNEL-TOOLCHAIN.tsv"
     ),
 }
+# Pin complete decoded YAML scalars, including the final newline. Keep these
+# independent of the fixtures so simultaneous workflow/fixture drift fails closed.
 REVIEWED_RUN_SHA256 = {
+    "Install dependencies": (
+        "9f8390ded78b4fa40da51d198746fd5e60c6aaa59cb6153cd8a0fe7dcd6decd4"
+    ),
     "Validate workflow and lifecycle boundaries": (
-        "6867c5654b84bac9f8c21eedacb254543b47b29a06b34bc6df78f70ca10f3762"
+        "b600bc1df1974bb1054bd9a355fc8f04476c3d9b75f04ac9169d6ecc2242c970"
     ),
     "Validate build inputs": (
         "53620abb19b0354f1740f33345439bfa5f14d70aedd8f8587680bdfdff5b9fdc"
@@ -373,8 +378,38 @@ STAGING_RUN = "\n".join((
 ))
 DEPENDENCY_RUN = "\n".join((
     "set -euo pipefail",
-    "/usr/bin/sudo /bin/bash -p scripts/ci/test-haptics-dpkg-host-rejection.sh \\",
-    "  scripts/ci/HAPTICS-BUILD-PACKAGES.tsv",
+    "preflight_status=0",
+    "dpkg_status_before=$(/usr/bin/sudo /usr/bin/sha256sum -- \\",
+    "  /var/lib/dpkg/status | /usr/bin/cut -d' ' -f1)",
+    "(",
+    "  set -euo pipefail",
+    "  /bin/bash -p -n scripts/ci/install-haptics-build-dependencies.sh",
+    "  /bin/bash -p -n scripts/ci/download-haptics-compat-packages.sh",
+    "  /usr/bin/python3 -I -B scripts/ci/test-haptics-compat-downloads.py",
+    "  /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-phase.py",
+    "  /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-fixture-support.py",
+    "  /usr/bin/python3 -I -B scripts/ci/test-haptics-installer-supervision.py",
+    "  /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-transaction.py",
+    "  /usr/bin/sudo /bin/bash -p scripts/ci/test-haptics-dpkg-host-rejection.sh \\",
+    "    scripts/ci/HAPTICS-BUILD-PACKAGES.tsv",
+    "  /usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-sandbox.py",
+    "  /usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-hook.py",
+    ") || preflight_status=$?",
+    "dpkg_status_after=$(/usr/bin/sudo /usr/bin/sha256sum -- \\",
+    "  /var/lib/dpkg/status | /usr/bin/cut -d' ' -f1)",
+    '[ "$dpkg_status_after" = "$dpkg_status_before" ] || {',
+    "  echo 'APT preflight changed /var/lib/dpkg/status' >&2",
+    "  exit 1",
+    "}",
+    'preflight_audit="$RUNNER_TEMP/HAPTICS-DPKG-PREFLIGHT-AUDIT.txt"',
+    '/usr/bin/sudo /usr/bin/dpkg --audit > "$preflight_audit"',
+    '[ ! -s "$preflight_audit" ] || {',
+    "  echo 'APT preflight left dpkg audit findings' >&2",
+    '  /usr/bin/cat -- "$preflight_audit" >&2',
+    "  exit 1",
+    "}",
+    '/usr/bin/rm -f -- "$preflight_audit"',
+    '[ "$preflight_status" -eq 0 ] || exit "$preflight_status"',
     "# GitHub-hosted ubuntu-24.04 images change their preinstalled package",
     "# versions and maintainer scripts. Capture the verified host state on",
     "# this runner immediately before the transaction instead of binding",
@@ -396,9 +431,26 @@ DEPENDENCY_RUN = "\n".join((
     "  scripts/ci/HAPTICS-BUILD-TOOLS-REFERENCE.tsv \\",
     "  scripts/ci/HAPTICS-RELEASE-REFERENCE.tsv \\",
     "  \"$reference\"",
-    "/usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-sandbox.py",
-    "/usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-hook.py",
-    "/usr/bin/sudo /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-eipp-canary.py",
+    "canary_status=0",
+    "dpkg_status_before_canary=$(/usr/bin/sudo /usr/bin/sha256sum -- \\",
+    "  /var/lib/dpkg/status | /usr/bin/cut -d' ' -f1)",
+    "/usr/bin/sudo /usr/bin/python3 -I -B \\",
+    "  scripts/ci/test-haptics-apt-eipp-canary.py || canary_status=$?",
+    "dpkg_status_after_canary=$(/usr/bin/sudo /usr/bin/sha256sum -- \\",
+    "  /var/lib/dpkg/status | /usr/bin/cut -d' ' -f1)",
+    '[ "$dpkg_status_after_canary" = "$dpkg_status_before_canary" ] || {',
+    "  echo 'disposable EIPP canary changed /var/lib/dpkg/status' >&2",
+    "  exit 1",
+    "}",
+    'canary_audit="$RUNNER_TEMP/HAPTICS-DPKG-EIPP-CANARY-AUDIT.txt"',
+    '/usr/bin/sudo /usr/bin/dpkg --audit > "$canary_audit"',
+    '[ ! -s "$canary_audit" ] || {',
+    "  echo 'disposable EIPP canary left dpkg audit findings' >&2",
+    '  /usr/bin/cat -- "$canary_audit" >&2',
+    "  exit 1",
+    "}",
+    '/usr/bin/rm -f -- "$canary_audit"',
+    '[ "$canary_status" -eq 0 ] || exit "$canary_status"',
 ))
 VALIDATION_RUN_FIXTURE = "\n".join((
     "set -euo pipefail",
@@ -416,6 +468,9 @@ VALIDATION_RUN_FIXTURE = "\n".join((
     "  scripts/ci/HAPTICS-BUILD-PACKAGES.tsv",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-dpkg-configuration.py",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-package-transaction.py",
+    "/usr/bin/python3 -I -B scripts/ci/test-haptics-apt-phase.py",
+    "/usr/bin/python3 -I -B scripts/ci/test-haptics-apt-fixture-support.py",
+    "/usr/bin/python3 -I -B scripts/ci/test-haptics-installer-supervision.py",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-apt-transaction.py",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-apt-preparation.py",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-dpkg-state.py",
@@ -432,6 +487,7 @@ VALIDATION_RUN_FIXTURE = "\n".join((
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-release-job-isolation.py --self-test",
     "/usr/bin/python3 -I -B scripts/ci/test-haptics-release-job-isolation.py .github/workflows/build.yml",
     "/bin/bash -p -n scripts/ci/install-haptics-build-dependencies.sh",
+    "/bin/bash -p -n scripts/ci/download-haptics-compat-packages.sh",
     "/bin/bash -p -n scripts/ci/test-haptics-dpkg-host-rejection.sh",
     "/bin/bash -p -n scripts/ci/verify-haptics-compat-package.sh",
     "/bin/bash -p scripts/ci/test-haptics-compat-package.sh",
@@ -933,10 +989,17 @@ def validate(data: dict) -> None:
         fail("workflow validation must execute native dpkg configuration fixtures")
     if "test-haptics-package-transaction.py" not in validation_run:
         fail("workflow validation must execute package transaction fixtures")
+    if "test-haptics-apt-phase.py" not in validation_run:
+        fail("workflow validation must execute the bounded APT phase fixtures")
+    for fixture_name in ("test-haptics-apt-fixture-support.py", "test-haptics-installer-supervision.py"):
+        if fixture_name not in validation_run:
+            fail("workflow validation omits supervision/cleanup regressions: " + fixture_name)
     if "test-haptics-live-build-tools.sh" not in validation_run:
         fail("workflow validation must execute the live build-tools reference fixtures")
     if "/bin/bash -p -n scripts/ci/install-haptics-build-dependencies.sh" not in validation_run:
         fail("workflow validation must syntax-check the dependency installer")
+    if "/bin/bash -p -n scripts/ci/download-haptics-compat-packages.sh" not in validation_run:
+        fail("workflow validation must syntax-check the compatibility downloader")
     if "/bin/bash -p -n scripts/ci/test-haptics-dpkg-host-rejection.sh" not in validation_run:
         fail("workflow validation must syntax-check the host dpkg rejection fixture")
     if "/bin/bash -p -n scripts/ci/verify-haptics-compat-package.sh" not in validation_run:
@@ -965,13 +1028,63 @@ def validate(data: dict) -> None:
         named_step(build_steps, "Validate build inputs"), "Validate build inputs"
     )
     require_reviewed_run(named_step(build_steps, "Build haptics deb"), "Build haptics deb")
-    dependencies_run = dependencies.get("run")
-    if not isinstance(dependencies_run, str):
-        fail("dependency installation must have a shell body")
+    dependencies_run = require_reviewed_run(dependencies, "Install dependencies")
     if "test-haptics-dpkg-host-rejection.sh" not in dependencies_run:
         fail("dependency installation must execute the host dpkg rejection fixture")
     if dependencies_run.rstrip("\n") != DEPENDENCY_RUN:
         fail("dependency installation must invoke the exact reviewed entry point")
+    host_capture_index = dependencies_run.index("--capture-host-reference")
+    installer_index = dependencies_run.rindex(
+        "scripts/ci/install-haptics-build-dependencies.sh"
+    )
+    preflight_guard_index = dependencies_run.index(
+        '[ "$preflight_status" -eq 0 ] || exit "$preflight_status"'
+    )
+    for preflight_gate in (
+        "/bin/bash -p -n scripts/ci/install-haptics-build-dependencies.sh",
+        "/bin/bash -p -n scripts/ci/download-haptics-compat-packages.sh",
+        "/usr/bin/python3 -I -B scripts/ci/test-haptics-compat-downloads.py",
+        "/usr/bin/python3 -I -B scripts/ci/test-haptics-apt-phase.py",
+        "/usr/bin/python3 -I -B scripts/ci/test-haptics-apt-fixture-support.py",
+        "/usr/bin/python3 -I -B scripts/ci/test-haptics-installer-supervision.py",
+        "/usr/bin/python3 -I -B scripts/ci/test-haptics-apt-transaction.py",
+        "scripts/ci/test-haptics-dpkg-host-rejection.sh",
+        "scripts/ci/test-haptics-apt-sandbox.py",
+        "scripts/ci/test-haptics-apt-hook.py",
+    ):
+        gate_index = dependencies_run.index(preflight_gate)
+        if not gate_index < preflight_guard_index < host_capture_index < installer_index:
+            fail(
+                "APT hostile/disposable gates must precede host capture and mutation: "
+                f"{preflight_gate}"
+            )
+    canary_index = dependencies_run.index(
+        "scripts/ci/test-haptics-apt-eipp-canary.py"
+    )
+    canary_status_index = dependencies_run.index(
+        '[ "$canary_status" -eq 0 ] || exit "$canary_status"'
+    )
+    canary_before_status_index = dependencies_run.index(
+        "dpkg_status_before_canary="
+    )
+    canary_after_status_index = dependencies_run.index(
+        "dpkg_status_after_canary="
+    )
+    canary_audit_index = dependencies_run.index(
+        '/usr/bin/sudo /usr/bin/dpkg --audit > "$canary_audit"'
+    )
+    if not (
+        installer_index
+        < canary_before_status_index
+        < canary_index
+        < canary_after_status_index
+        < canary_audit_index
+        < canary_status_index
+    ):
+        fail(
+            "the real disposable EIPP canary must run only after locked "
+            "dependency installation and remain host-state guarded"
+        )
     for step in build_steps:
         if step is dependencies or not isinstance(step.get("run"), str):
             continue
@@ -1134,7 +1247,7 @@ def fixture() -> dict:
                     },
                     {
                         "name": "Install dependencies",
-                        "run": DEPENDENCY_RUN,
+                        "run": DEPENDENCY_RUN + "\n",
                     },
                     {
                         "name": "Validate workflow and lifecycle boundaries",
@@ -1952,6 +2065,109 @@ def self_test() -> None:
         pass
     else:
         fail("self-test accepted an unreviewed package lock")
+    for fixture_name in (
+        "test-haptics-apt-fixture-support.py",
+        "test-haptics-installer-supervision.py",
+    ):
+        for step_name, indent in (
+            ("Install dependencies", "  "),
+            ("Validate workflow and lifecycle boundaries", ""),
+        ):
+            reviewed_run = named_step(valid["jobs"]["build"]["steps"], step_name)["run"]
+            command = f"{indent}/usr/bin/python3 -I -B scripts/ci/{fixture_name}\n"
+            if reviewed_run.count(command) != 1:
+                fail(f"self-test regression command anchor changed: {fixture_name}")
+            for mutation, replacement in (
+                ("missing", ""),
+                ("commented", indent + "# " + command.lstrip()),
+                ("failure-masked", command.rstrip("\n") + " || true\n"),
+            ):
+                candidate = copy.deepcopy(valid)
+                step = named_step(candidate["jobs"]["build"]["steps"], step_name)
+                step["run"] = reviewed_run.replace(command, replacement, 1)
+                expect_rejected(
+                    candidate,
+                    f"self-test accepted {mutation} {fixture_name} in {step_name!r}",
+                )
+    missing_preflight_phase = copy.deepcopy(valid)
+    dependency_step = named_step(
+        missing_preflight_phase["jobs"]["build"]["steps"], "Install dependencies"
+    )
+    dependency_step["run"] = dependency_step["run"].replace(
+        "  /usr/bin/python3 -I -B scripts/ci/test-haptics-apt-phase.py\n",
+        "",
+        1,
+    )
+    expect_rejected(
+        missing_preflight_phase,
+        "self-test accepted a missing pre-mutation APT phase fixture",
+    )
+    unreviewed_downloader = copy.deepcopy(valid)
+    dependency_step = named_step(
+        unreviewed_downloader["jobs"]["build"]["steps"], "Install dependencies"
+    )
+    dependency_step["run"] = dependency_step["run"].replace(
+        "scripts/ci/download-haptics-compat-packages.sh",
+        "scripts/ci/unreviewed-compat-downloader.sh",
+        1,
+    )
+    expect_rejected(
+        unreviewed_downloader,
+        "self-test accepted an unreviewed compatibility downloader source",
+    )
+    missing_downloader_fixture = copy.deepcopy(valid)
+    dependency_step = named_step(
+        missing_downloader_fixture["jobs"]["build"]["steps"],
+        "Install dependencies",
+    )
+    dependency_step["run"] = dependency_step["run"].replace(
+        "  /usr/bin/python3 -I -B scripts/ci/test-haptics-compat-downloads.py\n",
+        "",
+        1,
+    )
+    expect_rejected(
+        missing_downloader_fixture,
+        "self-test accepted a missing compatibility downloader behavior fixture",
+    )
+    missing_validation_phase = copy.deepcopy(valid)
+    validation_step = named_step(
+        missing_validation_phase["jobs"]["build"]["steps"],
+        "Validate workflow and lifecycle boundaries",
+    )
+    validation_step["run"] = validation_step["run"].replace(
+        "/usr/bin/python3 -I -B scripts/ci/test-haptics-apt-phase.py\n",
+        "",
+        1,
+    )
+    expect_rejected(
+        missing_validation_phase,
+        "self-test accepted a missing post-install APT phase fixture",
+    )
+    early_eipp_canary = copy.deepcopy(valid)
+    dependency_step = named_step(
+        early_eipp_canary["jobs"]["build"]["steps"], "Install dependencies"
+    )
+    dependency_lines = dependency_step["run"].splitlines()
+    canary_command = "/usr/bin/sudo /usr/bin/python3 -I -B " + "\\"
+    canary_argument = (
+        "  scripts/ci/test-haptics-apt-eipp-canary.py || canary_status=$?"
+    )
+    canary_command_index = dependency_lines.index(canary_command)
+    if dependency_lines[canary_command_index + 1] != canary_argument:
+        fail("self-test real EIPP canary command fixture changed")
+    del dependency_lines[canary_command_index : canary_command_index + 2]
+    host_capture_index = dependency_lines.index(
+        'reference="$RUNNER_TEMP/HAPTICS-DPKG-HOST-REFERENCE.tsv"'
+    )
+    dependency_lines[host_capture_index:host_capture_index] = [
+        canary_command,
+        canary_argument,
+    ]
+    dependency_step["run"] = "\n".join(dependency_lines) + "\n"
+    expect_rejected(
+        early_eipp_canary,
+        "self-test accepted the real EIPP canary before locked dependencies",
+    )
     extra_apt_command = copy.deepcopy(valid)
     dependency_step = named_step(
         extra_apt_command["jobs"]["build"]["steps"], "Install dependencies"

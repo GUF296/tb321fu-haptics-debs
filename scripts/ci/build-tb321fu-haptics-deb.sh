@@ -1,5 +1,5 @@
-#!/bin/sh
-if [ "${HAPTICS_BUILDER_CLEAN_ENV:-}" != 1 ] || [ -z "${BASH_VERSION:-}" ]; then
+#!/usr/bin/bash -p
+if ! [[ -o privileged ]]; then
   script_path=$(/usr/bin/realpath -e -- "$0") || exit 1
   exec /usr/bin/env -i \
     PATH=/usr/sbin:/usr/bin:/sbin:/bin \
@@ -33,7 +33,7 @@ if [ "${HAPTICS_BUILDER_CLEAN_ENV:-}" != 1 ] || [ -z "${BASH_VERSION:-}" ]; then
     http_proxy="${http_proxy-}" HTTP_PROXY="${HTTP_PROXY-}" \
     https_proxy="${https_proxy-}" HTTPS_PROXY="${HTTPS_PROXY-}" \
     no_proxy="${no_proxy-}" NO_PROXY="${NO_PROXY-}" \
-    /usr/bin/bash --noprofile --norc "$script_path" "$@"
+    /usr/bin/bash -p "$script_path" "$@"
 fi
 SCRIPT_SOURCE=${BASH_SOURCE[0]}
 case "$SCRIPT_SOURCE" in
@@ -245,7 +245,8 @@ output_name=$(basename -- "$output_requested")
 mkdir -p "$output_parent"
 output_parent=$(realpath -e -- "$output_parent")
 output_path="$output_parent/$output_name"
-[ ! -e "$output_path" ] || ci_die "refusing stale OUTPUT_DIR: $output_path"
+[ ! -e "$output_path" ] && [ ! -L "$output_path" ] ||
+  ci_die "refusing stale OUTPUT_DIR: $output_path"
 output_stage=$(mktemp -d "$output_parent/.${output_name}.staging.XXXXXX")
 chmod 0700 "$output_stage"
 OUTPUT_DIR=$output_stage
@@ -1584,10 +1585,11 @@ finalize_haptics_output() {
     "${HAPTICS_BUILD_TOOL_COMMAND_PATHS[sha256sum]}" --strict \
       -c SHA256SUMS-tb321fu-haptics-debs.txt >/dev/null)
 
-  [ ! -e "$output_path" ] || ci_die "OUTPUT_DIR appeared during atomic promotion: $output_path"
+  [ ! -e "$output_path" ] && [ ! -L "$output_path" ] ||
+    ci_die "OUTPUT_DIR appeared during atomic promotion: $output_path"
   haptics_verify_build_tools_unchanged "after external-module and DEB production"
   chmod 0755 "$OUTPUT_DIR"
-  mv -T -- "$OUTPUT_DIR" "$output_path"
+  haptics_promote_directory_no_clobber "$OUTPUT_DIR" "$output_path"
   output_stage=
   OUTPUT_DIR=$output_path
 }

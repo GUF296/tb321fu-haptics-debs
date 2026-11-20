@@ -2150,6 +2150,13 @@ def main() -> None:
         admin = make_empty_admin(root)
         archive = make_deb(root)
         archive_record = apt.capture_deb_archive(archive, 0, 0)
+        runtime_command_line = (
+            "/usr/bin/apt-get -o Acquire::Retries=0 install -y --no-download "
+            "--no-install-recommends --allow-downgrades --no-remove -- "
+            f"example=1.0-1 {archive}"
+        )
+        apt.validate_runtime_command_line(runtime_command_line)
+        encoded_runtime_command_line = runtime_command_line.replace(" ", "%20")
         encoded_hook = HOOK_COMMAND.replace(" ", "%20")
         eipp_raw = (
             "VERSION 3\n"
@@ -2160,11 +2167,14 @@ def main() -> None:
             "Acquire::AllowInsecureRepositories=0\n"
             "Acquire::AllowWeakRepositories=0\n"
             "Acquire::Check-Valid-Until=0\n"
+            "Acquire::Retries=0\n"
             "Acquire::https::Verify-Host=1\n"
             "Acquire::https::Verify-Peer=1\n"
             "APT::Get::AllowUnauthenticated=0\n"
+            "APT::Get::Download=0\n"
             "APT::Get::List-Cleanup=0\n"
             "APT::Sandbox::User=_apt\n"
+            "APT::Update::Error-Mode=any\n"
             "Dir::State::lists=/tmp/lists\n"
             "Dir::State::extended_states=/tmp/state/extended_states\n"
             "Dir::State::status=/var/lib/dpkg/status\n"
@@ -2190,6 +2200,7 @@ def main() -> None:
             "DPkg::Run-Directory=/\n"
             "DPkg::Tools::options::/usr/bin/python3::InfoFD=21\n"
             "DPkg::Tools::options::/usr/bin/python3::Version=3\n"
+            f"CommandLine::AsString={encoded_runtime_command_line}\n"
             "\n"
             f"example - - none < 1.0-1 amd64 none {archive}\n"
             "example - - none < 1.0-1 amd64 none **CONFIGURE**\n"
@@ -2458,11 +2469,14 @@ def main() -> None:
             "Acquire::AllowInsecureRepositories=0\n"
             "Acquire::AllowWeakRepositories=0\n"
             "Acquire::Check-Valid-Until=0\n"
+            "Acquire::Retries=0\n"
             "Acquire::https::Verify-Host=1\n"
             "Acquire::https::Verify-Peer=1\n"
             "APT::Get::AllowUnauthenticated=0\n"
+            "APT::Get::Download=0\n"
             "APT::Get::List-Cleanup=0\n"
             "APT::Sandbox::User=_apt\n"
+            "APT::Update::Error-Mode=any\n"
             f"Dir::State::lists={private / 'lists'}\n"
             f"Dir::State::extended_states={private / 'state/extended_states'}\n"
             f"Dir::State::status={admin / 'status'}\n"
@@ -2488,6 +2502,7 @@ def main() -> None:
             "DPkg::Run-Directory=/\n"
             "DPkg::Tools::options::/usr/bin/python3::InfoFD=21\n"
             "DPkg::Tools::options::/usr/bin/python3::Version=3\n"
+            f"CommandLine::AsString={encoded_runtime_command_line}\n"
             "\n"
             f"example - - none < 1.0-1 amd64 none {archive}\n"
             "example - - none < 1.0-1 amd64 none **CONFIGURE**\n"
@@ -3854,11 +3869,14 @@ def main() -> None:
             "Acquire::AllowInsecureRepositories=0\n"
             "Acquire::AllowWeakRepositories=0\n"
             "Acquire::Check-Valid-Until=0\n"
+            "Acquire::Retries=0\n"
             "Acquire::https::Verify-Host=1\n"
             "Acquire::https::Verify-Peer=1\n"
             "APT::Get::AllowUnauthenticated=0\n"
+            "APT::Get::Download=0\n"
             "APT::Get::List-Cleanup=0\n"
             "APT::Sandbox::User=_apt\n"
+            "APT::Update::Error-Mode=any\n"
             f"Dir::State::lists={private / 'lists'}\n"
             f"Dir::State::extended_states={private / 'state/extended_states'}\n"
             "Dir::State::status=/var/lib/dpkg/status\n"
@@ -3884,6 +3902,7 @@ def main() -> None:
             "DPkg::Run-Directory=/\n"
             "DPkg::Tools::options::/usr/bin/python3::InfoFD=21\n"
             "DPkg::Tools::options::/usr/bin/python3::Version=3\n"
+            f"CommandLine::AsString={encoded_runtime_command_line}\n"
             "\n"
             f"example - - none < 1.0-1 amd64 none {archive}\n"
             "example - - none < 1.0-1 amd64 none **CONFIGURE**\n"

@@ -239,6 +239,7 @@ haptics_environment_is_canonical() {
     [PWD]=1 [SHLVL]=1 [_]=1
   )
 
+  [[ -o privileged ]] || return 1
   [ "${!marker-}" = 1 ] || return 1
   [ "${PATH-}" = "$HAPTICS_BUILD_PATH" ] || return 1
   [ "${LANG-}" = C ] || return 1
@@ -304,7 +305,7 @@ haptics_enter_clean_environment() {
     fi
   done
   exec /usr/bin/env -i "${clean_env[@]}" \
-    "$bash_path" --noprofile --norc "$script" "${command_args[@]}"
+    "$bash_path" -p "$script" "${command_args[@]}"
 }
 
 haptics_resolve_build_tool_command() {

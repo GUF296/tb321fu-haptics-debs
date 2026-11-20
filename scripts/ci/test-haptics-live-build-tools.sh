@@ -9,6 +9,8 @@ REFERENCE="$SCRIPT_DIR/HAPTICS-BUILD-TOOLS-REFERENCE.tsv"
 RELEASE_REFERENCE="$SCRIPT_DIR/HAPTICS-RELEASE-REFERENCE.tsv"
 VERIFIER="$SCRIPT_DIR/verify-haptics-live-build-tools.sh"
 INSTALLER="$SCRIPT_DIR/install-haptics-build-dependencies.sh"
+APT_PHASE_TEST="$SCRIPT_DIR/test-haptics-apt-phase.py"
+COMPAT_DOWNLOADER="$SCRIPT_DIR/download-haptics-compat-packages.sh"
 NORMALIZER="$SCRIPT_DIR/normalize-bison-data-directory.py"
 tmp=$(/usr/bin/mktemp -d /tmp/tb321fu-haptics-live-tools-test.XXXXXX)
 cleanup() {
@@ -39,7 +41,8 @@ trap 'exit 143' TERM
 /bin/bash -p "$INSTALLER" --self-test-apt-source >/dev/null
 /bin/bash -p "$INSTALLER" --self-test-apt-config >/dev/null
 /bin/bash -p "$INSTALLER" --self-test-apt-permissions >/dev/null
-/bin/bash -p "$INSTALLER" --self-test-apt-sandbox-log >/dev/null
+/usr/bin/python3 -I -B "$APT_PHASE_TEST" >/dev/null
+/bin/bash -n "$COMPAT_DOWNLOADER"
 /usr/bin/python3 -I -B "$NORMALIZER" --self-test >/dev/null
 for transaction_gate in \
   --capture-system-state --verify-closure-plan --verify-host-plan \
@@ -54,18 +57,49 @@ if /usr/bin/grep -Fq -- '  --prepare-manifest "$hook_command"' "$INSTALLER"; the
   echo 'dependency installer still uses the cross-runner host-reference mode' >&2
   exit 1
 fi
-install_count=$(/usr/bin/grep -Fc -- '"${apt_command[@]}" install -y' "$INSTALLER")
+install_command='"${apt_command[@]}" -o Acquire::Retries=0 install -y --no-download'
+install_count=$(/usr/bin/grep -Fc -- "$install_command" "$INSTALLER")
 [ "$install_count" -eq 1 ] || {
-  echo "dependency installer must execute exactly one apt install transaction" >&2
+  echo "dependency installer must execute exactly one canonical offline apt install transaction" >&2
   exit 1
 }
+download_count=$(/usr/bin/grep -Fc -- 'if run_apt_phase download 600 "$download_stdout"' "$INSTALLER")
+[ "$download_count" -eq 1 ] || {
+  echo 'dependency installer must execute exactly one bounded apt download phase' >&2
+  exit 1
+}
+compat_download_count=$(/usr/bin/grep -Fc -- \
+  'if run_apt_phase compatibility-download 600 "$compat_download_stdout"' "$INSTALLER")
+[ "$compat_download_count" -eq 1 ] &&
+  ! /usr/bin/grep -Fq -- '/usr/bin/curl ' "$INSTALLER" || {
+  echo 'compatibility packages are not acquired by one custodial aggregate phase' >&2
+  exit 1
+}
+/usr/bin/grep -Fqx -- 'soft_admission_seconds=590' "$COMPAT_DOWNLOADER" &&
+  /usr/bin/grep -Fq -- 'remaining=$((soft_admission_seconds - SECONDS))' "$COMPAT_DOWNLOADER" &&
+  /usr/bin/grep -Fq -- '--retry-max-time "$remaining"' "$COMPAT_DOWNLOADER" &&
+  ! /usr/bin/grep -Fq -- '--retry-all-errors' "$COMPAT_DOWNLOADER" || {
+  echo 'compatibility-package downloader soft admission or transient-retry policy changed' >&2
+  exit 1
+}
+for obsolete_runner_text in \
+  'run_apt_phase download 3 ' \
+  'compat_apt_stderr=' \
+  'emit_bounded_apt_diagnostic' \
+  'verify_no_apt_sandbox_fallback'; do
+  if /usr/bin/grep -Fq -- "$obsolete_runner_text" "$INSTALLER"; then
+    echo "dependency installer retains obsolete APT runner text: $obsolete_runner_text" >&2
+    exit 1
+  fi
+done
 download_line=$(/usr/bin/grep -nF -- '--download-only' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
 prepare_line=$(/usr/bin/grep -nF -- '--prepare-manifest-runtime-reference' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
 configure_line=$(/usr/bin/grep -nF -- 'configure_private_apt_hook "$hook_command"' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
-install_line=$(/usr/bin/grep -nF -- '"${apt_command[@]}" install -y' "$INSTALLER" | /usr/bin/cut -d: -f1)
+install_line=$(/usr/bin/grep -nF -- "$install_command" "$INSTALLER" | /usr/bin/cut -d: -f1)
 marker_line=$(/usr/bin/grep -nF -- '--verify-marker' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
 post_line=$(/usr/bin/grep -nF -- '--verify-post' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
-sandbox_line=$(/usr/bin/grep -nF -- 'verify_no_apt_sandbox_fallback "$compat_apt_stderr"' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
+install_status_line=$(/usr/bin/grep -nF -- 'if [ "$apt_install_status" -ne 0 ]; then' "$INSTALLER" | /usr/bin/cut -d: -f1)
+secondary_status_line=$(/usr/bin/grep -nF -- 'if [ "$marker_status" -ne 0 ] || [ "$post_status" -ne 0 ]; then' "$INSTALLER" | /usr/bin/cut -d: -f1)
 normalize_line=$(/usr/bin/grep -nF -- '/usr/bin/python3 -I -B "$BISON_NORMALIZER"' "$INSTALLER" | /usr/bin/cut -d: -f1)
 post_state_line=$(/usr/bin/grep -nF -- '--verify-state-transition' "$INSTALLER" | /usr/bin/tail -n1 | /usr/bin/cut -d: -f1)
 post_audit_line=$(/usr/bin/grep -nF -- 'HOME="$dpkg_home" /usr/bin/dpkg --audit > "$after_audit"' "$INSTALLER" | /usr/bin/cut -d: -f1)
@@ -77,8 +111,9 @@ live_tools_line=$(/usr/bin/grep -nF -- '"$LIVE_TOOLS_VERIFIER"' "$INSTALLER" | /
   [ "$configure_line" -lt "$install_line" ] &&
   [ "$install_line" -lt "$marker_line" ] &&
   [ "$marker_line" -lt "$post_line" ] &&
-  [ "$post_line" -lt "$sandbox_line" ] &&
-  [ "$sandbox_line" -lt "$normalize_line" ] &&
+  [ "$post_line" -lt "$install_status_line" ] &&
+  [ "$install_status_line" -lt "$secondary_status_line" ] &&
+  [ "$secondary_status_line" -lt "$normalize_line" ] &&
   [ "$normalize_line" -lt "$post_state_line" ] &&
   [ "$post_state_line" -lt "$post_audit_line" ] &&
   [ "$post_audit_line" -lt "$installed_line" ] &&
@@ -92,7 +127,8 @@ live_tools_line=$(/usr/bin/grep -nF -- '"$LIVE_TOOLS_VERIFIER"' "$INSTALLER" | /
   echo 'dependency installer captures post-state through the mutable package-lock path' >&2
   exit 1
 }
-/usr/bin/grep -Fq -- "--proto-redir '=https'" "$INSTALLER" || {
+/usr/bin/grep -Fq -- "--proto '=https'" "$COMPAT_DOWNLOADER" &&
+  /usr/bin/grep -Fq -- "--proto-redir '=https'" "$COMPAT_DOWNLOADER" || {
   echo 'dependency installer does not restrict compatibility-package redirects to HTTPS' >&2
   exit 1
 }

@@ -418,6 +418,16 @@ for token in \
   grep -Fq -- "$token" "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" "$sdk_script" ||
     fail "haptics production path omits contract token: $token"
 done
+if grep -Fq 'mv -T -- "$OUTPUT_DIR" "$output_path"' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh"; then
+  fail "direct haptics builder still uses an unchecked atomic mv"
+fi
+grep -Fq '[ ! -e "$output_path" ] && [ ! -L "$output_path" ]' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+  fail "direct haptics builder does not reject dangling output targets"
+grep -Fq 'haptics_promote_directory_no_clobber "$OUTPUT_DIR" "$output_path"' \
+  "$SCRIPT_DIR/build-tb321fu-haptics-deb.sh" ||
+  fail "direct haptics builder does not use the canonical no-clobber promotion"
 
 python3 - "$sdk_script" <<'PY'
 from pathlib import Path

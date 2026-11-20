@@ -16,6 +16,9 @@ import tempfile
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 VERIFIER_PATH = SCRIPT_DIR / "verify-haptics-apt-transaction.py"
+CANARY_PACKAGE = "haptics-eipp-canary"
+CANARY_VERSION = "1.0-1"
+CANARY_PACKAGE_ARGUMENT = f"{CANARY_PACKAGE}={CANARY_VERSION}"
 HOOK_SOURCE = """#!/usr/bin/python3 -I
 import os
 import pathlib
@@ -84,8 +87,10 @@ def require_success(result: subprocess.CompletedProcess[bytes], label: str) -> N
 
 
 def expected_disposable_hook_configuration(
+    verifier,
     command: str,
     *,
+    command_line: str,
     dpkg_admin: pathlib.Path,
     rootfs: pathlib.Path,
 ) -> tuple[tuple[str, str], ...]:
@@ -105,11 +110,16 @@ def expected_disposable_hook_configuration(
         or not rootfs.is_absolute()
     ):
         raise SystemExit("disposable APT hook command is not canonical")
+    verifier.validate_runtime_command_line(command_line)
     return tuple(
         sorted(
             (
                 ("APT::Architecture", "amd64"),
                 ("APT::Architectures::", "amd64"),
+                ("APT::Get::Download", "0"),
+                ("APT::Update::Error-Mode", "any"),
+                ("Acquire::Retries", "0"),
+                ("CommandLine::AsString", command_line),
                 ("Dir::Bin::dpkg", "/usr/bin/dpkg"),
                 ("DPkg::ConfigurePending", "1"),
                 ("DPkg::Path", "/usr/sbin:/usr/bin:/sbin:/bin"),
@@ -122,6 +132,25 @@ def expected_disposable_hook_configuration(
             )
         )
     )
+
+
+def canonical_offline_install_command(verifier) -> tuple[list[str], str]:
+    arguments = [
+        "/usr/bin/apt-get",
+        "-o",
+        "Acquire::Retries=0",
+        "install",
+        "-y",
+        "--no-download",
+        "--no-install-recommends",
+        "--allow-downgrades",
+        "--no-remove",
+        "--",
+        CANARY_PACKAGE_ARGUMENT,
+    ]
+    command_line = " ".join(arguments)
+    verifier.validate_runtime_command_line(command_line)
+    return arguments, command_line
 
 
 def expected_disposable_private_paths(
@@ -213,6 +242,38 @@ def self_test_native_status_guard() -> None:
                 ) from exc
         else:
             raise SystemExit("native-status guard accepted mutation on a failing path")
+    verifier = load_verifier()
+    offline_command, command_line = canonical_offline_install_command(verifier)
+    expected_command = [
+        "/usr/bin/apt-get",
+        "-o",
+        "Acquire::Retries=0",
+        "install",
+        "-y",
+        "--no-download",
+        "--no-install-recommends",
+        "--allow-downgrades",
+        "--no-remove",
+        "--",
+        "haptics-eipp-canary=1.0-1",
+    ]
+    if offline_command != expected_command:
+        raise SystemExit("disposable canary offline command changed")
+    projection = expected_disposable_hook_configuration(
+        verifier,
+        "/usr/bin/python3 -I -B /tmp/hook.py --capture /tmp/eipp.log",
+        command_line=command_line,
+        dpkg_admin=pathlib.Path("/tmp/root/var/lib/dpkg"),
+        rootfs=pathlib.Path("/tmp/root"),
+    )
+    for record in (
+        ("Acquire::Retries", "0"),
+        ("APT::Get::Download", "0"),
+        ("APT::Update::Error-Mode", "any"),
+        ("CommandLine::AsString", command_line),
+    ):
+        if projection.count(record) != 1:
+            raise SystemExit("disposable canary exact projection changed")
     print("HAPTICS_APT_EIPP_NATIVE_GUARD=PASS")
 
 
@@ -269,17 +330,17 @@ def run_disposable_canary(verifier, apt_account) -> None:
         (admin / "available").write_bytes(b"")
         (admin / "available").chmod(0o644)
         (control / "control").write_text(
-            "Package: haptics-eipp-canary\n"
-            "Version: 1.0-1\n"
+            f"Package: {CANARY_PACKAGE}\n"
+            f"Version: {CANARY_VERSION}\n"
             "Architecture: amd64\n"
             "Maintainer: Fixture <fixture@example.invalid>\n"
             "Description: Disposable EIPP canary\n",
             encoding="ascii",
         )
-        payload = payload_dir / "haptics-eipp-canary"
+        payload = payload_dir / CANARY_PACKAGE
         payload.write_text("#!/bin/sh\nexit 0\n", encoding="ascii")
         payload.chmod(0o755)
-        archive = repo / "haptics-eipp-canary_1.0-1_amd64.deb"
+        archive = repo / f"{CANARY_PACKAGE}_{CANARY_VERSION}_amd64.deb"
         base_environment = {
             "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
             "LANG": "C",
@@ -324,7 +385,9 @@ def run_disposable_canary(verifier, apt_account) -> None:
         (repo / "Packages").chmod(0o644)
 
         sources = work / "sources.list"
-        sources.write_text(f"deb [trusted=yes] file:{repo} ./\n", encoding="ascii")
+        # copy: keeps acquisition local but populates the private archive cache;
+        # file: may return the repository DEB directly without caching it.
+        sources.write_text(f"deb [trusted=yes] copy:{repo} ./\n", encoding="ascii")
         sources.chmod(0o644)
         empty = work / "empty.conf"
         empty.write_bytes(b"")
@@ -363,14 +426,17 @@ def run_disposable_canary(verifier, apt_account) -> None:
             'APT::Architecture "amd64";\n'
             'APT::Architectures { "amd64"; };\n'
             'Acquire::Check-Valid-Until "0";\n'
+            'Acquire::Retries "0";\n'
             'Acquire::AllowInsecureRepositories "0";\n'
             'Acquire::AllowWeakRepositories "0";\n'
             'Acquire::AllowDowngradeToInsecureRepositories "0";\n'
             'Acquire::https::Verify-Peer "1";\n'
             'Acquire::https::Verify-Host "1";\n'
             'APT::Get::AllowUnauthenticated "0";\n'
+            'APT::Get::Download "0";\n'
             'APT::Get::List-Cleanup "0";\n'
             'APT::Sandbox::User "_apt";\n'
+            'APT::Update::Error-Mode "any";\n'
             'Dir::Bin::dpkg "/usr/bin/dpkg";\n'
             'DPkg::ConfigurePending "1";\n'
             'DPkg::Path "/usr/sbin:/usr/bin:/sbin:/bin";\n'
@@ -385,56 +451,64 @@ def run_disposable_canary(verifier, apt_account) -> None:
         apt_config.chmod(0o600)
         apt_environment = dict(base_environment)
         apt_environment["APT_CONFIG"] = str(apt_config)
-        # Keep the hooked install argv identical to the production installer.
-        # The simulation/check phases add their own -qq flags below where no
-        # EIPP hook is invoked.
         apt_command = ["/usr/bin/apt-get"]
         require_success(
-            run(apt_command + ["update"], cwd=work, environment=apt_environment),
+            run(
+                apt_command
+                + [
+                    "-o", "Acquire::Retries=0",
+                    "-o", "APT::Get::Download=1", "update",
+                ],
+                cwd=work,
+                environment=apt_environment,
+            ),
             "canary apt update",
         )
         require_success(
             run(
                 apt_command
                 + [
+                    "-o",
+                    "Acquire::Retries=0",
+                    "-o",
+                    "APT::Get::Download=1",
+                    "install",
                     "-y",
                     "--download-only",
-                    "install",
                     "--no-install-recommends",
                     "--allow-downgrades",
                     "--no-remove",
                     "--",
-                    str(archive),
+                    CANARY_PACKAGE_ARGUMENT,
                 ],
                 cwd=work,
                 environment=apt_environment,
             ),
-            "canary local-DEB download-only pass",
+            "canary repository download-only pass",
         )
         cached_debs = tuple(sorted(archives.glob("*.deb")))
-        if cached_debs:
+        cached_archive = archives / archive.name
+        if cached_debs != (cached_archive,):
             raise SystemExit(
-                "download-only duplicated a local DEB into the APT cache: "
+                "download-only produced an unexpected APT cache closure: "
                 + repr(cached_debs)
             )
+        if hashlib.sha256(cached_archive.read_bytes()).digest() != hashlib.sha256(
+            archive.read_bytes()
+        ).digest():
+            raise SystemExit("download-only cache bytes differ from the repository DEB")
+        # Retain the source so APT can resolve the saved index; the canonical
+        # --no-download command keeps the package-changing transaction offline.
+        offline_command, runtime_command_line = canonical_offline_install_command(verifier)
         require_success(
             run(
-                apt_command
-                + [
-                    "-y",
-                    "install",
-                    "--no-install-recommends",
-                    "--allow-downgrades",
-                    "--no-remove",
-                    "--",
-                    str(archive),
-                ],
+                offline_command,
                 cwd=work,
                 environment=apt_environment,
             ),
             "canary apt install",
         )
-        installed = rootfs / "usr/bin/haptics-eipp-canary"
+        installed = rootfs / "usr/bin" / CANARY_PACKAGE
         if not installed.is_file():
             raise SystemExit("disposable canary package was not installed")
         if not eipp_log.is_file():
@@ -454,7 +528,9 @@ def run_disposable_canary(verifier, apt_account) -> None:
                     print("EIPP_ACTION_LINE=" + repr(line[:2048]), file=sys.stderr)
             raise
         expected_configuration = expected_disposable_hook_configuration(
+            verifier,
             hook_command,
+            command_line=runtime_command_line,
             dpkg_admin=admin,
             rootfs=rootfs,
         )
@@ -494,23 +570,23 @@ def run_disposable_canary(verifier, apt_account) -> None:
             )
         expected_actions = (
             verifier.PackageAction(
-                "haptics-eipp-canary",
+                CANARY_PACKAGE,
                 None,
                 None,
                 None,
                 "<",
-                "1.0-1",
+                CANARY_VERSION,
                 "amd64",
                 "no",
-                str(archive),
+                str(cached_archive),
             ),
             verifier.PackageAction(
-                "haptics-eipp-canary",
+                CANARY_PACKAGE,
                 None,
                 None,
                 None,
                 "<",
-                "1.0-1",
+                CANARY_VERSION,
                 "amd64",
                 "no",
                 "**CONFIGURE**",

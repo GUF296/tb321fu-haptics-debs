@@ -60,21 +60,24 @@ FORK_CANCELLATION_SIGNALS = frozenset((signal.SIGINT, signal.SIGTERM))
 MAX_FD_SNAPSHOT_ENTRIES = 4096
 
 # These values are deliberately kept outside the transaction manifest.  APT's
-# EIPP stream contains the complete configuration tree, including defaults and
-# command-line state which vary between otherwise equivalent runners.  They are
-# nevertheless part of the runtime security boundary and must be present with
-# exactly these values when the hook is actually invoked.
+# EIPP stream contains many runner-dependent defaults, but they remain part of
+# the runtime security boundary and must have these exact effective values.
+# CommandLine::AsString is different: preparation synthesizes and stores that
+# exact record because its ordered package/archive suffix is transaction data.
 RUNTIME_REQUIRED_CONFIGURATION = {
     "Acquire::AllowDowngradeToInsecureRepositories": "0",
     "Acquire::AllowInsecureRepositories": "0",
     "Acquire::AllowWeakRepositories": "0",
     "Acquire::Check-Valid-Until": "0",
     "Acquire::Languages": "none",
+    "Acquire::Retries": "0",
     "Acquire::https::Verify-Host": "1",
     "Acquire::https::Verify-Peer": "1",
     "APT::Get::AllowUnauthenticated": "0",
+    "APT::Get::Download": "0",
     "APT::Get::List-Cleanup": "0",
     "APT::Sandbox::User": "_apt",
+    "APT::Update::Error-Mode": "any",
 }
 
 # APT emits these built-in helper and relative path defaults even when the
@@ -219,23 +222,17 @@ RUNTIME_PRIVATE_PATH_KEYS = frozenset(
     }
 )
 
-RUNTIME_FORBIDDEN_COMMAND_TOKENS = frozenset(
-    {
-        "--admindir",
-        "--allow-remove-essential",
-        "--download-only",
-        "--force-yes",
-        "--no-download",
-        "--purge",
-        "--remove",
-        "--root",
-        "--simulate",
-        "--assume-no",
-        "--config-file",
-        "--option",
-        "-c",
-        "-o",
-    }
+RUNTIME_COMMAND_PREFIX = (
+    "/usr/bin/apt-get",
+    "-o",
+    "Acquire::Retries=0",
+    "install",
+    "-y",
+    "--no-download",
+    "--no-install-recommends",
+    "--allow-downgrades",
+    "--no-remove",
+    "--",
 )
 
 
@@ -1477,11 +1474,18 @@ def optional_field(value: str | None) -> str:
 
 
 def serialize_expected_transaction(transaction: ExpectedTransaction) -> bytes:
+    if type(transaction) is not ExpectedTransaction:
+        raise AptTransactionError("expected transaction cannot be serialized canonically")
+    command_lines = tuple(
+        value
+        for key, value in transaction.configuration
+        if key == "CommandLine::AsString"
+    )
     if (
-        type(transaction) is not ExpectedTransaction
-        or not SHA256.fullmatch(transaction.package_state_sha256)
+        not SHA256.fullmatch(transaction.package_state_sha256)
         or not SHA256.fullmatch(transaction.dpkg_state_sha256)
         or not SHA256.fullmatch(transaction.host_reference_sha256)
+        or len(command_lines) != 1
         or any(
             "\t" in key
             or "\n" in key
@@ -1493,6 +1497,7 @@ def serialize_expected_transaction(transaction: ExpectedTransaction) -> bytes:
         )
     ):
         raise AptTransactionError("expected transaction cannot be serialized canonically")
+    validate_runtime_command_line(command_lines[0])
     verify_eipp_configuration(transaction.configuration, transaction.configuration)
     verify_eipp_actions(transaction.actions, transaction.actions)
     verify_archive_actions(transaction.archives, transaction.actions)
@@ -1764,72 +1769,54 @@ def runtime_private_path_projection(
 
 
 def validate_runtime_command_line(value: str) -> None:
-    """Reject EIPP command-line state that can escape the installer policy."""
-    if type(value) is not str:
+    """Require the canonical offline-install argv and an ordered suffix.
+
+    The disposable cache canary has no compatibility archive arguments, while
+    focused preparation fixtures may contain only a local archive. Production
+    preparation separately requires both argument groups.
+    """
+    if (
+        type(value) is not str
+        or not value
+        or not value.isascii()
+        or len(value) > MAX_TRANSACTION_MANIFEST_BYTES
+    ):
         raise AptTransactionError(
             "effective APT configuration differs from the exact contract: "
             "APT command-line value is not text"
         )
     fields = value.split(" ")
-    if not fields or fields[0] != "/usr/bin/apt-get":
-        raise AptTransactionError(
-            "effective APT configuration differs from the exact contract: "
-            "APT command-line executable changed"
-        )
     if any(not field for field in fields):
         raise AptTransactionError(
             "effective APT configuration differs from the exact contract: "
             "APT command-line framing changed"
         )
-    if any(
-        field in RUNTIME_FORBIDDEN_COMMAND_TOKENS
-        or any(field.startswith(token + "=") for token in RUNTIME_FORBIDDEN_COMMAND_TOKENS)
-        or field.startswith("-o")
-        for field in fields
-    ):
-        raise AptTransactionError(
-            "effective APT configuration differs from the exact contract: "
-            "APT command-line override is forbidden"
-        )
-    if fields.count("install") != 1 or "--" not in fields:
+    prefix_length = len(RUNTIME_COMMAND_PREFIX)
+    if tuple(fields[:prefix_length]) != RUNTIME_COMMAND_PREFIX:
         raise AptTransactionError(
             "effective APT configuration differs from the exact contract: "
             "APT command-line transaction policy changed"
         )
-    separator = fields.index("--")
-    prefix = fields[1:separator]
-    allowed_options = {
-        "-q",
-        "-qq",
-        "-y",
-        "--yes",
-        "--allow-downgrades",
-        "--no-install-recommends",
-        "--no-remove",
-    }
-    if (
-        "install" not in prefix
-        or prefix.count("install") != 1
-        or not {
-            "--allow-downgrades",
-            "--no-install-recommends",
-            "--no-remove",
-        }.issubset(prefix)
-        or any(field.startswith("-") and field not in allowed_options for field in prefix)
-        or any(field not in allowed_options and field != "install" for field in prefix)
-        or not fields[separator + 1 :]
-    ):
+    suffix = fields[prefix_length:]
+    if not suffix or len(suffix) != len(set(suffix)):
         raise AptTransactionError(
             "effective APT configuration differs from the exact contract: "
-            "APT command-line transaction policy changed"
+            "APT package argument closure changed"
         )
-    for argument in fields[separator + 1 :]:
-        if argument.startswith("-") or any(character.isspace() for character in argument):
+    saw_archive = False
+    package_count = 0
+    package_names: set[str] = set()
+    for argument in suffix:
+        if argument.startswith("-") or any(
+            ord(character) < 0x21 or ord(character) >= 0x7F
+            for character in argument
+        ):
             raise AptTransactionError(
                 "effective APT configuration differs from the exact contract: "
                 "APT package argument is not canonical"
             )
         if argument.startswith("/"):
+            saw_archive = True
             path = pathlib.PurePosixPath(argument)
             if (
                 not path.is_absolute()
@@ -1842,17 +1829,50 @@ def validate_runtime_command_line(value: str) -> None:
                     "APT package archive argument is not canonical"
                 )
             continue
+        if saw_archive:
+            raise AptTransactionError(
+                "effective APT configuration differs from the exact contract: "
+                "APT package/archive argument order changed"
+            )
         if "=" not in argument:
             raise AptTransactionError(
                 "effective APT configuration differs from the exact contract: "
                 "APT package argument is not version-pinned"
             )
         package, version = argument.split("=", 1)
-        if not PACKAGE_NAME.fullmatch(package) or not VERSION.fullmatch(version):
+        if (
+            not PACKAGE_NAME.fullmatch(package)
+            or not VERSION.fullmatch(version)
+            or package in package_names
+        ):
             raise AptTransactionError(
                 "effective APT configuration differs from the exact contract: "
                 "APT package argument is not canonical"
             )
+        package_names.add(package)
+        package_count += 1
+    if package_count == 0 and not saw_archive:
+        raise AptTransactionError(
+            "effective APT configuration differs from the exact contract: "
+            "APT package/archive closure is incomplete"
+        )
+
+
+def build_runtime_command_line(
+    package_arguments: tuple[str, ...],
+    archive_arguments: tuple[str, ...],
+) -> str:
+    """Build the manifest-bound EIPP command from authenticated inputs."""
+    if (
+        type(package_arguments) is not tuple
+        or type(archive_arguments) is not tuple
+        or not archive_arguments
+        or any(type(argument) is not str for argument in (*package_arguments, *archive_arguments))
+    ):
+        raise AptTransactionError("APT command-line preparation inputs are invalid")
+    value = " ".join((*RUNTIME_COMMAND_PREFIX, *package_arguments, *archive_arguments))
+    validate_runtime_command_line(value)
+    return value
 
 
 def validate_expected_dpkg_option(value: str) -> tuple[str, str]:
@@ -1889,8 +1909,20 @@ def validate_expected_configuration_policy(
     hook_values = tuple(
         value for key, value in expected if key == "DPkg::Pre-Install-Pkgs::"
     )
+    command_values = tuple(
+        value for key, value in expected if key == "CommandLine::AsString"
+    )
     if len(hook_values) != 1:
         raise AptTransactionError("expected EIPP configuration has no unique hook")
+    if enforce_runtime_projection and len(command_values) != 1:
+        raise AptTransactionError(
+            "effective APT configuration differs from the exact contract: "
+            "manifest command-line binding is missing"
+        )
+    if len(command_values) > 1:
+        raise AptTransactionError("expected EIPP configuration has no unique command line")
+    if command_values:
+        validate_runtime_command_line(command_values[0])
     canonical = validate_manifest_hook_command(hook_values[0])
     hook_fields = hook_values[0].split(" ")
     hook_mode = hook_fields[4]
@@ -1913,6 +1945,12 @@ def validate_expected_configuration_policy(
         if key == "DPkg::Pre-Install-Pkgs::":
             if value != hook_values[0]:
                 raise AptTransactionError("expected EIPP hook record is inconsistent")
+            continue
+        if key == "CommandLine::AsString":
+            if value != command_values[0]:
+                raise AptTransactionError(
+                    "expected EIPP command-line record is inconsistent"
+                )
             continue
         core_values = {
             "APT::Architecture": "amd64",
@@ -2427,6 +2465,7 @@ def prepare_expected_transaction(
     expected_uid: int,
     expected_gid: int,
     *,
+    compat_archive_directory: pathlib.Path | None = None,
     deadline: float | None = None,
 ) -> ExpectedTransaction:
     if (
@@ -2448,6 +2487,13 @@ def prepare_expected_transaction(
         or any(type(path) is not pathlib.PosixPath for path in archive_paths)
         or tuple(sorted(archive_paths, key=str)) != archive_paths
         or len(set(archive_paths)) != len(archive_paths)
+        or (
+            compat_archive_directory is not None
+            and (
+                type(compat_archive_directory) is not pathlib.PosixPath
+                or not compat_archive_directory.is_absolute()
+            )
+        )
         or type(dpkg_admin) is not pathlib.PosixPath
         or not dpkg_admin.is_absolute()
         or any(
@@ -2615,6 +2661,45 @@ def prepare_expected_transaction(
     )
     if len(manifest_archives) * 2 != len(actions):
         raise AptTransactionError("APT archive/action closure is not canonical")
+    repository_arguments = tuple(
+        f"{identity[0]}={version}"
+        for identity, version in expected_versions.items()
+        if identity not in compatibility_digests
+    )
+    compatibility_arguments: list[str] = []
+    for name, architecture in compatibility_digests:
+        version = expected_versions[(name, architecture)]
+        if compat_archive_directory is None:
+            selected = archive_map.get((name, architecture))
+            matches = () if selected is None else (selected,)
+        else:
+            expected_path = compat_archive_directory / (
+                f"{name}_{version}_{architecture}.deb"
+            )
+            matches = tuple(
+                archive
+                for archive in all_archives
+                if archive.path == str(expected_path)
+                and (
+                    archive.package,
+                    archive.version,
+                    archive.architecture,
+                )
+                == (name, version, architecture)
+            )
+        if len(matches) != 1:
+            raise AptTransactionError(
+                "compatibility command-line archive differs from the package lock"
+            )
+        compatibility_arguments.append(matches[0].path)
+    if compat_archive_directory is not None and not repository_arguments:
+        raise AptTransactionError(
+            "production command-line package closure is empty"
+        )
+    runtime_command_line = build_runtime_command_line(
+        repository_arguments,
+        tuple(compatibility_arguments),
+    )
     require_operation_deadline(deadline, "APT transaction preparation")
     verify_live_package_state()
     verify_live_dpkg_state()
@@ -2622,7 +2707,14 @@ def prepare_expected_transaction(
         hashlib.sha256(package_state_raw).hexdigest(),
         hashlib.sha256(dpkg_state_raw).hexdigest(),
         hashlib.sha256(host_reference_raw).hexdigest(),
-        expected_hook_configuration(hook_command),
+        tuple(
+            sorted(
+                (
+                    *expected_hook_configuration(hook_command),
+                    ("CommandLine::AsString", runtime_command_line),
+                )
+            )
+        ),
         actions,
         manifest_archives,
     )
@@ -5437,6 +5529,7 @@ def main() -> None:
                 dpkg_admin,
                 expected_uid,
                 expected_gid,
+                compat_archive_directory=archive_directories[1],
                 deadline=preparation_deadline,
             )
             require_operation_deadline(
