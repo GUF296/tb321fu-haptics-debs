@@ -11,6 +11,7 @@ import functools
 import os
 import pathlib
 import re
+import resource
 import shutil
 import signal
 import subprocess
@@ -1236,8 +1237,19 @@ def exec_runner_wrapper(mode: str, root: pathlib.Path) -> None:
     elif mode == "blocked-sigchld":
         signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGCHLD})
     elif mode == "high-fd":
+        # Keep the runner's pipes above FD_SETSIZE even on sudo's low soft
+        # limit. Only this disposable wrapper and its exec inherit the change.
+        highest_fixture_fd = 1100
+        required_limit = highest_fixture_fd + 1 + 32
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if hard != resource.RLIM_INFINITY and hard < required_limit:
+            raise SystemExit(
+                f"high-fd fixture requires RLIMIT_NOFILE hard >= {required_limit}, got {hard}"
+            )
+        if soft != resource.RLIM_INFINITY and soft < required_limit:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (required_limit, hard))
         descriptors = []
-        while not descriptors or descriptors[-1] < 1100:
+        while not descriptors or descriptors[-1] < highest_fixture_fd:
             descriptor = os.open("/dev/null", os.O_RDONLY)
             os.set_inheritable(descriptor, True)
             descriptors.append(descriptor)
