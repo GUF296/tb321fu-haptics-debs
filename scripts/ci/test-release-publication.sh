@@ -648,6 +648,8 @@ printf '%s\n' "$release_token" > "$token_sentinel_file"
 publisher_repo=$scratch/publisher-repo
 mkdir -p "$publisher_repo"
 git -C "$publisher_repo" init -q
+git -C "$publisher_repo" config maintenance.auto false
+git -C "$publisher_repo" config gc.auto 0
 git -C "$publisher_repo" config user.name fixture
 git -C "$publisher_repo" config user.email fixture@example.invalid
 printf 'reference base\n' > "$publisher_repo/BASE"
