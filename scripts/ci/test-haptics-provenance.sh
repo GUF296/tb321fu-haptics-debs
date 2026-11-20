@@ -150,6 +150,9 @@ history_commit=$(git -C "$history" rev-parse HEAD)
 bundle="$tmp/HAPTICS-PRODUCER.bundle"
 bundle_ref=refs/heads/tb321fu-haptics-producer
 ci_create_exact_git_bundle "$history" "$history_commit" "$bundle" "$bundle_ref"
+ci_create_exact_git_bundle "$history" "$history_commit" "$tmp/repeated.bundle" "$bundle_ref"
+cmp -s -- "$bundle" "$tmp/repeated.bundle" ||
+  fail "repeated producer bundle differs at the same commit"
 verify_git="$tmp/bundle-verify.git"
 ci_git init -q --bare "$verify_git"
 ci_git --git-dir="$verify_git" bundle verify "$bundle" >/dev/null

@@ -329,7 +329,9 @@ ci_create_exact_git_bundle() (
   ci_git --git-dir="$tmp/source.git" cat-file -e "$commit^{commit}" ||
     ci_die "bundle commit is absent from the source object database"
   ci_git --git-dir="$tmp/source.git" update-ref "$bundle_ref" "$commit"
-  if ! ci_git --git-dir="$tmp/source.git" bundle create "$tmp_bundle" "$bundle_ref"; then
+  # Parallel delta search can produce different pack bytes for the same commit.
+  if ! ci_git -c pack.threads=1 --git-dir="$tmp/source.git" \
+       bundle create "$tmp_bundle" "$bundle_ref"; then
     ci_die "cannot create a self-contained Git bundle from the available history"
   fi
 
