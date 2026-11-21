@@ -337,18 +337,19 @@ The draft creator accepts exactly the five release assets and no other entry.
 Before its first API request it requires a clean tracked producer checkout at
 `GITHUB_SHA`, the fixed repository, committed trusted reference and ancestry,
 the v4 source lock, exact archive layout, and the trusted embedded DEB/module/
-helper identities. One release-create POST owns both private-draft and public-tag
-creation through `target_commitish`; there is no separate `git/refs` mutation.
-That POST occurs before asset upload and final draft verification. A failed
-operation can therefore leave the new public tag plus a private empty or
-partially uploaded draft. It refuses to modify an existing release or tag, so
-that identity must be preserved and never reused. Inspect it read-only by exact
-tag, then continue only with the reported numeric release ID after its target,
-draft/prerelease state, title, body and complete asset set have been reconciled:
+helper identities. The release-create POST reserves a **pending** tag name on a
+private draft with `target_commitish` equal to the exact producer commit. On
+GitHub a new tag can be created only when that draft is published. Neither
+publisher separately writes `git/refs`. A failed draft operation can leave a
+private empty or partially uploaded draft without a public tag. Never retry by
+adopting that draft, nor reuse its identity. Inspect the reported numeric ID
+and exact-name inventory with an authenticated read. Only a uniquely identified
+complete draft with the expected target, five assets and absent public tag can
+proceed to the separate publication step:
 
 ```bash
-gh api repos/GUF296/tb321fu-haptics-debs/git/ref/tags/<exact-tag>
-gh api repos/GUF296/tb321fu-haptics-debs/releases/tags/<exact-tag> \
+gh api repos/GUF296/tb321fu-haptics-debs/git/matching-refs/tags/<exact-tag> --jq '.[].ref'
+gh api repos/GUF296/tb321fu-haptics-debs/releases/<numeric-release-id> \
   --jq '{id,tag_name,target_commitish,draft,prerelease,immutable,name,assets}'
 ```
 
@@ -373,7 +374,8 @@ whose `HEAD` equals `GITHUB_SHA`. Before any API request it validates the fixed
 committed reference, the v4 release source lock, producer ancestry, bundle,
 module/helper identities, exact outer-tar contract, and the embedded DEB's A12
 SHA-256. It then requires the existing release to remain a non-immutable draft
-prerelease, resolves its tag to `GITHUB_SHA`, compares every remote asset name,
+prerelease with its exact numeric ID and `target_commitish == GITHUB_SHA`,
+checks the public tag is still absent, compares every remote asset name,
 size, SHA-256 digest and `uploaded` state with a freshly re-enumerated local
 five-asset set, and snapshots the current latest release twice. A repository
 with no current non-prerelease latest release is a valid, explicitly represented
@@ -381,7 +383,8 @@ state.
 
 The only mutation PATCHes `draft=false`, retains `prerelease=true`, and sends
 `make_latest=false`. The public result must report `immutable=true`; the script
-then repeats release, tag, asset, local-file, immutable-policy and latest-state
+then requires the newly public tag to resolve to `GITHUB_SHA` (including an
+annotated tag), and repeats release, asset, local-file, immutable-policy and latest-state
 checks. A transport failure after GitHub applies the PATCH is reconciled by
 re-reading the numeric ID and classified as verified public, exactly unchanged
 draft, or unknown/mutated; never retry an unknown result blindly. The token is

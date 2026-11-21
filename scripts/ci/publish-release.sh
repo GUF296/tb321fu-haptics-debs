@@ -512,7 +512,7 @@ fetch_release_snapshot() {
   local release_id=$1
 
   github_api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq \
-    '["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv'
+    '["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv' || return 1
   github_api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
     --paginate --jq '.[] | ["asset", .name, (.size | tostring), (.digest // ""), .state] | @tsv'
 }
@@ -532,7 +532,7 @@ fetch_release_snapshots_by_tag() {
   local release_id
   for release_id in "${matching_release_ids[@]}"; do
     [[ $release_id =~ ^[1-9][0-9]{0,19}$ ]] || return 1
-    fetch_release_snapshot "$release_id"
+    fetch_release_snapshot "$release_id" || return 1
   done
 }
 
@@ -585,44 +585,20 @@ verify_release_assets() {
   done <<< "$expected_assets"
 }
 
-resolve_tag_commit() {
-  local object_type object_sha record
-  local depth
-
-  record=$(github_api "repos/$GITHUB_REPOSITORY/git/ref/tags/$release_tag" --jq \
-    '[.object.type, .object.sha] | @tsv') || return 1
-  for depth in $(seq 1 8); do
-    IFS=$'\t' read -r object_type object_sha <<< "$record"
-    [[ $object_sha =~ ^[0-9a-f]{40}$ ]] || return 1
-    case "$object_type" in
-      commit)
-        printf '%s\n' "$object_sha"
-        return 0
-        ;;
-      tag)
-        record=$(github_api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha" --jq \
-          '[.object.type, .object.sha] | @tsv') || return 1
-        ;;
-      *)
-        return 1
-        ;;
-    esac
-  done
-  return 1
+require_absent_draft_ref() {
+  local count query
+  # A pending tag is not a public Git ref. Only a successful, well-formed
+  # matching-refs inventory can establish absence (a failed GET cannot).
+  printf -v query 'if type == "array" and all(.[]; (.ref | startswith("refs/tags/%s"))) then [.[] | select(.ref == "refs/tags/%s")] | length else error("invalid matching refs") end' "$release_tag" "$release_tag"
+  count=$(github_api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$release_tag" --jq "$query") &&
+    [ "$count" = 0 ] || { printf 'exact public tag already exists or cannot be established absent: %s\n' "$release_tag" >&2; return 1; }
 }
 
-verify_tag_target() {
-  local resolved
-
-  resolved=$(resolve_tag_commit) || {
-    printf 'release tag cannot be resolved to a commit: %s\n' "$release_tag" >&2
-    return 1
-  }
-  [ "$resolved" = "$GITHUB_SHA" ] || {
-    printf 'release tag target differs from this workflow commit: %s != %s\n' \
-      "$resolved" "$GITHUB_SHA" >&2
-    return 1
-  }
+require_unique_draft_id() {
+  local ids query
+  printf -v query '.[] | select(.tag_name == "%s") | .id' "$release_tag"
+  ids=$(github_api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq "$query") &&
+    [ "$ids" = "$1" ] || { printf 'expected one exact release identity: %s\n' "$1" >&2; return 1; }
 }
 
 immutability_policy=$(github_api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq \
@@ -647,16 +623,7 @@ if grep -Fxq -- "$release_tag" <<< "$existing_release_tags"; then
   printf 'refusing to modify an existing release or draft: %s\n' "$release_tag" >&2
   exit 1
 fi
-matching_tag_refs=$(github_api \
-  "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$release_tag" \
-  --jq '.[].ref') || {
-  printf 'cannot establish the existing tag set\n' >&2
-  exit 1
-}
-if grep -Fxq -- "refs/tags/$release_tag" <<< "$matching_tag_refs"; then
-  printf 'refusing to publish through an existing tag: %s\n' "$release_tag" >&2
-  exit 1
-fi
+require_absent_draft_ref || exit 1
 
 create_response_query='[.id, .tag_name, (.draft | tostring), (.immutable | tostring), .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv'
 begin_remote_write 'draft-create POST'
@@ -681,13 +648,12 @@ if [ "$create_status" -eq 0 ] &&
   if [[ $parsed_response_release_id =~ ^[1-9][0-9]{0,19}$ ]] &&
      [ "$created_tag" = "$release_tag" ] &&
      [ "$created_draft" = true ] && [ "$created_immutable" = false ] &&
-     [ -n "$response_target" ] &&
+     [ "$response_target" = "$GITHUB_SHA" ] &&
      [ "$created_prerelease" = "$publish_prerelease" ] &&
      [ "$created_title" = "$release_title" ] &&
      [ "$created_body_b64" = "$notes_body_b64" ]; then
     create_response_valid=true
     response_release_id=$parsed_response_release_id
-    release_target_commitish=$response_target
   fi
 fi
 if [ "$create_status" -ne 0 ] || ! $create_response_valid; then
@@ -702,6 +668,7 @@ tag_snapshot=
 initial_snapshot=
 release_id=
 for attempt in $(seq 1 4); do
+  require_absent_draft_ref || fail_remote_write 'public tag present or indeterminate during draft creation'
   if tag_snapshot=$(fetch_release_snapshots_by_tag 2>/dev/null); then
     candidate_release_id=$(printf '%s\n' "$tag_snapshot" | awk -F '\t' \
       '$1 == "release" { print $2; found++ } END { if (found != 1) exit 1 }') ||
@@ -714,7 +681,6 @@ for attempt in $(seq 1 4); do
        verify_release_assets "$tag_snapshot" '' &&
        initial_snapshot=$(fetch_release_snapshot "$candidate_release_id" 2>/dev/null) &&
        [ "$initial_snapshot" = "$tag_snapshot" ] &&
-       verify_tag_target &&
        current_immutability_policy=$(github_api \
          "repos/$GITHUB_REPOSITORY/immutable-releases" --jq \
          '[(.enabled | tostring), (.enforced_by_owner | tostring)] | @tsv' \
@@ -757,6 +723,7 @@ for asset in "${assets[@]}"; do
     expected_uploaded_asset_records=$asset_record
   fi
 
+  require_unique_draft_id "$release_id" && require_absent_draft_ref || exit 1
   begin_remote_write "asset-upload POST $asset_name"
   set +e
   run_asset_remote_write "$asset" "$asset_name"
@@ -765,13 +732,14 @@ for asset in "${assets[@]}"; do
   upload_reconciled=false
   remote_snapshot=
   for attempt in $(seq 1 6); do
+    require_unique_draft_id "$release_id" && require_absent_draft_ref ||
+      fail_remote_write 'draft ID or pending tag changed or cannot be established'
     if remote_snapshot=$(fetch_release_snapshot "$release_id" 2>/dev/null) &&
        verify_release_snapshot "$remote_snapshot" "$release_id" true false \
          "$release_target_commitish" "$publish_prerelease" "$release_title" \
          "$notes_body_b64" &&
        verify_release_assets "$remote_snapshot" \
          "$expected_uploaded_asset_records" &&
-       verify_tag_target &&
        current_immutability_policy=$(github_api \
          "repos/$GITHUB_REPOSITORY/immutable-releases" --jq \
          '[(.enabled | tostring), (.enforced_by_owner | tostring)] | @tsv' \
@@ -818,10 +786,7 @@ if ! verify_release_snapshot "$final_snapshot" "$release_id" true false \
   printf '%s\n' "$final_snapshot" >&2
   exit 1
 fi
-verify_tag_target || {
-  printf 'release tag changed after draft verification; release remains draft\n' >&2
-  exit 1
-}
+require_unique_draft_id "$release_id" && require_absent_draft_ref || exit 1
 final_immutability_policy=$(github_api \
   "repos/$GITHUB_REPOSITORY/immutable-releases" --jq \
   '[(.enabled | tostring), (.enforced_by_owner | tostring)] | @tsv') || {

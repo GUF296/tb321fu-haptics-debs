@@ -351,16 +351,12 @@ if [ "${1:-}" = api ]; then
         [ -f "${body#@}" ]
         [ "$draft" = true ]
         [ "$prerelease" = true ]
-        tag_target=${GH_CREATE_TAG_TARGET:-$target}
-        : > "$GH_STATE/tag-exists"
-        if [ "${GH_ANNOTATED_TAG:-0}" = 1 ]; then
-          printf 'tag\n' > "$GH_STATE/tag-type"
-          printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' > "$GH_STATE/tag-object"
-          printf 'commit\n' > "$GH_STATE/peeled-type"
-          printf '%s\n' "$tag_target" > "$GH_STATE/peeled-object"
-        else
+        # A new draft's tag is pending until publication. Simulate a separate
+        # ref writer only when the case explicitly requests that race.
+        if [ -n "${GH_CREATE_TAG_TARGET:-}" ]; then
+          : > "$GH_STATE/tag-exists"
           printf 'commit\n' > "$GH_STATE/tag-type"
-          printf '%s\n' "$tag_target" > "$GH_STATE/tag-object"
+          printf '%s\n' "$GH_CREATE_TAG_TARGET" > "$GH_STATE/tag-object"
         fi
         reported_tag=${GH_RELEASE_TAG_RESPONSE:-$tag}
         reported_target=${GH_RELEASE_TARGET_RESPONSE:-$target}
@@ -437,6 +433,18 @@ if [ "${1:-}" = api ]; then
     printf 'true\n' > "$GH_STATE/prerelease"
     : > "$GH_STATE/published"
     printf 'publish-draft\n' >> "$GH_STATE/events.log"
+    if [ "${GH_OMIT_PUBLISHED_TAG:-0}" != 1 ]; then
+      : > "$GH_STATE/tag-exists"
+      if [ "${GH_ANNOTATED_TAG:-0}" = 1 ]; then
+        printf 'tag\n' > "$GH_STATE/tag-type"
+        printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' > "$GH_STATE/tag-object"
+        printf 'commit\n' > "$GH_STATE/peeled-type"
+        cat "$GH_STATE/target" > "$GH_STATE/peeled-object"
+      else
+        printf 'commit\n' > "$GH_STATE/tag-type"
+        cat "$GH_STATE/target" > "$GH_STATE/tag-object"
+      fi
+    fi
     if [ "${GH_RETARGET_TAG_AFTER_PATCH:-0}" = 1 ]; then
       printf 'ffffffffffffffffffffffffffffffffffffffff\n' > "$GH_STATE/tag-object"
     fi
@@ -519,7 +527,8 @@ if [ "${1:-}" = api ]; then
           if [ -f "$GH_STATE/exists" ] &&
              [ "$(cat "$GH_STATE/tag")" = tb321fu-haptics-debs-20260730.2 ]; then
             printf '%s\n' "$(cat "$GH_STATE/id")"
-            if [ "${GH_DUPLICATE_TAG_MATCH:-0}" = 1 ]; then
+            if [ "${GH_DUPLICATE_TAG_MATCH:-0}" = 1 ] ||
+               { [ -e "$GH_STATE/published" ] && [ "${GH_DUPLICATE_AFTER_PATCH:-0}" = 1 ]; }; then
               printf '202\n'
             fi
           fi
@@ -539,8 +548,13 @@ if [ "${1:-}" = api ]; then
       ;;
     repos/GUF296/tb321fu-haptics-debs/git/matching-refs/tags/tb321fu-haptics-debs-20260730.2)
       [ "${GH_FAIL_REF_LIST:-0}" != 1 ] || exit 71
-      [ "$query" = '.[].ref' ]
-      [ ! -f "$GH_STATE/tag-exists" ] || printf 'refs/tags/%s\n' tb321fu-haptics-debs-20260730.2
+      [ "$query" = 'if type == "array" and all(.[]; (.ref | startswith("refs/tags/tb321fu-haptics-debs-20260730.2"))) then [.[] | select(.ref == "refs/tags/tb321fu-haptics-debs-20260730.2")] | length else error("invalid matching refs") end' ] || exit 2
+      if [ -f "$GH_STATE/tag-exists" ] &&
+         { [ ! -e "$GH_STATE/stale-ref-view" ] || [ "${GH_MIXED_STALE_REF:-0}" = 1 ]; }; then
+        printf '1\n'
+      else
+        printf '0\n'
+      fi
       exit
       ;;
     repos/GUF296/tb321fu-haptics-debs/git/ref/tags/tb321fu-haptics-debs-20260730.2)
@@ -602,6 +616,7 @@ if [ "${1:-}" = api ]; then
     if [ "${GH_MUTATE_SNAPSHOT:-0}" -eq "$count" ]; then mutate=true; fi
     numeric_count=0
     if [ "${FAKE_NUMERIC_PUBLISHER:-}" = 1 ]; then
+      rm -f -- "$GH_STATE/stale-ref-view"
       [ ! -f "$GH_STATE/numeric-snapshot-count" ] || numeric_count=$(cat "$GH_STATE/numeric-snapshot-count")
       numeric_count=$((numeric_count + 1))
       printf '%s\n' "$numeric_count" > "$GH_STATE/numeric-snapshot-count"
@@ -624,6 +639,7 @@ if [ "${1:-}" = api ]; then
          [ "$numeric_count" -ge 3 ]; then
         draft=true
         immutable=false
+        : > "$GH_STATE/stale-ref-view"
       fi
     fi
     if $mutate; then
@@ -1907,6 +1923,18 @@ run_publish_draft_by_id "$state_apply_fail_stale" env GH_ALLOW_PUBLISH=1 \
 [ "$(cat "$state_apply_fail_stale/immutable")" = true ]
 printf 'PASS PATCH response and stale-read reconciliation is bounded and fail closed\n'
 
+for split_view in GH_MIXED_STALE_REF GH_DUPLICATE_AFTER_PATCH; do
+  state=$scratch/state-publish-split-$split_view
+  create_verified_draft "$state"
+  if run_publish_draft_by_id "$state" env GH_ALLOW_PUBLISH=1 GH_STALE_DRAFT_READS=1 \
+      "$split_view=1" >/dev/null 2>&1; then
+    printf 'stale draft with ambiguous post-PATCH identity was accepted: %s\n' "$split_view" >&2
+    exit 1
+  fi
+  [ "$(grep -c -x publish-draft "$state/events.log")" -eq 1 ]
+done
+printf 'PASS split post-PATCH tag or release identity fails without retrying PATCH\n'
+
 state_publish_patch_fail=$scratch/state-publish-patch-fail
 create_verified_draft "$state_publish_patch_fail"
 if run_publish_draft_by_id "$state_publish_patch_fail" \
@@ -2070,11 +2098,13 @@ fi
 printf 'PASS post-publication checks reject metadata, asset, tag, and latest-state races\n'
 
 state_unused_target=$scratch/state-unused-target
-run_publish "$state_unused_target" env PRERELEASE=1 \
-  GH_RELEASE_TARGET_RESPONSE=main >/dev/null
-[ "$(cat "$state_unused_target/target")" = main ]
-[ "$(cat "$state_unused_target/tag-object")" = "$test_producer_sha" ]
-[ "$(cat "$state_unused_target/prerelease")" = true ]
+if run_publish "$state_unused_target" env PRERELEASE=1 \
+    GH_RELEASE_TARGET_RESPONSE=main >/dev/null 2>&1; then
+  printf 'draft creator accepted a floating target_commitish\n' >&2
+  exit 1
+fi
+[ ! -f "$state_unused_target/tag-exists" ]
+[ ! -s "$state_unused_target/assets.tsv" ]
 
 state_create_api_fail=$scratch/state-create-api-fail
 if run_publish "$state_create_api_fail" env PRERELEASE=1 \
@@ -2095,7 +2125,7 @@ fi
 [ -f "$state_create_tag_mismatch/exists" ]
 [ "$(cat "$state_create_tag_mismatch/draft")" = true ]
 [ ! -f "$state_create_tag_mismatch/patch-fields.log" ]
-printf 'PASS create API binds release id/tag while Git ref owns commit identity\n'
+printf 'PASS create API binds draft ID, pending tag and exact target_commitish\n'
 
 for field in name body; do
   state=$scratch/state-create-$field-mismatch
@@ -2164,14 +2194,42 @@ fi
 [ ! -f "$state_tag_race/patch-fields.log" ]
 
 state_annotated=$scratch/state-annotated
-run_publish "$state_annotated" env PRERELEASE=1 GH_ANNOTATED_TAG=1 >/dev/null
+create_verified_draft "$state_annotated"
+[ ! -e "$state_annotated/tag-exists" ]
+run_publish_draft_by_id "$state_annotated" env GH_ALLOW_PUBLISH=1 GH_ANNOTATED_TAG=1 >/dev/null
+[ -f "$state_annotated/tag-exists" ]
+[ "$(cat "$state_annotated/peeled-object")" = "$test_producer_sha" ]
 [ "$(cat "$state_annotated/prerelease")" = true ]
 if grep -Fq -- '-X POST repos/GUF296/tb321fu-haptics-debs/git/refs' \
     "$state_annotated/calls.log"; then
   printf 'draft creator used a separate tag-creation transaction\n' >&2
   exit 1
 fi
-printf 'PASS draft create owns tag creation; existing and racing tags fail closed\n'
+printf 'PASS pending tag appears only on publication and resolves to the producer\n'
+
+for bad_state in existing-ref duplicate-draft ref-list-error wrong-target missing-published-ref; do
+  state=$scratch/state-pending-tag-$bad_state
+  create_verified_draft "$state"
+  [ ! -e "$state/tag-exists" ]
+  opts=()
+  case $bad_state in
+    existing-ref) : > "$state/tag-exists"; printf '%s\n' "$test_producer_sha" > "$state/tag-object" ;;
+    duplicate-draft) opts+=(GH_DUPLICATE_TAG_MATCH=1) ;;
+    ref-list-error) opts+=(GH_FAIL_REF_LIST=1) ;;
+    wrong-target) printf 'main\n' > "$state/target" ;;
+    missing-published-ref) opts+=(GH_OMIT_PUBLISHED_TAG=1) ;;
+  esac
+  if run_publish_draft_by_id "$state" env GH_ALLOW_PUBLISH=1 "${opts[@]}" >/dev/null 2>&1; then
+    printf 'numeric publisher accepted invalid pending-tag transition: %s\n' "$bad_state" >&2
+    exit 1
+  fi
+  if [ "$bad_state" = missing-published-ref ]; then
+    [ -f "$state/published" ] && [ ! -e "$state/tag-exists" ] || exit 1
+  else
+    [ ! -e "$state/patch-fields.log" ] || exit 1
+  fi
+done
+printf 'PASS draft ambiguity and missing published tag fail closed\n'
 
 for mutation in id draft immutable tag target prerelease name body extra digest; do
   state=$scratch/state-mutation-$mutation

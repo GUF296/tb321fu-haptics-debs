@@ -469,7 +469,7 @@ local_asset_records=$(snapshot_local_assets) || {
 
 fetch_release_snapshot() {
   github_api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq \
-    '["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv'
+    '["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)] | @tsv' || return 1
   github_api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
     --paginate --jq '.[] | ["asset", .name, (.size | tostring), (.digest // ""), .state] | @tsv'
 }
@@ -566,6 +566,22 @@ verify_immutability_policy() {
   [ "$1" = $'true\tfalse' ] || [ "$1" = $'true\ttrue' ]
 }
 
+require_absent_draft_ref() {
+  local count query
+  # A pending tag is not a public Git ref. Only a successful, well-formed
+  # matching-refs inventory can establish absence (a failed GET cannot).
+  printf -v query 'if type == "array" and all(.[]; (.ref | startswith("refs/tags/%s"))) then [.[] | select(.ref == "refs/tags/%s")] | length else error("invalid matching refs") end' "$release_tag" "$release_tag"
+  count=$(github_api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$release_tag" --jq "$query") &&
+    [ "$count" = 0 ] || { printf 'exact public tag already exists or cannot be established absent: %s\n' "$release_tag" >&2; return 1; }
+}
+
+require_unique_draft_id() {
+  local ids query
+  printf -v query '.[] | select(.tag_name == "%s") | .id' "$release_tag"
+  ids=$(github_api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq "$query") &&
+    [ "$ids" = "$1" ] || { printf 'expected one exact release identity: %s\n' "$1" >&2; return 1; }
+}
+
 resolve_tag_commit() {
   local object_type object_sha record
   local depth
@@ -619,21 +635,13 @@ draft_snapshot=$(fetch_release_snapshot) || {
   printf 'cannot fetch draft release ID %s\n' "$release_id" >&2
   exit 1
 }
-release_target_commitish=$(printf '%s\n' "$draft_snapshot" | awk -F '\t' \
-  '$1 == "release" { print $6; found++ } END { if (found != 1) exit 1 }') || {
-  printf 'draft release snapshot has invalid metadata framing\n' >&2
-  exit 1
-}
-[ -n "$release_target_commitish" ] || {
-  printf 'draft release has an empty target_commitish\n' >&2
-  exit 1
-}
+release_target_commitish=$GITHUB_SHA
 verify_release_snapshot "$draft_snapshot" true false "$release_target_commitish" || {
   printf 'draft release ID/tag/metadata/state/assets do not match the local release set\n' >&2
   printf '%s\n' "$draft_snapshot" >&2
   exit 1
 }
-verify_tag_target || exit 1
+require_unique_draft_id "$release_id" && require_absent_draft_ref || exit 1
 
 latest_snapshot=$(fetch_latest_snapshot) || {
   printf 'cannot establish the current latest-release state before publication\n' >&2
@@ -669,7 +677,6 @@ second_latest_snapshot=$(fetch_latest_snapshot) || {
   printf 'latest release changed concurrently before publication\n' >&2
   exit 1
 }
-verify_tag_target || exit 1
 second_draft_snapshot=$(fetch_release_snapshot) || {
   printf 'cannot repeat the draft release snapshot before publication\n' >&2
   exit 1
@@ -678,6 +685,7 @@ second_draft_snapshot=$(fetch_release_snapshot) || {
   printf 'draft release changed concurrently before publication\n' >&2
   exit 1
 }
+require_unique_draft_id "$release_id" && require_absent_draft_ref || exit 1
 
 patch_query='(["release", (.id | tostring), (.draft | tostring), (.immutable | tostring), .tag_name, .target_commitish, (.prerelease | tostring), .name, ((.body // "") | @base64)], (.assets | sort_by(.name)[] | ["asset", .name, (.size | tostring), (.digest // ""), .state])) | @tsv'
 begin_remote_write "release PATCH ID $release_id"
@@ -711,6 +719,8 @@ for attempt in $(seq 1 6); do
   if [ -n "$candidate_snapshot" ] &&
       verify_release_snapshot "$candidate_snapshot" false true \
         "$release_target_commitish"; then
+    require_unique_draft_id "$release_id" ||
+      fail_remote_write 'published ID has ambiguous exact release identity'
     published_snapshot=$candidate_snapshot
     break
   fi
@@ -718,6 +728,10 @@ for attempt in $(seq 1 6); do
       verify_release_snapshot "$candidate_snapshot" true false \
         "$release_target_commitish" &&
       [ "$candidate_snapshot" = "$draft_snapshot" ]; then
+    # A stale but consistent private read may converge. A foreign public ref
+    # or ambiguous release inventory is not proof of the unchanged draft.
+    require_unique_draft_id "$release_id" && require_absent_draft_ref ||
+      fail_remote_write 'numeric draft and pending tag disagree after PATCH'
     [ "$attempt" -eq 6 ] || sleep "$attempt" || :
     continue
   fi
