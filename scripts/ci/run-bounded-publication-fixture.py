@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextvars import ContextVar
 import ctypes
 from dataclasses import dataclass
 import errno
@@ -42,6 +43,26 @@ KERNEL_SIGSET_WORDS = (
     KERNEL_SIGSET_BITS + NATIVE_WORD_BITS - 1
 ) // NATIVE_WORD_BITS
 PROCESS_CHILDREN_LIMIT = PROCESS_TABLE_LIMIT * 16
+# Only active during final descendant settlement. Never log caller-controlled
+# process names, argv, environment, or captured child stdout/stderr.
+_CHILD_SAMPLES: ContextVar[dict[int, bytes] | None] = ContextVar(
+    "publication_child_samples", default=None,
+)
+_SAMPLE_LIMIT = 4
+_PUBLIC_COMMANDS = frozenset(
+    b"bash dash sh git git-maintenance sort find cat awk gawk mawk sed tee "
+    b"timeout sleep curl gh python3 python3.12".split()
+)
+
+
+def record_child_sample(
+    samples: dict[int, bytes], pid: int, comm: bytes, state: bytes,
+) -> None:
+    if pid in samples or len(samples) >= _SAMPLE_LIMIT:
+        return
+    label = comm if comm in _PUBLIC_COMMANDS else b"other"
+    status = state if state in (b"R", b"S", b"D", b"Z", b"T", b"t", b"X", b"I") else b"?"
+    samples[pid] = b"descendant pid=%d comm=%s state=%s\n" % (pid, label, status)
 
 
 class RunnerError(Exception):
@@ -2569,6 +2590,8 @@ def process_disappeared(exc: BaseException) -> bool:
 
 def process_map() -> dict[int, tuple[int, int]]:
     processes: dict[int, tuple[int, int]] = {}
+    samples = _CHILD_SAMPLES.get()
+    owner_pid = os.getpid() if samples is not None else 0
     count = 0
     entries = None
     scan_primary: BaseException | None = None
@@ -2697,6 +2720,12 @@ def process_map() -> dict[int, tuple[int, int]]:
                 )
                 continue
             processes[pid] = (int(fields[1], 10), int(fields[19], 10))
+            if samples is not None and processes[pid][0] == owner_pid:
+                # Same bounded stat read as the existing ownership scan. The
+                # runner rejects pre-existing children before launching a fixture.
+                prefix = b"%d (" % pid
+                if raw.startswith(prefix):
+                    record_child_sample(samples, pid, raw[len(prefix):closing], fields[0])
     except BaseException as exc:
         scan_primary = choose_failure(
             scan_primary,
@@ -3200,6 +3229,7 @@ def run_bounded(
     primary: BaseException | None = None
     timed_out = False
     leaked_descendants = False
+    descendant_samples: dict[int, bytes] = {}
     containment_failed = False
     stdout = b""
     stderr = b""
@@ -3338,7 +3368,11 @@ def run_bounded(
                                 "publication runner root wait failed",
                             )
                 try:
-                    leaked_descendants = cleanup_descendants(baseline_children)
+                    sample_token = _CHILD_SAMPLES.set(descendant_samples)
+                    try:
+                        leaked_descendants = cleanup_descendants(baseline_children)
+                    finally:
+                        _CHILD_SAMPLES.reset(sample_token)
                 except BaseException as exc:
                     remember_cleanup(
                         exc,
@@ -3435,7 +3469,10 @@ def run_bounded(
     if process.returncode is None:
         raise RunnerError("publication fixture process was not reaped")
     if leaked_descendants:
-        return BoundedResult(125, b"", b"publication fixture left descendants\n")
+        return BoundedResult(
+            125, b"", b"publication fixture left descendants\n"
+            + b"".join(descendant_samples.values()),
+        )
     if (
         stdout_size > OUTPUT_LIMIT
         or stderr_size > OUTPUT_LIMIT
@@ -4278,6 +4315,14 @@ def run_self_test(cancellation: CancellationLatch) -> None:
             private,
             environment,
         )
+        redacted: dict[int, bytes] = {}
+        for n in range(10):
+            record_child_sample(redacted, n + 1, b"private e-mail)\n", b"secret")
+        if list(redacted.values()) != [
+            b"descendant pid=%d comm=other state=?\n" % pid
+            for pid in range(1, _SAMPLE_LIMIT + 1)
+        ]:
+            raise RunnerError("publication runner descendant redaction/size oracle drifted")
         identity = private / "detached.identity"
         detached_source = (
             "import os,pathlib,time\n"
@@ -4316,6 +4361,17 @@ def run_self_test(cancellation: CancellationLatch) -> None:
         ):
             raise RunnerError("publication runner detached-process oracle drifted")
         pid = int(fields[0], 10)
+        sample_lines = detached.stderr.splitlines()
+        if (
+            len(sample_lines) != 2
+            or sample_lines[0] != b"publication fixture left descendants"
+            or sample_lines[1] not in {
+                b"descendant pid=%d comm=%s state=%s" % (pid, name, status)
+                for name in (b"python3", b"python3.12")
+                for status in (b"R", b"S", b"D", b"Z", b"T", b"t", b"X", b"I", b"?")
+            }
+        ):
+            raise RunnerError("publication runner detached sample oracle drifted")
         start_time = int(fields[1][:-1], 10)
         current = process_map().get(pid)
         if current is not None and current[1] == start_time:

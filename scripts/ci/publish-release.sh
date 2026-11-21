@@ -166,13 +166,16 @@ publisher_shell_pid=$BASHPID
 }
 
 publisher_fixture_environment() {
-  local tool_path=$1 output_name=$2 variable_name
+  local tool_path=$1 output_name=$2 variable_name exported_names
   local -n output=$output_name
 
   output=()
   case $tool_path in
     /usr/bin/gh|/usr/bin/curl) return 0 ;;
   esac
+  # Wait for enumeration before the caller execs its next process. EOF on
+  # process substitution alone does not guarantee that Bash has reaped it.
+  exported_names=$(builtin compgen -e) || return 1
   while IFS= read -r variable_name; do
     case $variable_name in
       GH_TOKEN|GH_ENTERPRISE_TOKEN|GH_HOST|GH_DEBUG) continue ;;
@@ -180,7 +183,7 @@ publisher_fixture_environment() {
         output+=("$variable_name=${!variable_name}")
         ;;
     esac
-  done < <(builtin compgen -e)
+  done <<< "$exported_names"
 }
 
 github_api() (

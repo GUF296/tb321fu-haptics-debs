@@ -63,6 +63,58 @@ case $pending_allocation_signal in
   TERM) cancel_term ;;
 esac
 
+# Exercise only the committed helper in a clean, credential-free test shell.
+for publisher in "$PUBLISH" "$PUBLISH_DRAFT_BY_ID"; do
+  /usr/bin/sed -n '/^publisher_fixture_environment() {$/,/^}$/p' \
+    "$publisher" > "$scratch/fixture-env-helper.sh"
+  /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /bin/bash -p -eu -s \
+    -- "$scratch/fixture-env-helper.sh" "$publisher" "$scratch" <<'FIXTURE_ENV'
+source "$1"
+declare -a result=(old)
+marker=$3/enum-done
+# Deterministic EOF/exit separation for the synchronous enumerator. Do not
+# use host credentials or change the normal publisher's builtin/tool lookup.
+function builtin() {
+  [[ $# == 2 && $1 == compgen && $2 == -e ]]
+  printf '%s\n' "$BASHPID" > "$marker.pid"
+  command builtin compgen -e
+  exec >&-
+  /usr/bin/sleep 0.12
+  : > "$marker"
+}
+assert_finished() {
+  if [[ ! -f $marker ]]; then
+    if [[ -f $marker.pid ]]; then wait "$(< "$marker.pid")" 2>/dev/null || :; fi
+    printf 'fixture enumerator returned before its writer exited\n' >&2
+    return 1
+  fi
+}
+/usr/bin/rm -f -- "$marker" "$marker.pid"
+publisher_fixture_environment /usr/bin/gh result
+[[ ${#result[@]} == 0 && ! -e $marker.pid ]]
+if [[ $2 == */publish-release.sh ]]; then
+  publisher_fixture_environment /usr/bin/curl result
+  [[ ${#result[@]} == 0 && ! -e $marker.pid ]]
+fi
+export GH_TOKEN=excluded GH_HOST=excluded GH_ENTERPRISE_TOKEN=excluded GH_DEBUG=excluded
+export UNRELATED=excluded
+GH_NOT_EXPORTED=excluded
+publisher_fixture_environment /fixture/gh result
+assert_finished
+[[ ${#result[@]} == 0 ]]
+/usr/bin/rm -f -- "$marker" "$marker.pid"
+export AUTH_SENTINEL_FILE=sentinel EXPECTED_PRODUCER_SHA=producer FAKE_NUMERIC_PUBLISHER=flag
+export GH_EMPTY='' GH_MULTI=$'one two\nnext line\n'
+publisher_fixture_environment /fixture/gh result
+assert_finished
+expected=(AUTH_SENTINEL_FILE=sentinel EXPECTED_PRODUCER_SHA=producer FAKE_NUMERIC_PUBLISHER=flag
+          GH_EMPTY= $'GH_MULTI=one two\nnext line\n')
+[[ ${#result[@]} == ${#expected[@]} ]]
+for i in "${!expected[@]}"; do [[ ${result[$i]} == "${expected[$i]}" ]]; done
+FIXTURE_ENV
+done
+printf 'PASS fixture environment joins the exporter and preserves exact filtered values\n'
+
 fakebin=$scratch/fakebin
 mkdir -p "$fakebin"
 cat > "$fakebin/sleep" <<'SH'
