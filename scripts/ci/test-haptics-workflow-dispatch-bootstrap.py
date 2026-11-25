@@ -11783,6 +11783,45 @@ def test_private_gate_fd_race(
             fixture_raise_selected_failure(cleanup_primary)
 
 
+def test_private_gate_failure_categories(launcher_module) -> None:
+    classify = launcher_module.private_gate_rejection
+    base = "private trusted workflow gate rejected the request"
+    prefix = b"haptics workflow gate failed: "
+    submit = b"workflow dispatch failed; refusing to reconcile an unowned run: workflow dispatch failed"
+    ep = b" (https://api.github.com/repos/GUF296/tb321fu-haptics-debs/actions/workflows/"
+    secret = b"NEVER_ECHO_PRIVATE_TEST_SENTINEL"
+    lookup = submit + b": HTTP 404: " + secret + ep + b"build.yml)"
+    creation = submit + b": could not create workflow dispatch event: HTTP 422: " + secret + ep + b"321/dispatches)"
+    def check(returncode, raw, expected):
+        value = classify(returncode, raw)
+        if value != expected or secret.decode() in value:
+            raise SystemExit("private gate failure classification exposed data or mislabeled a result")
+    for marker, suffix in (
+        (b"authenticated GitHub-user query failed: " + secret, "remote-identity-read"),
+        (b"remote workflow-ref query failed: " + secret, "remote-identity-read"),
+        (b"remote dispatch branch protection query failed", "remote-protection-read"),
+        (b"workflow-run inventory failed: " + secret, "run-inventory-read"),
+        (b"workflow-run ownership query failed: " + secret, "run-ownership-read"),
+        (b"workflow dispatch run did not appear before the timeout", "reconciliation"),
+        (lookup, "gh-workflow-lookup HTTP 404"),
+        (creation, "gh-dispatch-response-unconfirmed HTTP 422"),
+        (submit + b": " + secret, "gh-workflow-request-unconfirmed"),
+        (creation.replace(b"HTTP 422", b"HTTP 999"), "gh-workflow-request-unconfirmed"),
+        (lookup.replace(b"build.yml)", b"321/dispatches)"), "gh-workflow-request-unconfirmed"),
+        (creation.replace(b"321/dispatches)", b"build.yml)"), "gh-workflow-request-unconfirmed"),
+        (lookup.replace(b"api.github.com", b"elsewhere.invalid"), "gh-workflow-request-unconfirmed"),
+    ):
+        check(1, prefix + marker + b"\n", base + " [" + suffix + "]")
+    for control in (*range(32), 127, 128, 255):
+        check(1, prefix + lookup.replace(secret, secret + bytes([control])) + b"\n", base)
+    for raw in (b"", b"ordinary diagnostic\n", prefix + secret + b"\n", prefix + lookup,
+                prefix + lookup + b"\nextra\n", prefix + b"x" * 5000 + b"\n",
+                (prefix + lookup + b"\n").decode(), bytearray(prefix + lookup + b"\n")):
+        check(1, raw, base)
+    for code in (0, 7, -9, True, "1"):
+        check(code, prefix + lookup + b"\n", base)
+
+
 def test_private_gate_main_settlement(
     launcher_module,
     launcher: pathlib.Path,
@@ -11830,7 +11869,7 @@ def test_private_gate_main_settlement(
             fixture_raise_selected_failure(cleanup_primary)
         return False
 
-    for mode in ("normal", "failure", "replacement", "cancellation"):
+    for mode in ("normal", "failure", "classified-failure", "replacement", "cancellation"):
         captured_gates = []
         replacement_bytes = b"replacement namespace\n"
 
@@ -11852,6 +11891,13 @@ def test_private_gate_main_settlement(
                     7,
                     b"",
                     b"ordinary gate failure\n",
+                )
+            if mode == "classified-failure":
+                return launcher_module.BoundedResult(
+                    1,
+                    b"",
+                    b"haptics workflow gate failed: workflow-run inventory failed: "
+                    b"PRIVATE_DIAGNOSTIC_SENTINEL\n",
                 )
             return launcher_module.BoundedResult(
                 0,
@@ -11909,11 +11955,16 @@ def test_private_gate_main_settlement(
                 raise SystemExit(
                     "bootstrap main did not settle its cancelled private gate"
                 ) from caught
-        elif mode == "failure":
+        elif mode in ("failure", "classified-failure"):
+            expected = (
+                "haptics workflow bootstrap failed: "
+                "private trusted workflow gate rejected the request"
+            )
+            if mode == "classified-failure":
+                expected += " [run-inventory-read]"
             if (
                 not isinstance(caught, SystemExit)
-                or "private trusted workflow gate rejected the request"
-                not in str(caught)
+                or str(caught) != expected
                 or output.getvalue()
                 or not descriptor_closed
                 or gate.path.exists()
@@ -13626,6 +13677,7 @@ def main() -> None:
         test_outer_signal_windows(launcher_module, launcher, repo, gate_raw)
         test_private_gate_open_handoffs(launcher_module, private, gate_raw)
         test_private_gate_fd_race(launcher_module, private, gate_raw)
+        test_private_gate_failure_categories(launcher_module)
         test_private_gate_main_settlement(
             launcher_module,
             launcher,

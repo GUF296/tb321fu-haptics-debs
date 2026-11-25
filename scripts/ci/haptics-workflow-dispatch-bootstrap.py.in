@@ -76,6 +76,53 @@ class BootstrapError(ValueError):
     pass
 
 
+def private_gate_rejection(returncode: int, stderr: bytes) -> str:
+    """Classify a single gate failure; never include child-provided text in output."""
+    base = "private trusted workflow gate rejected the request"
+    prefix = b"haptics workflow gate failed: "
+    if (
+        type(returncode) is not int or returncode != 1 or type(stderr) is not bytes
+        or len(stderr) > 4608 or not stderr.startswith(prefix)
+        or not re.fullmatch(rb"[ -~]+\n", stderr)
+    ):
+        return base
+    reason = stderr[len(prefix):-1]
+    for marker, category in (
+        (b"authenticated GitHub-user query failed", "remote-identity-read"),
+        (b"remote workflow-ref query failed", "remote-identity-read"),
+        (b"remote dispatch branch protection query failed", "remote-protection-read"),
+        (b"workflow-run inventory failed", "run-inventory-read"),
+        (b"workflow-run ownership query failed", "run-ownership-read"),
+    ):
+        if reason == marker or reason.startswith(marker + b": "):
+            return f"{base} [{category}]"
+    if reason in (
+        b"workflow dispatch run did not appear before the timeout",
+        b"workflow dispatch produced an ambiguous run set",
+        b"workflow dispatch produced a run on an unexpected branch",
+        b"remote ref changed during workflow dispatch",
+    ):
+        return base + " [reconciliation]"
+    submit = b"workflow dispatch failed; refusing to reconcile an unowned run: workflow dispatch failed"
+    if reason != submit and not reason.startswith((submit + b": ", submit + b" with ")):
+        return base
+    detail = reason.removeprefix(submit + b": ")
+    # gh workflow run may GET the workflow by filename before attempting its POST.
+    # Classify only exact endpoint shapes; even an HTTP response is not run ownership.
+    endpoint = b" (https://api.github.com/repos/" + REPOSITORY.encode("ascii") + b"/actions/workflows/"
+    match = re.fullmatch(
+        rb"(could not create workflow dispatch event: )?HTTP (400|401|403|404|405|409|422|429|500|502|503|504): [^()]{1,512}"
+        + re.escape(endpoint) + rb"(build\.yml|[1-9][0-9]{0,19}/dispatches)\)", detail
+    )
+    if match:
+        create, code, path = match.groups()
+        if (create is None) == (path == b"build.yml"):
+            category = "gh-workflow-lookup" if create is None else "gh-dispatch-response-unconfirmed"
+            # code is strictly one of the literal alternatives above.
+            return f"{base} [{category} HTTP {code.decode('ascii')}]"
+    return base + " [gh-workflow-request-unconfirmed]"
+
+
 @dataclass
 class BootstrapSignal(BaseException):
     signum: int
@@ -2865,7 +2912,7 @@ def main() -> None:
                 cancellation.checkpoint()
                 if result.returncode or result.stderr:
                     raise BootstrapError(
-                        "private trusted workflow gate rejected the request"
+                        private_gate_rejection(result.returncode, result.stderr)
                     )
                 try:
                     gate_output = result.stdout.decode("utf-8")
