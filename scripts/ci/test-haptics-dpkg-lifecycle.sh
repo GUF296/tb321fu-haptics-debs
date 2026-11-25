@@ -6,7 +6,7 @@ export LC_ALL=C
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 . "$SCRIPT_DIR/haptics-maintainer-scripts.sh"
 
-for command in dpkg dpkg-deb grep install ln; do
+for command in cmp dpkg dpkg-deb dpkg-query grep install ln readlink; do
   command -v "$command" >/dev/null 2>&1 || {
     printf 'required command is unavailable: %s\n' "$command" >&2
     exit 1
@@ -141,6 +141,10 @@ create_package() {
     "$package_root/usr/lib/systemd/system/$service"
   printf 'SUBSYSTEM=="input"\n' > \
     "$package_root/usr/lib/udev/rules.d/90-tb321fu-haptics.rules"
+  if [ "$version" = 2 ]; then
+    install -m 0644 "$SCRIPT_DIR/72-tb321fu-haptics-uaccess.rules" \
+      "$package_root/usr/lib/udev/rules.d/"
+  fi
   printf '#!/bin/sh\nexit 0\n' > \
     "$package_root/usr/libexec/tb321fu-haptics/bind-aw86937"
   find "$package_root" -type d -exec chmod 0755 {} +
@@ -192,6 +196,11 @@ create_package 2 "$deb_v2"
 
 clear_log
 run_dpkg --install "$deb_v1"
+early_rule=/usr/lib/udev/rules.d/72-tb321fu-haptics-uaccess.rules
+admin_rule="$root/etc/udev/rules.d/72-tb321fu-haptics-uaccess.rules"
+[ ! -e "$root$early_rule" ] || fail 'pre-upgrade fixture unexpectedly provided the early rule'
+install -d -m 0755 "$root/etc/udev/rules.d"
+ln -s /dev/null "$admin_rule"
 assert_log_contains "modinfo <-F> <vermagic> <$root/usr/lib/modules/$kernel_release/extra/aw86937-haptics.ko>"
 assert_log_contains "depmod <-b> <$root> <-a> <$kernel_release>"
 assert_log_contains "systemctl <--root=$root> <enable> <$service>"
@@ -202,6 +211,9 @@ dpkg --root="$root" --status "$package" | grep -Fq 'Status: install ok installed
 
 clear_log
 run_dpkg --install "$deb_v2"
+cmp "$SCRIPT_DIR/72-tb321fu-haptics-uaccess.rules" "$root$early_rule"
+dpkg-query --admindir="$root/var/lib/dpkg" --listfiles "$package" | grep -Fx "$early_rule" >/dev/null
+[ "$(readlink "$admin_rule")" = /dev/null ] || fail 'upgrade replaced local administrator mask'
 assert_log_contains "modinfo <-F> <vermagic> <$root/usr/lib/modules/$kernel_release/extra/aw86937-haptics.ko>"
 assert_log_contains "depmod <-b> <$root> <-a> <$kernel_release>"
 assert_log_contains "systemctl <--root=$root> <enable> <$service>"
@@ -209,6 +221,8 @@ assert_log_contains "systemctl <--root=$root> <enable> <$service>"
 
 clear_log
 run_dpkg --remove "$package"
+[ ! -e "$root$early_rule" ] || fail 'dpkg removed the package but left its early rule'
+[ "$(readlink "$admin_rule")" = /dev/null ] || fail 'remove replaced local administrator mask'
 assert_log_contains "depmod <-b> <$root> <-a> <$kernel_release>"
 assert_log_absent "<stop> <$service>"
 [ ! -L "$want" ] || fail 'real dpkg removal left service enablement behind'

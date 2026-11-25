@@ -78,6 +78,16 @@ done
 if grep -Fq 'MODE="0666"' "$udev_rules"; then
   fail 'udev rules retain world-writable haptics events'
 fi
+# Driver and input name are on *different* ancestors. Keep the two predicates
+# on separate lines: combining DRIVERS/ATTRS would require a single parent.
+# No catch-all, misc-node, mode/group or feedbackd assignment belongs here.
+seat_rule="$SCRIPT_DIR/72-tb321fu-haptics-uaccess.rules"
+mapfile -t seat_lines < <(grep -Ev '^[[:space:]]*(#|$)' "$seat_rule")
+[ "${#seat_lines[@]}" -eq 2 ] || fail 'unexpected early seat rule count'
+[ "${seat_lines[0]}" = 'ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", DRIVERS=="aw86937-haptics", ENV{.TB321FU_AW86937_DRIVER}="1"' ] ||
+  fail 'early haptics seat rule must first match the AW86937 event driver'
+[ "${seat_lines[1]}" = 'ENV{.TB321FU_AW86937_DRIVER}=="1", ATTRS{name}=="aw86937-haptics-left|aw86937-haptics-right", TAG+="uaccess"' ] ||
+  fail 'early haptics seat tag must require one of the two input names and the matched driver'
 grep -Fxq 'blacklist aw86937_y700' "$modprobe_rules" ||
   fail 'package generator does not blacklist the legacy AW86937 module'
 grep -Fq 'write_legacy_module_blacklist "$pkg/etc/modprobe.d/tb321fu-haptics.conf"' \

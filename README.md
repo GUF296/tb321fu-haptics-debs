@@ -425,6 +425,13 @@ identity.
 
 The package provides `tb321fu-haptics.service`, `/usr/libexec/tb321fu-haptics/bind-aw86937`, firmware, udev feedbackd integration, and `/dev/input/tb321fu-haptics-left/right` symlinks.
 
+The vendor `72-tb321fu-haptics-uaccess.rules` tags only the two AW86937
+evdev nodes before systemd applies active-seat ACLs. The existing `90-` rule
+still sets the event links, feedbackd properties and group/mode. An upgrade
+installs the early rule without replacing local administrator overrides;
+rule reload alone does not replay already processed events. A normal device
+add (including the next boot) uses the new ordering.
+
 For the remediation bootstrap, do not create a duplicate kernel SDK. Invoke
 `build-tb321fu-haptics-deb.sh` directly with the clean local kernel source,
 external kernel Git database, existing build directory, generated

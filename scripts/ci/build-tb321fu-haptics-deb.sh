@@ -1416,6 +1416,9 @@ EOF_MAKE
     ci_die "packaged haptic_click.bin differs from the Git-object snapshot"
   write_bind_script "$pkg/usr/libexec/tb321fu-haptics/bind-aw86937"
   write_systemd_unit "$pkg/usr/lib/systemd/system/tb321fu-haptics.service"
+  ci_export_git_file "$haptics_root" "$EXPECTED_HAPTICS_PRODUCER_COMMIT" \
+    scripts/ci/72-tb321fu-haptics-uaccess.rules \
+    "$pkg/usr/lib/udev/rules.d/72-tb321fu-haptics-uaccess.rules" "$HAPTICS_GIT_DIR"
   write_udev_rules "$pkg/usr/lib/udev/rules.d/90-tb321fu-haptics.rules"
   write_legacy_module_blacklist "$pkg/etc/modprobe.d/tb321fu-haptics.conf"
   write_plasma_keyboard_default "$pkg/etc/skel/.config/plasmakeyboardrc"

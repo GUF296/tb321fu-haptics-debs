@@ -92,6 +92,7 @@ expected_data=(
   usr/lib/firmware/haptic_ram.bin
   "usr/lib/modules/$kernel_release/extra/aw86937-haptics.ko"
   usr/lib/systemd/system/tb321fu-haptics.service
+  usr/lib/udev/rules.d/72-tb321fu-haptics-uaccess.rules
   usr/lib/udev/rules.d/90-tb321fu-haptics.rules
   usr/libexec/tb321fu-haptics/bind-aw86937
 )
@@ -184,6 +185,9 @@ for index in "${!expected_data[@]}"; do
   [ "$(stat -c '%a' "$data_root/$relative")" = "$expected_mode" ] ||
     ci_die "final haptics DEB payload mode mismatch: $relative"
 done
+cmp -s "$SCRIPT_DIR/72-tb321fu-haptics-uaccess.rules" \
+  "$data_root/usr/lib/udev/rules.d/72-tb321fu-haptics-uaccess.rules" ||
+  ci_die "final haptics DEB early uaccess rule differs from producer source"
 [ "$(sha256sum "$data_root/usr/lib/firmware/haptic_ram.bin" | awk '{print $1}')" = "$haptics_ram_firmware_sha256" ] ||
   ci_die "final haptics DEB haptic_ram.bin digest mismatch"
 [ "$(sha256sum "$data_root/usr/lib/firmware/haptic_click.bin" | awk '{print $1}')" = "$haptics_click_firmware_sha256" ] ||

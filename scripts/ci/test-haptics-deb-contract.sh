@@ -60,6 +60,7 @@ create_package_tree() {
   printf 'ram firmware\n' > "$root/usr/lib/firmware/haptic_ram.bin"
   printf 'module bytes\n' > "$root/usr/lib/modules/$kernel_release/extra/aw86937-haptics.ko"
   printf 'service\n' > "$root/usr/lib/systemd/system/tb321fu-haptics.service"
+  install -m 0644 "$SCRIPT_DIR/72-tb321fu-haptics-uaccess.rules" "$root/usr/lib/udev/rules.d/"
   printf 'rules\n' > "$root/usr/lib/udev/rules.d/90-tb321fu-haptics.rules"
   printf '#!/bin/sh\nexit 0\n' > "$root/usr/libexec/tb321fu-haptics/bind-aw86937"
   chmod 0644 "$root/DEBIAN/control"
@@ -88,6 +89,15 @@ good_deb="$tmp/good.deb"
 build_deb "$pkg" "$good_deb"
 bash "$verifier" "$pkg" "$good_deb" "$kernel_release" \
   "$ram_sha" "$click_sha" "$module_sha" "$helper_sha" >/dev/null
+
+wrong_rule="$tmp/wrong-rule"
+cp -a "$pkg" "$wrong_rule"
+printf 'SUBSYSTEM=="input", TAG+="uaccess"\n' > \
+  "$wrong_rule/usr/lib/udev/rules.d/72-tb321fu-haptics-uaccess.rules"
+build_deb "$wrong_rule" "$tmp/wrong-rule.deb"
+require_failure 'early uaccess rule differs from producer source' \
+  bash "$verifier" "$wrong_rule" "$tmp/wrong-rule.deb" "$kernel_release" \
+  "$ram_sha" "$click_sha" "$module_sha" "$helper_sha"
 
 extra_payload="$tmp/extra-payload"
 cp -a "$pkg" "$extra_payload"

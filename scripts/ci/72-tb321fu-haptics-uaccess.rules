@@ -1,0 +1,4 @@
+# Classify the two AW86937 evdev nodes before systemd's 73-seat-late.rules.
+# The I2C driver and the input name are on different ancestors. Match separately.
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", DRIVERS=="aw86937-haptics", ENV{.TB321FU_AW86937_DRIVER}="1"
+ENV{.TB321FU_AW86937_DRIVER}=="1", ATTRS{name}=="aw86937-haptics-left|aw86937-haptics-right", TAG+="uaccess"

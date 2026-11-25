@@ -169,6 +169,7 @@ create_package_tree() {
   printf 'module fixture bytes\n' > \
     "$package_root/usr/lib/modules/$kernel_release/extra/aw86937-haptics.ko"
   printf '[Service]\nType=oneshot\n' > "$package_root/usr/lib/systemd/system/$service"
+  install -m 0644 "$SCRIPT_DIR/72-tb321fu-haptics-uaccess.rules" "$package_root/usr/lib/udev/rules.d/"
   printf 'rules\n' > "$package_root/usr/lib/udev/rules.d/90-tb321fu-haptics.rules"
   printf '#!/bin/sh\nexit 0\n' > "$package_root/usr/libexec/tb321fu-haptics/bind-aw86937"
   find "$package_root" -type d -exec chmod 0755 {} +
