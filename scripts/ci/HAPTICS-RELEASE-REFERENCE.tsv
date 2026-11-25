@@ -1,7 +1,7 @@
 schema	tb321fu.haptics-release-reference/v3
-reference-producer-commit	d293ea86308e2427225385373466e2f9f1157309
-reference-archive-sha256	dd6815d0384823dbe58015aa6c77d71b29065af3b9a49682ed5904ff76db41f9
-package-version	20261120.1
+reference-producer-commit	17236cc0e95e78f0fa51a75e538af10401a71947
+reference-archive-sha256	1f75ea49b0176d4053282a3d66eba3d1bae71454dfb3a9e2d524839d098e5787
+package-version	20261125.1
 kernel-bundle-id	cb3b5fca7c2c80d9008b4b09a1b284d484f2acce1548901f2b5e38609d4de257
 kernel-toolchain-manifest-sha256	38f74b9a730233f49d5b882a3dd5f4ec2f0ad9efe78563e92f5b45283c58d8e8
 kernel-build-archive-url	https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/tb321fu-kernel-bootstrap-11bbf0262857-20261120.1/tb321fu-kernel-build-sdk-7.1.1-00011-g11bbf0262857.tar.gz
@@ -20,6 +20,6 @@ kernel-release	7.1.1-00011-g11bbf0262857
 kernel-source-commit	11bbf0262857f2dcb5c35afc1fd4296d6ceffaf7
 kernel-config-sha256	ac090354dcd18bdff263a3fa88300638a373de7c3b54143b4d967c7e051bd7c2
 kernel-build-archive-sha256	0b84cd9bec6c41d7c55c143cd7e945820971e4267aed66728126e6b96f753e87
-haptics-deb-sha256	c626a225124d9e2f2443cb57f49e3a711a7abbbf68db1cfa469eb774e29f938a
+haptics-deb-sha256	3a45e4b9e47457b2e1e89530f3956dd942b43cfbb8b06a1131cbc1a6224b60e7
 haptics-module-sha256	d40eb19660ff26c937ed0062a599bed0321cafb89d347610b519983512014a77
 haptics-helper-sha256	f4b36b63ff54c0e2f3fa3568debc1844b1d8c77c9ed710f622d3e8b9be4365ce
