@@ -75,7 +75,7 @@ CANONICAL_INPUTS: dict[str, object] = {
     "dispatch_id": "",
     "release_tag": "",
     "prerelease": True,
-    "haptics_deb_version": "20261120.1",
+    "haptics_deb_version": "20261125.1",
     "kernel_source_commit": "11bbf0262857f2dcb5c35afc1fd4296d6ceffaf7",
     "kernel_build_archive": (
         "https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/"

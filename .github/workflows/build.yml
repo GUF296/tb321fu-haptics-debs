@@ -21,7 +21,7 @@ on:
       haptics_deb_version:
         description: Debian package version
         required: true
-        default: "20261120.1"
+        default: "20261125.1"
         type: string
       kernel_source_commit:
         description: Exact 40-hex GUF296/linux commit paired with the kernel SDK.

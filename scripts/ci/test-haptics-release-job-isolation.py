@@ -308,7 +308,7 @@ WORKFLOW_INPUT_DESCRIPTIONS = {
     ),
 }
 CANONICAL_PROFILE_DEFAULTS = {
-    "haptics_deb_version": "20261120.1",
+    "haptics_deb_version": "20261125.1",
     "kernel_source_commit": "11bbf0262857f2dcb5c35afc1fd4296d6ceffaf7",
     "kernel_build_archive": (
         "https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/"
@@ -1169,7 +1169,7 @@ def fixture() -> dict:
                     },
                     "haptics_deb_version": {
                         "required": True,
-                        "default": "20261120.1",
+                        "default": "20261125.1",
                         "type": "string",
                     },
                     "kernel_source_commit": {
@@ -1872,7 +1872,7 @@ def self_test() -> None:
     equivalent_float_version = copy.deepcopy(valid)
     equivalent_float_version["on"]["workflow_dispatch"]["inputs"][
         "haptics_deb_version"
-    ]["default"] = 20261120.10
+    ]["default"] = 20261125.10
     expect_rejected(
         equivalent_float_version,
         "self-test accepted a distinct version collapsed by floating-point parsing",
